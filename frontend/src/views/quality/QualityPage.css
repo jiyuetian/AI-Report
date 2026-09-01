@@ -1,0 +1,89 @@
+.quality-page {
+  padding: 24px;
+}
+
+.score-card {
+  border-radius: 8px;
+}
+
+.score-section {
+  display: flex;
+  align-items: center;
+  gap: 48px;
+}
+
+.score-ring {
+  flex-shrink: 0;
+}
+
+.score-text {
+  text-align: center;
+}
+
+.score-value {
+  font-size: 36px;
+  font-weight: bold;
+  color: #262626;
+}
+
+.score-label {
+  font-size: 14px;
+  color: #8c8c8c;
+  margin-top: 4px;
+}
+
+.score-info {
+  flex: 1;
+}
+
+.profile-card {
+  border-radius: 8px;
+}
+
+.issues-card {
+  border-radius: 8px;
+}
+
+.issue-item {
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.issue-item:last-child {
+  border-bottom: none;
+}
+
+.issue-item.blocking {
+  background: #fff2f0;
+}
+
+[data-theme="dark"] .issue-item.blocking {
+  background: #2a1215;
+}
+
+.sample-values {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #fff1f0;
+  border-radius: 4px;
+}
+
+.red-text {
+  color: #cf1322 !important;
+}
+
+.action-bar {
+  padding: 16px 0;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .score-section {
+    flex-direction: column;
+    gap: 24px;
+  }
+  
+  .quality-page {
+    padding: 16px;
+  }
+}

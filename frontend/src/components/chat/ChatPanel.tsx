@@ -1,0 +1,559 @@
+/**
+ * M3-05 前端对话面板
+ * 气泡/输入中动画/推荐追问chips/历史弹窗/Token余量条
+ */
+
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  Card, Input, Button, Badge, List, Typography, Space, Spin,
+  Popover, Progress, Tag, Tooltip, Empty, Upload, message as antMessage
+} from 'antd';
+import {
+  SendOutlined, HistoryOutlined, LoadingOutlined,
+  BulbOutlined, BarChartOutlined, PieChartOutlined,
+  RiseOutlined, FallOutlined, WarningOutlined,
+  PictureOutlined
+} from '@ant-design/icons';
+import type { UploadFile } from 'antd/es/upload/interface';
+import './ChatPanel.css';
+
+const { Text, Title } = Typography;
+const { TextArea } = Input;
+
+// 消息类型
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  intent_type?: string;
+  action?: any;
+  suggested_followups?: string[];
+  images?: string[];  // 图片URL列表
+  can_override?: boolean;  // 是否允许用户强制覆盖blocking约束
+  original_message?: string;  // 原始用户消息（用于override重发）
+}
+
+// Token状态
+interface TokenStatus {
+  daily_limit: number;
+  used_today: number;
+  remaining: number;
+  usage_percent: number;
+  is_exhausted: boolean;
+  is_warning: boolean;
+}
+
+// 对话面板属性
+interface ChatPanelProps {
+  sessionId?: string;
+  dashboardId?: string;
+  onAction?: (action: any) => void;
+}
+
+const ChatPanel: React.FC<ChatPanelProps> = ({
+  sessionId: initialSessionId,
+  dashboardId,
+  onAction
+}) => {
+  // 状态
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputValue, setInputValue] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [sessionId, setSessionId] = useState(initialSessionId);
+  const [tokenStatus, setTokenStatus] = useState<TokenStatus | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [uploadedImages, setUploadedImages] = useState<string[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 获取Token状态
+  const fetchTokenStatus = async () => {
+    try {
+      const res = await fetch('/api/v1/tokens/status');
+      const data = await res.json();
+      if (data.quota) {
+        setTokenStatus(data.quota);
+      }
+    } catch (e) {
+      console.error('获取Token状态失败:', e);
+    }
+  };
+
+  // 处理图片上传
+  const handleImageUpload = (file: File) => {
+    const isImage = file.type.startsWith('image/');
+    if (!isImage) {
+      antMessage.error('请上传图片文件');
+      return false;
+    }
+    const isLt10M = file.size / 1024 / 1024 < 10;
+    if (!isLt10M) {
+      antMessage.error('图片不能超过10MB');
+      return false;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const url = e.target?.result as string;
+      setUploadedImages(prev => [...prev, url]);
+    };
+    reader.readAsDataURL(file);
+    return false;
+  };
+
+  const removeImage = (index: number) => {
+    setUploadedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // 初始化
+  useEffect(() => {
+    fetchTokenStatus();
+    // 每30秒刷新一次Token状态
+    const interval = setInterval(fetchTokenStatus, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // 滚动到底部
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // 创建会话
+  const createSession = async () => {
+    try {
+      const res = await fetch('/api/v1/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dashboard_id: dashboardId })
+      });
+      const data = await res.json();
+      if (data.session_id) {
+        setSessionId(data.session_id);
+        return data.session_id;
+      }
+    } catch (e) {
+      console.error('创建会话失败:', e);
+    }
+    return null;
+  };
+
+  // 发送消息
+  const sendMessage = async (overrideMsg?: { text: string; override: boolean }) => {
+    const content = overrideMsg?.text || inputValue.trim();
+    if (!content) return;
+
+    // 检查Token是否耗尽
+    if (tokenStatus?.is_exhausted) {
+      antMessage.warning('Token已耗尽，请申请加量');
+      return;
+    }
+
+    const images = overrideMsg ? [] : [...uploadedImages];
+    if (!overrideMsg) {
+      setInputValue('');
+      setUploadedImages([]);
+    }
+    setIsLoading(true);
+
+    // 添加用户消息
+    const userMsg: ChatMessage = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: overrideMsg ? `[强制执行] ${content}` : content,
+      timestamp: new Date().toISOString(),
+      images: images.length > 0 ? images : undefined
+    };
+    setMessages(prev => [...prev, userMsg]);
+
+    // 获取或创建会话
+    let sid = sessionId;
+    if (!sid) {
+      sid = await createSession();
+    }
+
+    if (!sid) {
+      antMessage.error('创建会话失败');
+      setIsLoading(false);
+      return;
+    }
+
+    // SSE流式请求
+    try {
+      const res = await fetch('/api/v1/chat/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sid,
+          message: content,
+          dashboard_id: dashboardId,
+          override: overrideMsg?.override || false
+        })
+      });
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        throw new Error('无法读取响应');
+      }
+
+      let assistantContent = '';
+      let intentData: any = null;
+      let suggestedFollowups: string[] = [];
+      let canOverride = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text = new TextDecoder().decode(value);
+        const lines = text.split('\n\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6);
+            if (dataStr === '[DONE]') continue;
+
+            try {
+              const event = JSON.parse(dataStr);
+
+              if (event.event === 'intent_classified') {
+                intentData = JSON.parse(event.data);
+              } else if (event.event === 'feasibility_check_failed') {
+                const data = JSON.parse(event.data);
+                assistantContent = data.message;
+                canOverride = data.can_override || false;
+              } else if (event.event === 'complete') {
+                const data = JSON.parse(event.data);
+                assistantContent = data.message;
+                suggestedFollowups = data.suggested_followups || [];
+
+                // 执行动作（包含render_updates）
+                if (data.action && onAction) {
+                  onAction({
+                    ...data.action,
+                    render_updates: data.render_updates || [],
+                    new_config: data.new_config || {}
+                  });
+                }
+              }
+            } catch (e) {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+
+      // 添加助手消息
+      const assistantMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: assistantContent,
+        timestamp: new Date().toISOString(),
+        intent_type: intentData?.intent_type,
+        suggested_followups: suggestedFollowups,
+        can_override: canOverride,
+        original_message: canOverride ? content : undefined
+      };
+      setMessages(prev => [...prev, assistantMsg]);
+
+      // 刷新Token状态
+      fetchTokenStatus();
+
+    } catch (e) {
+      console.error('发送消息失败:', e);
+      antMessage.error('发送失败，请重试');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 点击推荐追问
+  const handleFollowupClick = (text: string) => {
+    setInputValue(text);
+    // 自动发送
+    setTimeout(() => sendMessage(), 100);
+  };
+
+  // 用户强制覆盖blocking约束，重新发送
+  const handleOverride = (originalMessage: string) => {
+    sendMessage({ text: originalMessage, override: true });
+  };
+
+  // 获取Token进度条颜色
+  const getTokenProgressColor = () => {
+    if (!tokenStatus) return '#1890ff';
+    if (tokenStatus.is_exhausted) return '#ff4d4f';
+    if (tokenStatus.is_warning) return '#faad14';
+    return '#52c41a';
+  };
+
+  // 获取输入框状态
+  const getInputStatus = () => {
+    if (!tokenStatus) return { disabled: false, placeholder: '输入指令...' };
+    if (tokenStatus.is_exhausted) {
+      return {
+        disabled: true,
+        placeholder: 'Token已耗尽，请申请加量后继续'
+      };
+    }
+    if (tokenStatus.is_warning) {
+      return {
+        disabled: false,
+        placeholder: `Token即将耗尽(${tokenStatus.usage_percent.toFixed(0)}%)，建议申请加量`
+      };
+    }
+    return { disabled: false, placeholder: '输入指令，如"把饼图改成柱图"' };
+  };
+
+  const inputStatus = getInputStatus();
+
+  // 历史记录弹窗内容
+  const historyContent = (
+    <div className="chat-history-popup">
+      {messages.length === 0 ? (
+        <Empty description="暂无历史记录" />
+      ) : (
+        <List
+          size="small"
+          dataSource={messages}
+          renderItem={item => (
+            <List.Item className={`history-item ${item.role}`}>
+              <div className="history-content">
+                <Tag color={item.role === 'user' ? 'blue' : 'green'}>
+                  {item.role === 'user' ? '我' : 'AI'}
+                </Tag>
+                <Text ellipsis style={{ maxWidth: 200 }}>
+                  {item.content.slice(0, 50)}
+                </Text>
+              </div>
+            </List.Item>
+          )}
+        />
+      )}
+    </div>
+  );
+
+  return (
+    <Card className="chat-panel" bordered={false}>
+      {/* 头部 - Token余量条 */}
+      <div className="chat-header">
+        <div className="chat-title">
+          <BulbOutlined /> 智能助手
+        </div>
+        <Space>
+          {/* Token余量条 */}
+          {tokenStatus && (
+            <Tooltip title={`已用: ${tokenStatus.used_today} / ${tokenStatus.daily_limit}`}>
+              <div className="token-bar">
+                <Progress
+                  percent={tokenStatus.usage_percent}
+                  size="small"
+                  strokeColor={getTokenProgressColor()}
+                  showInfo={false}
+                  style={{ width: 80 }}
+                />
+                <Text type={tokenStatus.is_warning ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
+                  {tokenStatus.is_exhausted ? '已耗尽' : `${tokenStatus.remaining}剩余`}
+                </Text>
+              </div>
+            </Tooltip>
+          )}
+          {/* 历史记录按钮 */}
+          <Popover
+            content={historyContent}
+            title="对话历史"
+            trigger="click"
+            open={showHistory}
+            onOpenChange={setShowHistory}
+            placement="bottomRight"
+          >
+            <Button
+              type="text"
+              icon={<HistoryOutlined />}
+              size="small"
+            />
+          </Popover>
+        </Space>
+      </div>
+
+      {/* 消息列表 */}
+      <div className="chat-messages">
+        {messages.length === 0 && (
+          <div className="chat-welcome">
+            <Title level={5}>👋 我是您的数据助手</Title>
+            <Text type="secondary">您可以这样问我：</Text>
+            <div className="welcome-suggestions">
+              {['把饼图改成柱图', '分析一下异常原因', '筛选华东地区'].map((text, i) => (
+                <Tag
+                  key={i}
+                  className="suggestion-tag"
+                  onClick={() => handleFollowupClick(text)}
+                >
+                  {text}
+                </Tag>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((msg, index) => (
+          <div key={msg.id} className={`message-row ${msg.role}`}>
+            <div className={`message-bubble ${msg.role}`}>
+              {/* 角色标识 */}
+              <div className="message-role">
+                {msg.role === 'user' ? (
+                  <Badge color="blue" text="我" />
+                ) : (
+                  <Badge color="green" text="AI" />
+                )}
+              </div>
+              {/* 消息内容 */}
+              <div className="message-content">{msg.content}</div>
+              {/* 强制执行按钮（blocking约束可被用户覆盖时） */}
+              {msg.can_override && msg.original_message && (
+                <div className="override-action">
+                  <Button
+                    type="primary"
+                    danger
+                    size="small"
+                    icon={<WarningOutlined />}
+                    onClick={() => handleOverride(msg.original_message!)}
+                    disabled={isLoading}
+                  >
+                    仍然执行
+                  </Button>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    强制覆盖约束，按您的要求执行
+                  </Text>
+                </div>
+              )}
+              {/* 图片展示 */}
+              {msg.images && msg.images.length > 0 && (
+                <div className="message-images">
+                  {msg.images.map((img, i) => (
+                    <div key={i} className="message-image-item">
+                      <img src={img} alt={`msg-image-${i}`} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* 时间 */}
+              <div className="message-time">
+                {new Date(msg.timestamp).toLocaleTimeString()}
+              </div>
+              {/* 推荐追问 */}
+              {msg.suggested_followups && msg.suggested_followups.length > 0 && (
+                <div className="followup-chips">
+                  <Text type="secondary" style={{ fontSize: 12 }}>推荐追问：</Text>
+                  <Space size={4} wrap>
+                    {msg.suggested_followups.map((text, i) => (
+                      <Tag
+                        key={i}
+                        className="followup-chip"
+                        onClick={() => handleFollowupClick(text)}
+                      >
+                        {text}
+                      </Tag>
+                    ))}
+                  </Space>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {/* 输入中动画 */}
+        {isLoading && (
+          <div className="message-row assistant">
+            <div className="message-bubble assistant typing">
+              <div className="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                思考中...
+              </Text>
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* 输入区域 */}
+      <div className="chat-input-area">
+        {/* 已上传图片预览 */}
+        {uploadedImages.length > 0 && (
+          <div className="chat-image-preview">
+            {uploadedImages.map((img, index) => (
+              <div key={index} className="chat-image-item">
+                <img src={img} alt={`upload-${index}`} />
+                <Button
+                  type="text"
+                  size="small"
+                  className="chat-image-remove"
+                  onClick={() => removeImage(index)}
+                >
+                  ×
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="chat-input-row">
+          <Button
+            type="text"
+            icon={<PictureOutlined />}
+            className="chat-upload-btn"
+            onClick={() => fileInputRef.current?.click()}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const files = e.target.files;
+              if (files) {
+                Array.from(files).forEach(f => handleImageUpload(f));
+              }
+              e.target.value = '';
+            }}
+          />
+          <TextArea
+            value={inputValue}
+            onChange={e => setInputValue(e.target.value)}
+            onPressEnter={e => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+              }
+            }}
+            placeholder={inputStatus.placeholder}
+            disabled={inputStatus.disabled || isLoading}
+            autoSize={{ minRows: 1, maxRows: 4 }}
+            className="chat-input"
+          />
+          <Button
+            type="primary"
+            icon={isLoading ? <LoadingOutlined /> : <SendOutlined />}
+            onClick={() => sendMessage()}
+            disabled={inputStatus.disabled || isLoading || !inputValue.trim()}
+            loading={isLoading}
+          />
+        </div>
+      </div>
+
+      {/* Token耗尽提示 */}
+      {tokenStatus?.is_exhausted && (
+        <div className="token-exhausted-warning">
+          <WarningOutlined /> Token已耗尽，
+          <Button type="link" size="small">申请加量</Button>
+        </div>
+      )}
+    </Card>
+  );
+};
+
+export default ChatPanel;

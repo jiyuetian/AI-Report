@@ -1,0 +1,55 @@
+.wb { padding: 4px 2px; }
+
+/* 欢迎横幅（原型 s-workbench 的渐变卡） */
+.wb-hero {
+  display: flex; align-items: center; gap: 20px;
+  padding: 24px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #e8eaf0);
+  background: linear-gradient(120deg, var(--primary-bg, rgba(22,119,255,.08)), transparent 60%);
+}
+.wb-hello { font-size: 20px; font-weight: 600; margin: 0; }
+.wb-hello-sub { color: var(--text-2, rgba(0,0,0,.65)); margin-top: 8px; font-size: 13px; }
+.wb-hero .wb-hero-btn { margin-left: auto; }
+
+/* 3 个入口卡 */
+.wb-entry-grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 16px;
+}
+.wb-entry { cursor: pointer; }
+.wb-entry-ico { font-size: 26px; line-height: 1; }
+.wb-entry-name { font-weight: 600; margin-top: 8px; }
+.wb-entry-desc { color: var(--text-3, rgba(0,0,0,.45)); font-size: 12px; margin-top: 8px; }
+.hoverable { transition: all .18s; }
+.hoverable:hover { box-shadow: var(--shadow-md, 0 6px 16px -4px rgba(16,24,40,.1)); transform: translateY(-2px); }
+
+/* 最近看板 */
+.wb-recent-head { display: flex; align-items: center; margin-bottom: 16px; }
+.wb-recent-title { font-size: 15px; font-weight: 600; }
+.wb-recent-all { margin-left: auto; font-size: 13px; color: var(--primary, #1677ff); cursor: pointer; }
+.wb-recent-grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(4, 1fr);
+}
+.wb-board { cursor: pointer; overflow: hidden; padding: 0; }
+.wb-board:hover { box-shadow: var(--shadow-md, 0 6px 16px -4px rgba(16,24,40,.1)); transform: translateY(-2px); transition: all .18s; }
+.wb-board-thumb {
+  height: 110px; border-radius: 8px 8px 0 0;
+  display: flex; align-items: flex-end; gap: 5%;
+  padding: 0 8% 12%;
+}
+.wb-board-thumb i { flex: 1; border-radius: 3px 3px 0 0; }
+.wb-board-name { font-weight: 600; font-size: 13px; margin: 12px 14px 0; }
+.wb-board-meta { color: var(--text-3, rgba(0,0,0,.45)); font-size: 12px; margin: 4px 14px 14px; }
+
+.wb-notice { margin-top: 16px; }
+
+@media (max-width: 1200px) {
+  .wb-entry-grid, .wb-recent-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .wb-entry-grid, .wb-recent-grid { grid-template-columns: 1fr; }
+}

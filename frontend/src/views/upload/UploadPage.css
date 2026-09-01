@@ -1,0 +1,316 @@
+.file-processing-card {
+  border-radius: 8px;
+  overflow: visible;
+}
+
+.file-processing-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.file-section {
+  padding: 0 0 16px 0;
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 16px;
+}
+
+[data-theme="dark"] .file-section {
+  border-bottom-color: #303030;
+}
+
+.file-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.file-preview-table {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* 文件处理卡片底部的生成看板按钮区 */
+.file-processing-footer {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+[data-theme="dark"] .file-processing-footer {
+  border-top-color: #303030;
+}
+
+.upload-page {
+  padding: 24px;
+}
+
+/* 步骤条强制横向：杜绝在窄视口/异常宽度下被折成竖向深色块 */
+.upload-page .ant-steps {
+  display: flex !important;
+  flex-direction: row !important;
+}
+.upload-page .ant-steps .ant-steps-item {
+  flex: 1 !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+}
+.upload-page .ant-steps .ant-steps-item-content {
+  flex: 1 !important;
+  width: auto !important;
+}
+.upload-page .ant-steps .ant-steps-item-tail,
+.upload-page .ant-steps .ant-steps-item-title {
+  position: static !important;
+}
+
+.upload-card {
+  border-radius: 8px;
+  /* 兜底：防止父级 flex 收缩把整个 Card 压成细竖条 */
+  min-width: 0;
+  width: 100%;
+  flex: 1 1 auto;
+  display: block;
+  box-sizing: border-box;
+}
+
+/* 文件切换标签页卡片 - 无边框样式，仅作为标签页容器 */
+.file-tabs-card {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+.file-tabs-card .ant-card-body {
+  padding: 0;
+}
+/* Segmented 文件切换器 */
+.file-tabs-card .ant-segmented {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  padding: 2px;
+}
+[data-theme="dark"] .file-tabs-card .ant-segmented {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.upload-dragger {
+  padding: 40px;
+  background: #fafafa;
+  border: 2px dashed #d9d9d9;
+  border-radius: 8px;
+  transition: all 0.3s;
+}
+
+.upload-dragger:hover {
+  border-color: #1677ff;
+  background: #e6f4ff;
+}
+
+/* 暗色主题下协调的拖拽区样式（跟随根 data-theme，整站保持暗色一致，不出现突兀白块/蓝虚线框）
+   注意：AntD 内层 .ant-upload-drag 自带白底，需用更高优先级覆盖 */
+[data-theme="dark"] .upload-dragger {
+  background: #1f1f1f !important;
+  border-color: #434343 !important;
+}
+[data-theme="dark"] .upload-dragger .ant-upload-drag {
+  background: #1f1f1f !important;
+  border-color: #434343 !important;
+}
+[data-theme="dark"] .upload-dragger:hover,
+[data-theme="dark"] .upload-dragger .ant-upload-drag:hover {
+  border-color: #1668dc !important;
+  background: #1f2b3a !important;
+}
+[data-theme="dark"] .upload-dragger .ant-upload-drag-icon .anticon {
+  color: #4096ff !important;
+}
+[data-theme="dark"] .upload-dragger .ant-upload-text {
+  color: rgba(255, 255, 255, 0.88) !important;
+}
+[data-theme="dark"] .upload-dragger .ant-upload-hint {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+[data-theme="dark"] .upload-list-card,
+[data-theme="dark"] .error-message-box {
+  background: #1f1f1f;
+  border-color: #434343;
+}
+[data-theme="dark"] .error-message-box {
+  color: rgba(255, 255, 255, 0.85);
+}
+/* 显式覆盖 AntD Dragger 的 dragging 态，避免拖拽态残留异常边框 */
+.upload-dragger .ant-upload-drag:hover {
+  border-color: #1677ff;
+  background: #e6f4ff;
+}
+/* 拖拽结束/离开后，非暗色下复位为默认浅色，不保留高亮 */
+.upload-dragger:not(:hover) .ant-upload-drag:not(.ant-upload-drag-hover) {
+  border-color: #d9d9d9;
+  background: #fafafa;
+}
+/* 暗色下拖拽结束/离开后保持深色（用更高优先级压制上方浅色复位） */
+[data-theme="dark"] .upload-dragger:not(:hover) .ant-upload-drag {
+  background: #1f1f1f !important;
+  border-color: #434343 !important;
+}
+/* 全局消除任何拖拽残留下边框 */
+.upload-page .ant-upload-drag.ant-upload-drag-hover {
+  border-color: #1677ff;
+}
+
+/* 兜底：历史版本 / 缓存 bundle 中可能残留的空选框/上传图片占位/mask 遮罩，全部隐藏。
+   覆盖 AntD upload-picture icon、dragger-mask-overlay 残影等。 */
+.upload-dragger [aria-label="upload-picture"],
+.upload-dragger .ant-upload-dragger-mask-overlay,
+.upload-dragger .ant-upload-mask,
+.upload-page .ant-upload-mask,
+.upload-page .ant-upload-dragger-mask-overlay {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 兜底②：暗色主题 / 旧 bundle 下 .ant-upload-drag 可能被压成细竖条，
+   强制把 Dragger 撑满父容器宽度，禁止任何 min-width/width 收缩。 */
+.upload-page .ant-upload-wrapper,
+.upload-page .ant-upload-wrapper > .ant-upload,
+.upload-page .ant-upload-wrapper > .ant-upload.ant-upload-drag,
+.upload-page .upload-dragger,
+.upload-page .upload-dragger .ant-upload-drag {
+  display: block !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  flex: 0 0 auto !important;
+  box-sizing: border-box !important;
+}
+.upload-page .upload-dragger > div {
+  display: block !important;
+  width: 100% !important;
+  min-width: 100% !important;
+}
+
+/* 兜底③：Steps 的 tail/title 在被改成 flex column 后可能渲染出意外竖条，强制收回 */
+.upload-page .ant-steps .ant-steps-item-tail {
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  display: none !important;
+}
+
+.upload-dragger .ant-upload-drag-icon {
+  margin-bottom: 16px;
+}
+
+.upload-dragger .ant-upload-drag-icon .anticon {
+  font-size: 48px;
+  color: #1677ff;
+}
+
+.upload-dragger .ant-upload-text {
+  font-size: 16px;
+  color: #262626;
+  margin-bottom: 8px;
+}
+
+.upload-dragger .ant-upload-hint {
+  font-size: 14px;
+  color: #8c8c8c;
+}
+
+.upload-list-card {
+  border-radius: 8px;
+}
+
+.upload-list-card .ant-list-item {
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+[data-theme="dark"] .upload-list-card .ant-list-item {
+  border-bottom-color: #303030;
+}
+
+.upload-list-card .ant-list-item:last-child {
+  border-bottom: none;
+}
+
+/* 错误弹窗样式 */
+.error-modal-content {
+  padding: 8px 0;
+}
+
+.error-message-box {
+  background: #fff2f0;
+  border: 1px solid #ffccc7;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+
+[data-theme="dark"] .error-message-box {
+  background: #2a1215;
+  border-color: #58181c;
+}
+
+.error-message-box p {
+  margin: 4px 0;
+}
+
+/* 重复文件弹窗 */
+.duplicate-modal-content {
+  padding: 16px 0;
+}
+
+.duplicate-modal-content ul {
+  margin: 16px 0;
+  padding-left: 20px;
+}
+
+.duplicate-modal-content li {
+  margin: 8px 0;
+  line-height: 1.6;
+}
+
+/* 进度条样式 */
+.upload-progress {
+  margin-top: 8px;
+}
+
+/* 文件图标 */
+.file-icon {
+  font-size: 24px;
+}
+
+.file-icon.excel {
+  color: #52c41a;
+}
+
+.file-icon.csv {
+  color: #1677ff;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .upload-page {
+    padding: 16px;
+  }
+  
+  .upload-dragger {
+    padding: 24px;
+  }
+  
+  .upload-dragger .ant-upload-drag-icon .anticon {
+    font-size: 32px;
+  }
+}

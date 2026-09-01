@@ -1,0 +1,20 @@
+.dash-ops {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 0 16px;
+}
+.dash-ops-back { font-size: 14px; }
+.dash-ops-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dash-ops-title-edit { font-size: 14px; color: var(--text-3, rgba(0,0,0,.45)); }
+.dash-ops-title:hover .dash-ops-title-edit { color: var(--primary, #1677ff); }
+.dash-ops-title-input { max-width: 360px; }
+.dash-ops-spacer { flex: 1; }

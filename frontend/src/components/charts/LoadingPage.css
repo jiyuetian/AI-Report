@@ -1,0 +1,70 @@
+/* Loading页样式 - M2-12（弹窗友好版：随容器高度自适应，避免溢出） */
+.loading-page {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+}
+
+.loading-card {
+  width: 100%;
+  max-width: 860px;
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 28px 36px;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.loading-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.loading-header h4 {
+  margin-bottom: 8px;
+  font-size: 22px;
+}
+
+.overall-progress {
+  margin-bottom: 40px;
+  padding: 0 8px;
+}
+
+.progress-label {
+  text-align: center;
+  margin-top: 12px;
+}
+
+.steps-container {
+  margin: 8px 0 32px;
+  padding: 0 24px;
+}
+
+.loading-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.cancel-hint {
+  text-align: center;
+  margin-top: 16px;
+}
+
+@media (max-width: 768px) {
+  .loading-page {
+    padding: 16px;
+  }
+  .loading-card {
+    padding: 24px;
+    max-width: 100%;
+  }
+  .steps-container {
+    padding: 0;
+  }
+}
