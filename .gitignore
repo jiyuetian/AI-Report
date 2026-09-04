@@ -28,6 +28,7 @@ data/backups/*
 
 # 日志
 *.log
+*.err
 logs/
 
 # IDE
