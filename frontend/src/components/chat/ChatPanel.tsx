@@ -12,7 +12,7 @@ import {
   SendOutlined, HistoryOutlined, LoadingOutlined,
   BulbOutlined, BarChartOutlined, PieChartOutlined,
   RiseOutlined, FallOutlined, WarningOutlined,
-  PictureOutlined, SparklesFilled, RightOutlined
+  PictureOutlined, ThunderboltFilled, RightOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import './ChatPanel.css';
@@ -339,7 +339,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       {/* 头部 */}
       <div className="chat-header">
         <div className="chat-header-left">
-          <span className="chat-logo"><SparklesFilled /></span>
+          <span className="chat-logo"><ThunderboltFilled /></span>
           <span className="chat-title">数据助手</span>
         </div>
         <div className="chat-header-actions">
@@ -386,7 +386,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-welcome">
-            <div className="chat-welcome-icon"><SparklesFilled /></div>
+            <div className="chat-welcome-icon"><ThunderboltFilled /></div>
             <div className="chat-welcome-title">Hi，有什么可以帮你？</div>
             <div className="chat-welcome-sub">关于这个数据看板，你可以这样问我：</div>
             <div className="welcome-suggestions">
