@@ -53,50 +53,52 @@ class AIQualityChecker:
         self.config = config or {}
     
     def _collect_sample_data(self, max_rows: int = 50) -> List[Dict]:
-        """收集数据样本用于AI分析"""
+        """收集数据样本用于AI分析（统计信息用单次STRAIGHT聚合查询合并，避免逐列多次全表扫描）"""
         col_names = [c["name"] for c in self.columns[:10]]  # 最多取10列
         col_str = ', '.join([f'"{c}"' for c in col_names])
-        
+
         # 获取样本数据（含空值，让AI也看到空值情况）
         rows = self.db.conn.execute(f"""
             SELECT {col_str} 
             FROM {self.table_name} 
             LIMIT {max_rows}
         """).fetchall()
-        
-        # 统计信息
+
+        # 总行数（单次）
+        total = self.db.conn.execute(f"SELECT COUNT(*) FROM {self.table_name}").fetchone()[0]
+
+        # 单次聚合查询同时算所有字段的统计，避免每列4次全表扫描
+        agg_exprs = []
+        for c in self.columns[:10]:
+            cname = c["name"]
+            agg_exprs.append(f'COUNT("{cname}") AS "nonnull_{cname}"')
+            agg_exprs.append(f'COUNT(DISTINCT "{cname}") AS "uniq_{cname}"')
+            agg_exprs.append(
+                f'SUM(CASE WHEN "{cname}" IS NULL OR CAST("{cname}" AS VARCHAR) = \'\' '
+                f'THEN 1 ELSE 0 END) AS "null_{cname}"'
+            )
+        agg_sql = "SELECT " + ", ".join(agg_exprs) + f" FROM {self.table_name}"
+        agg_row = self.db.conn.execute(agg_sql).fetchone()
+
         stats = {}
-        for col in self.columns[:10]:
-            cname = col["name"]
-            # 非空值数量
-            non_null = self.db.conn.execute(f"""
-                SELECT COUNT(*) FROM {self.table_name} 
-                WHERE "{cname}" IS NOT NULL
-            """).fetchone()[0]
-            
-            # 唯一值数量
-            unique = self.db.conn.execute(f"""
-                SELECT COUNT(DISTINCT "{cname}") FROM {self.table_name}
-            """).fetchone()[0]
-            
-            # 空值数量
-            null_count = self.db.conn.execute(f"""
-                SELECT COUNT(*) FROM {self.table_name} 
-                WHERE "{cname}" IS NULL OR CAST("{cname}" AS VARCHAR) = ''
-            """).fetchone()[0]
-            
-            total = self.db.conn.execute(f"SELECT COUNT(*) FROM {self.table_name}").fetchone()[0]
-            
-            # 尝试取样例值
+        for i, c in enumerate(self.columns[:10]):
+            cname = c["name"]
+            # 每列固定占3个位置：nonnull / uniq / null，按位置取值最稳（不依赖列名）
+            non_null = int(agg_row[i * 3] or 0)
+            unique = int(agg_row[i * 3 + 1] or 0)
+            null_count = int(agg_row[i * 3 + 2] or 0)
+            total = int(total or 0)
+
+            # 取样例值（仅对非空值，DISTINCT 去重）
             samples = self.db.conn.execute(f"""
                 SELECT DISTINCT CAST("{cname}" AS VARCHAR) 
                 FROM {self.table_name} 
                 WHERE "{cname}" IS NOT NULL 
                 LIMIT 10
             """).fetchall()
-            
+
             stats[cname] = {
-                "type": col.get("type", "unknown"),
+                "type": c.get("type", "unknown"),
                 "total_rows": total,
                 "non_null": non_null,
                 "null_count": null_count,
@@ -104,7 +106,7 @@ class AIQualityChecker:
                 "unique_values": unique,
                 "sample_values": [str(r[0]) for r in samples[:5]]
             }
-        
+
         return {
             "columns": [{"name": c["name"], "type": c.get("type", "unknown")} for c in self.columns[:10]],
             "stats": stats,
@@ -198,13 +200,14 @@ class AIQualityChecker:
         # 2. 构建提示词
         prompt = self._build_prompt(sample_data, existing_issues or [])
         
-        # 3. 调用LLM
+        # 3. 调用LLM（AI质检使用较短超时，快速失败降级，避免拖慢整体质检流程）
         gateway = get_llm_gateway()
         request = LLMRequest(
             prompt=prompt,
             json_mode=True,
             max_tokens=3000,
-            temperature=0.3
+            temperature=0.3,
+            timeout=15.0  # AI质检对长prompt可能超时，短超时快速降级不影响规则检测结果
         )
         
         # 默认降级响应（LLM不可用时返回）

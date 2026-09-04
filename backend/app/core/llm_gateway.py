@@ -12,6 +12,54 @@ import httpx
 from fastapi import HTTPException
 import redis.asyncio as redis
 from datetime import datetime
+import re
+
+
+def _extract_json(text: str) -> Optional[Any]:
+    """从可能含推理文本的LLM输出中提取首个完整JSON对象/数组"""
+    if not text:
+        return None
+    text = text.strip()
+    # 直接解析
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # 用花括号平衡匹配提取首个 {...}
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        while start != -1:
+            depth = 0
+            in_str = False
+            escape = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if in_str:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == opener:
+                    depth += 1
+                elif ch == closer:
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            return json.loads(candidate)
+                        except Exception:
+                            break
+                if depth < 0:
+                    break
+                if depth == 0 and i > start:
+                    break
+            start = text.find(opener, start + 1)
+    return None
 
 # 从settings加载配置（确保.env文件生效）
 try:
@@ -29,8 +77,8 @@ except Exception:
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-MAX_RETRIES = 3
-TIMEOUT_SECONDS = 30
+MAX_RETRIES = 1
+TIMEOUT_SECONDS = 25
 CONCURRENCY_LIMIT = 2  # 并发限制
 
 
@@ -59,6 +107,7 @@ class LLMRequest:
     temperature: float = 0.7
     request_id: str = ""
     user_id: str = ""
+    timeout: Optional[float] = None  # 单次调用超时（秒），为空则用全局默认
 
 
 class LLMConfigManager:
@@ -272,8 +321,10 @@ class LLMGateway:
                 "messages": messages,
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
-                "business_type": "chat",  # Sensenova API 需要此字段
             }
+            # Sensenova API 需要 business_type，OpenAI 兼容接口（如讯飞）不需要
+            if "sensenova" in LLM_BASE_URL:
+                request_body["business_type"] = "chat"
             
             # JSON模式
             if request.json_mode:
@@ -304,10 +355,12 @@ class LLMGateway:
                             retry_count=retry
                         )
                     
-                    # 真实调用
+                    # 真实调用（支持请求级超时，默认用全局）
+                    eff_timeout = getattr(request, 'timeout', None) or TIMEOUT_SECONDS
                     response = await self.client.post(
                         "/chat/completions",
-                        json=request_body
+                        json=request_body,
+                        timeout=eff_timeout
                     )
                     response.raise_for_status()
                     
@@ -315,7 +368,12 @@ class LLMGateway:
                     
                     # 解析响应
                     content = data["choices"][0]["message"]["content"]
-                    response_json = json.loads(content) if request.json_mode else None
+                    response_json = None
+                    if request.json_mode:
+                        response_json = _extract_json(content)
+                        # 若JSON提取失败则不视为成功（交给上层降级），避免抛异常中断
+                        if response_json is None:
+                            raise ValueError("LLM响应未包含有效JSON")
                     
                     # Token使用量
                     usage = data.get("usage", {})

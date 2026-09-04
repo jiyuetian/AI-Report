@@ -12,7 +12,7 @@ import {
   SendOutlined, HistoryOutlined, LoadingOutlined,
   BulbOutlined, BarChartOutlined, PieChartOutlined,
   RiseOutlined, FallOutlined, WarningOutlined,
-  PictureOutlined
+  PictureOutlined, SparklesFilled, RightOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import './ChatPanel.css';
@@ -49,12 +49,14 @@ interface ChatPanelProps {
   sessionId?: string;
   dashboardId?: string;
   onAction?: (action: any) => void;
+  onCollapse?: () => void; // 折叠对话面板（看板全屏）
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
   sessionId: initialSessionId,
   dashboardId,
-  onAction
+  onAction,
+  onCollapse
 }) => {
   // 状态
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -334,12 +336,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
   return (
     <Card className="chat-panel" bordered={false}>
-      {/* 头部 - Token余量条 */}
+      {/* 头部 */}
       <div className="chat-header">
-        <div className="chat-title">
-          <BulbOutlined /> 智能助手
+        <div className="chat-header-left">
+          <span className="chat-logo"><SparklesFilled /></span>
+          <span className="chat-title">数据助手</span>
         </div>
-        <Space>
+        <div className="chat-header-actions">
           {/* Token余量条 */}
           {tokenStatus && (
             <Tooltip title={`已用: ${tokenStatus.used_today} / ${tokenStatus.daily_limit}`}>
@@ -349,15 +352,15 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                   size="small"
                   strokeColor={getTokenProgressColor()}
                   showInfo={false}
-                  style={{ width: 80 }}
+                  style={{ width: 60 }}
                 />
-                <Text type={tokenStatus.is_warning ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
+                <Text type={tokenStatus.is_warning ? 'warning' : 'secondary'} style={{ fontSize: 11 }}>
                   {tokenStatus.is_exhausted ? '已耗尽' : `${tokenStatus.remaining}剩余`}
                 </Text>
               </div>
             </Tooltip>
           )}
-          {/* 历史记录按钮 */}
+          {/* 历史记录 */}
           <Popover
             content={historyContent}
             title="对话历史"
@@ -366,23 +369,28 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             onOpenChange={setShowHistory}
             placement="bottomRight"
           >
-            <Button
-              type="text"
-              icon={<HistoryOutlined />}
-              size="small"
-            />
+            <Tooltip title="对话历史"><button className="chip-btn"><HistoryOutlined /></button></Tooltip>
           </Popover>
-        </Space>
+          {/* 折叠对话 → 看板全屏 */}
+          {onCollapse && (
+            <Tooltip title="折叠对话，全屏查看数据看板">
+              <button className="chip-btn chip-btn-collapse" onClick={onCollapse}>
+                <RightOutlined />
+              </button>
+            </Tooltip>
+          )}
+        </div>
       </div>
 
       {/* 消息列表 */}
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-welcome">
-            <Title level={5}>👋 我是您的数据助手</Title>
-            <Text type="secondary">您可以这样问我：</Text>
+            <div className="chat-welcome-icon"><SparklesFilled /></div>
+            <div className="chat-welcome-title">Hi，有什么可以帮你？</div>
+            <div className="chat-welcome-sub">关于这个数据看板，你可以这样问我：</div>
             <div className="welcome-suggestions">
-              {['把饼图改成柱图', '分析一下异常原因', '筛选华东地区'].map((text, i) => (
+              {['把饼图改成柱图', '分析异常原因', '筛选华东地区'].map((text, i) => (
                 <Tag
                   key={i}
                   className="suggestion-tag"
@@ -480,33 +488,35 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 输入区域 */}
+      {/* 输入区域 — 参考样式：大圆角容器 + 底部工具栏 + 快捷指令 chips */}
       <div className="chat-input-area">
+        {/* 快捷指令 chips（参考样式：输入框上方快捷操作） */}
+        <div className="chat-quick-actions">
+          <button className="quick-action" onClick={() => handleFollowupClick('把饼图改成柱图')}>
+            <BarChartOutlined /> 改图表
+          </button>
+          <button className="quick-action" onClick={() => handleFollowupClick('分析异常原因')}>
+            <BulbOutlined /> 分析异常
+          </button>
+          <button className="quick-action" onClick={() => handleFollowupClick('筛选华东地区')}>
+            <RiseOutlined /> 筛选地区
+          </button>
+        </div>
+
         {/* 已上传图片预览 */}
         {uploadedImages.length > 0 && (
           <div className="chat-image-preview">
             {uploadedImages.map((img, index) => (
               <div key={index} className="chat-image-item">
                 <img src={img} alt={`upload-${index}`} />
-                <Button
-                  type="text"
-                  size="small"
-                  className="chat-image-remove"
-                  onClick={() => removeImage(index)}
-                >
-                  ×
-                </Button>
+                <button className="chat-image-remove" onClick={() => removeImage(index)}>×</button>
               </div>
             ))}
           </div>
         )}
-        <div className="chat-input-row">
-          <Button
-            type="text"
-            icon={<PictureOutlined />}
-            className="chat-upload-btn"
-            onClick={() => fileInputRef.current?.click()}
-          />
+
+        {/* 大圆角输入容器 + 底部工具栏 */}
+        <div className="chat-composer-box">
           <input
             ref={fileInputRef}
             type="file"
@@ -535,13 +545,28 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             autoSize={{ minRows: 1, maxRows: 4 }}
             className="chat-input"
           />
-          <Button
-            type="primary"
-            icon={isLoading ? <LoadingOutlined /> : <SendOutlined />}
-            onClick={() => sendMessage()}
-            disabled={inputStatus.disabled || isLoading || !inputValue.trim()}
-            loading={isLoading}
-          />
+          <div className="chat-composer-toolbar">
+            <button
+              type="button"
+              className="composer-tool"
+              title="上传图片"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <PictureOutlined />
+            </button>
+            <div className="composer-toolbar-right">
+              <span className="composer-hint-inline">Shift + Enter 换行</span>
+              <button
+                type="button"
+                className="composer-send"
+                onClick={() => sendMessage()}
+                disabled={inputStatus.disabled || isLoading || !inputValue.trim()}
+                title="发送"
+              >
+                {isLoading ? <LoadingOutlined /> : <SendOutlined />}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

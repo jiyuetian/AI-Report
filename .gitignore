@@ -48,3 +48,12 @@ htmlcov/
 
 # Alembic
 alembic.ini.bak
+
+# 运行时数据（SQLite 库 / 上传文件，勿入库）
+backend/data/
+
+# 临时调试脚本（勿入库）
+/_dbg*.py
+/_probe*.py
+backend/app/_scan.py
+backend/scripts/smoke_test_async_quality.py

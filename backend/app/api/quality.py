@@ -1,17 +1,87 @@
 """质检API - M1-08a/b 六类质检 + AI补充检测 + 清洗层写入"""
-from fastapi import APIRouter, HTTPException, status, Depends
+import time
+from typing import Optional, List, Dict
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from pydantic import BaseModel
-from typing import Optional, List
 
 from app.core.duckdb_manager import get_duckdb
 from app.core.quality_checker import QualityChecker
 from app.core.ai_quality_checker import AIQualityChecker
-from app.core.database import get_db
+from app.core.database import get_db, async_session_factory
 from app.models.quality import QualityIssue
 
 router = APIRouter(prefix="/quality", tags=["Quality"])
+
+# AI补充检测结果缓存：dataset_id -> {status: pending|running|done|failed, issues, ...}
+# 主质检接口秒回规则检测结果，AI补充检测在后台异步完成，前端轮询本缓存取结果
+_AI_RESULT_CACHE: Dict[str, Dict] = {}
+
+
+def _serialize_ai_issues(ai_result) -> List[Dict]:
+    """将AI检测结果对象序列化为与规则检测一致的扁平结构"""
+    out = []
+    for iss in ai_result.issues:
+        out.append({
+            "type": iss.type,
+            "severity": iss.severity,
+            "column": iss.column,
+            "row_count": iss.row_count,
+            "message": iss.message,
+            "detail": iss.detail,
+            "sample_values": iss.sample_values[:5],
+            "rule": iss.rule,
+            "source": "ai",
+            "repair_options": iss.repair_options or []
+        })
+    return out
+
+
+async def _run_ai_check_in_background(
+    dataset_id: str, table_name: str, columns: List[Dict], rule_issues: List[Dict]
+) -> None:
+    """
+    后台执行AI补充检测，结果写入缓存供前端轮询。
+    即使LLM慢或不可用，也只影响AI补充结果，不阻塞主质检返回。
+    """
+    cache = _AI_RESULT_CACHE.setdefault(dataset_id, {})
+    cache["status"] = "running"
+    try:
+        # 后台任务内重新获取DB连接与brain配置
+        db = get_duckdb()
+        brain_config = {
+            "null_threshold": 0.05,
+            "format_threshold": 0.05,
+            "duplicate_threshold": 0.01
+        }
+        ai_checker = AIQualityChecker(db, table_name, columns, brain_config)
+        ai_result = await ai_checker.analyze(existing_issues=rule_issues)
+
+        cache["status"] = "done"
+        cache["issues"] = _serialize_ai_issues(ai_result)
+        cache["summary"] = ai_result.summary
+        cache["finished_at"] = time.time()
+        print(f"[AI质检][{dataset_id}] 后台补充检测完成，发现 {len(ai_result.issues)} 个潜在问题")
+
+        # AI补充结果同步持久化到DB，保证历史与修复审计不丢
+        async with async_session_factory() as sql_db:
+            for iss in ai_result.issues:
+                sql_db.add(QualityIssue(
+                    dataset_id=dataset_id,
+                    field_name=iss.column,
+                    type=iss.type,
+                    severity=iss.severity,
+                    status="todo",
+                    message=iss.message,
+                    affect_rows=iss.row_count,
+                ))
+            await sql_db.commit()
+    except Exception as e:
+        _AI_RESULT_CACHE[dataset_id]["status"] = "failed"
+        _AI_RESULT_CACHE[dataset_id]["error"] = str(e)
+        _AI_RESULT_CACHE[dataset_id]["finished_at"] = time.time()
+        print(f"[AI质检][{dataset_id}] 后台补充检测失败: {e}")
 
 
 class QualityCheckRequest(BaseModel):
@@ -50,11 +120,17 @@ def get_cleaned_table(dataset_id: str) -> str:
 
 
 @router.post("/check")
-async def check_quality(request: QualityCheckRequest, sql_db: AsyncSession = Depends(get_db)):
+async def check_quality(
+    request: QualityCheckRequest,
+    sql_db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None
+):
     """
-    执行全量质检（规则检测 + AI补充检测）
+    执行质检（规则检测秒回 + AI补充检测后台异步）
     
-    读取清洗层数据（如果清洗层存在），否则读取原始层数据
+    规则检测是阻断主闸门（毫秒级），先返回；AI补充检测放到后台任务跑，
+    完成后前端通过 /quality/check/ai/{dataset_id} 轮询获取。
+    这样用户感知的质检结果从 ~53秒 降至接近秒回，且不牺牲AI功能。
     """
     dataset_id = request.dataset_id
     db = get_duckdb()
@@ -78,31 +154,22 @@ async def check_quality(request: QualityCheckRequest, sql_db: AsyncSession = Dep
             "duplicate_threshold": 0.01
         }
         
-        # 1. 规则检测
+        # 1. 规则检测（主闸门，毫秒级）
         checker = QualityChecker(db, brain_config)
         rule_result = checker.check_table(table_name, table_info["columns"])
         rule_issues = rule_result.get("issues", [])
         
-        # 2. AI补充检测
-        ai_checker = AIQualityChecker(db, table_name, table_info["columns"], brain_config)
-        ai_result = await ai_checker.analyze(existing_issues=rule_issues)
+        # 重置该数据集的AI缓存，并后台异步启动AI补充检测
+        _AI_RESULT_CACHE[dataset_id] = {"status": "running"}
+        if background_tasks is None:
+            # 防御：无后台任务上下文时同步兜底（极少触发）
+            await _run_ai_check_in_background(dataset_id, table_name, table_info["columns"], rule_issues)
+        else:
+            background_tasks.add_task(
+                _run_ai_check_in_background, dataset_id, table_name, table_info["columns"], rule_issues
+            )
         
-        ai_issues = []
-        for iss in ai_result.issues:
-            ai_issues.append({
-                "type": iss.type,
-                "severity": iss.severity,
-                "column": iss.column,
-                "row_count": iss.row_count,
-                "message": iss.message,
-                "detail": iss.detail,
-                "sample_values": iss.sample_values[:5],
-                "rule": iss.rule,
-                "source": "ai",
-                "repair_options": iss.repair_options or []
-            })
-        
-        all_issues = rule_issues + ai_issues
+        all_issues = rule_issues
         
         blocking_count = sum(1 for i in all_issues if i.get("severity") == "blocking")
         warning_count = len(all_issues) - blocking_count
@@ -124,15 +191,16 @@ async def check_quality(request: QualityCheckRequest, sql_db: AsyncSession = Dep
                 "by_type": by_type,
                 "can_proceed": blocking_count == 0,
                 "ai_analysis": {
-                    "ai_issues_count": len(ai_issues),
-                    "ai_analyzed": ai_result.summary.get("ai_analyzed", False),
-                    "llm_called": ai_result.summary.get("llm_called", False),
-                    "fallback_used": ai_result.summary.get("fallback_used", False)
+                    "status": "running",  # AI补充检测后台进行中
+                    "ai_issues_count": 0,
+                    "ai_analyzed": False,
+                    "llm_called": False,
+                    "fallback_used": False
                 }
             }
         }
         
-        # 保存质检结果到数据库
+        # 保存规则检测结果到数据库（AI结果由后台任务完成后追加）
         await sql_db.execute(
             update(QualityIssue)
             .where(QualityIssue.dataset_id == dataset_id)
@@ -161,6 +229,30 @@ async def check_quality(request: QualityCheckRequest, sql_db: AsyncSession = Dep
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"code": "CHECK_ERROR", "message": f"质检失败: {str(e)}"}
         )
+
+
+@router.get("/check/ai/{dataset_id}")
+async def get_ai_check_result(dataset_id: str):
+    """
+    轮询AI补充检测结果
+    
+    - status=running/pending: 仍在后台检测中
+    - status=done: AI检测完成，返回 issues
+    - status=failed: AI检测异常，返回 error（规则结果不受影响）
+    """
+    cache = _AI_RESULT_CACHE.get(dataset_id, {"status": "pending", "issues": []})
+    ai_issues = cache.get("issues", [])
+    blocking_count = sum(1 for i in ai_issues if i.get("severity") == "blocking")
+    return {
+        "dataset_id": dataset_id,
+        "status": cache.get("status", "pending"),
+        "issues": ai_issues,
+        "ai_issues_count": len(ai_issues),
+        "blocking_count": blocking_count,
+        "warning_count": len(ai_issues) - blocking_count,
+        "error": cache.get("error"),
+        "summary": cache.get("summary") or {},
+    }
 
 
 @router.get("/{dataset_id}/issues")

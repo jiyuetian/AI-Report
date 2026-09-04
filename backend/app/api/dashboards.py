@@ -189,6 +189,9 @@ async def get_dashboard_detail(
         "score": dashboard.score,
         "passed": dashboard.passed,
         "datasets": datasets_info,
+        # 前端渲染图表数据依赖 primary_dataset_id / dataset_ids（此前遗漏导致 /datasets/undefined/chart-data）
+        "primary_dataset_id": dashboard.primary_dataset_id,
+        "dataset_ids": dashboard.dataset_ids or [],
         "config": dashboard.config,
         "layout": dashboard.layout,
         "created_by": dashboard.created_by,

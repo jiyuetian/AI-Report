@@ -268,7 +268,8 @@ export default function DashboardOps({ id, title, onRename, onDelete }: Dashboar
 
   return (
     <div className="dash-ops">
-      <div className="dash-ops-back">
+      {/* 第一行：页面索引（独立成行，与看板内容区分） */}
+      <div className="dash-ops-crumb">
         <Breadcrumb
           items={[
             { title: <a onClick={() => nav('/dashboards')}>我的看板</a> },
@@ -277,34 +278,37 @@ export default function DashboardOps({ id, title, onRename, onDelete }: Dashboar
         />
       </div>
 
-      {editing ? (
-        <Input
-          className="dash-ops-title-input"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onPressEnter={commitRename}
-          onBlur={commitRename}
-          autoFocus
-          suffix={<Tag color="blue">回车保存</Tag>}
-        />
-      ) : (
-        <Tooltip title="点击编辑标题">
-          <h1 className="dash-ops-title" onClick={() => { setDraft(title); setEditing(true) }}>
-            {title} <EditOutlined className="dash-ops-title-edit" />
-          </h1>
-        </Tooltip>
-      )}
+      {/* 第二行：看板标题 + 操作按钮 */}
+      <div className="dash-ops-row">
+        {editing ? (
+          <Input
+            className="dash-ops-title-input"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onPressEnter={commitRename}
+            onBlur={commitRename}
+            autoFocus
+            suffix={<Tag color="blue">回车保存</Tag>}
+          />
+        ) : (
+          <Tooltip title="点击编辑标题">
+            <h1 className="dash-ops-title" onClick={() => { setDraft(title); setEditing(true) }}>
+              {title} <EditOutlined className="dash-ops-title-edit" />
+            </h1>
+          </Tooltip>
+        )}
 
-      <div className="dash-ops-spacer" />
+        <div className="dash-ops-spacer" />
 
-      <Space>
-        <Button icon={<ShareAltOutlined />} onClick={() => setShareOpen(true)}>分享</Button>
-        <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>导出</Button>
-        <Button icon={<HistoryOutlined />} onClick={() => setVersionOpen(true)}>版本</Button>
-        <Dropdown menu={menuItems} trigger={['click']}>
-          <Button icon={<MoreOutlined />}>操作</Button>
-        </Dropdown>
-      </Space>
+        <Space>
+          <Button icon={<ShareAltOutlined />} onClick={() => setShareOpen(true)}>分享</Button>
+          <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>导出</Button>
+          <Button icon={<HistoryOutlined />} onClick={() => setVersionOpen(true)}>版本</Button>
+          <Dropdown menu={menuItems} trigger={['click']}>
+            <Button icon={<MoreOutlined />}>操作</Button>
+          </Dropdown>
+        </Space>
+      </div>
 
       {/* C02 分享看板 */}
       <Modal title="分享看板" open={shareOpen} onCancel={() => setShareOpen(false)} footer={null} width={520}>

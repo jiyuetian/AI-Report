@@ -56,6 +56,17 @@
   margin-top: 16px;
 }
 
+.duration-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20px;
+  padding: 10px 16px;
+  background: #f5f8ff;
+  border: 1px solid #d6e4ff;
+  border-radius: 8px;
+}
+
 @media (max-width: 768px) {
   .loading-page {
     padding: 16px;

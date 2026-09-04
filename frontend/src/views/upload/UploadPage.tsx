@@ -71,6 +71,9 @@ export default function UploadPage() {
   // 各文件质检状态（用于Tab标记和全局摘要）
   const [qcStatusMap, setQcStatusMap] = useState<Record<string, QualityCheckStatus>>({})
 
+  // 各文件看板生成完成标记（持久化，返回本页时不再显示"待生成看板"）
+  const [genMap, setGenMap] = useState<Record<string, { done: boolean; dashboardId: string }>>({})
+
   // AI出图加载页
   const [loadingModalOpen, setLoadingModalOpen] = useState(false)
   const [loadingComplete, setLoadingComplete] = useState(false)
@@ -99,6 +102,7 @@ export default function UploadPage() {
         datasetMap,
         previewFailures: Object.fromEntries(Object.entries(previewFailures)),
         datasetErrors: Object.fromEntries(Object.entries(datasetErrors)),
+        genMap,
         activeFileId: activeFileId || (Object.keys(previewMap)[0] || null),
       }
       localStorage.setItem(SESSION_KEY, JSON.stringify(session))
@@ -122,6 +126,7 @@ export default function UploadPage() {
       setDatasetMap(session.datasetMap || {})
       setPreviewFailures(session.previewFailures || {})
       setDatasetErrors(session.datasetErrors || {})
+      setGenMap(session.genMap || {})
       if (session.activeFileId) {
         setActiveFileId(session.activeFileId)
       }
@@ -139,6 +144,7 @@ export default function UploadPage() {
     setPreviewMap({})
     setDatasetMap({})
     setPreviewFailures({})
+    setGenMap({})
     setActiveFileId(null)
     setSessionRestored(false)
     setAbandonModalOpen(false)
@@ -155,7 +161,27 @@ export default function UploadPage() {
     if (fileList.some(f => f.status === 'done') || Object.keys(previewMap).length > 0) {
       saveSession()
     }
-  }, [fileList, previewMap, datasetMap, previewFailures, activeFileId])
+  }, [fileList, previewMap, datasetMap, previewFailures, activeFileId, genMap])
+
+  // 恢复会话后：若该数据集存在未结束的后台生成任务(run_id)，自动重新打开生成弹窗
+  // 解决"提交生成看板后离开页面，回来弹窗消失、进度丢失、需重新开始"的问题
+  const autoRestoredDsRef = useRef<string>('')
+  useEffect(() => {
+    if (!sessionRestored) return
+    // 等待 activeFileId 与 datasetMap 就绪后再判定
+    const fid = activeFileId || Object.keys(datasetMap)[0]
+    const dsId = fid ? datasetMap[fid] : ''
+    if (!dsId) return
+    if (autoRestoredDsRef.current === dsId) return
+    // 该文件看板已生成完成，无需再自动重开弹窗
+    if (fid && genMap[fid]?.done) return
+    const storedRunId = localStorage.getItem(`brain_run_${dsId}`)
+    if (storedRunId) {
+      // 任务已完成且已查看过看板时，run_id 会被清除；存在即表示还有可恢复的进度/结果
+      autoRestoredDsRef.current = dsId
+      setLoadingModalOpen(true)
+    }
+  }, [sessionRestored, activeFileId, datasetMap])
 
   // ====== 结束问题5 ======
 
@@ -423,24 +449,38 @@ export default function UploadPage() {
       }
 
     } catch (error) {
-      if ((error as Error).name === 'AbortError') {
+      const err = error as any
+      if (err?.name === 'AbortError') {
         // 用户取消
         setFileList(prev => prev.filter(item => item.uid !== uid))
       } else {
+        // 判定是否为网络/后端不可用，避免把"服务器挂了"误报成"文件格式不对"
+        const rawMsg = String(err?.message || '')
+        const isNetwork =
+          err instanceof TypeError ||
+          /failed to fetch|networkerror|network error|fetch failed|connect/i.test(rawMsg) ||
+          rawMsg.includes('network')
+        const code = isNetwork ? 'NETWORK_ERROR' : 'UPLOAD_FAIL'
+        const msg = isNetwork
+          ? '无法连接服务器，请检查后端服务是否已启动后重试'
+          : (rawMsg && !/failed to fetch/i.test(rawMsg)
+              ? rawMsg
+              : '文件解析失败，请确认文件内容为规范表格数据后重试')
+
         setFileList(prev => prev.map(item => 
           item.uid === uid ? { 
             ...item, 
             status: 'error',
-            errorCode: 'NETWORK_ERROR',
-            errorMessage: '网络错误，上传失败'
+            errorCode: code,
+            errorMessage: msg
           } : item
         ))
         
-        // 兜底错误弹窗
+        // 错误弹窗（区分网络错误与文件错误）
         setErrorModal({
           visible: true,
-          code: 'UPLOAD_FAIL',
-          message: '文件无法识别，请下载模板后重试',
+          code,
+          message: msg,
           fileName: file.name
         })
       }
@@ -624,7 +664,7 @@ export default function UploadPage() {
         size="small"
         direction="horizontal"
         responsive={false}
-        current={activePreview ? 2 : doneFiles.length > 0 ? 1 : 0}
+        current={activeFileId && genMap[activeFileId]?.done ? 3 : activePreview ? 2 : doneFiles.length > 0 ? 1 : 0}
         style={{ marginTop: 16, marginBottom: 8 }}
         items={[
           { title: '上传文件' },
@@ -788,17 +828,26 @@ export default function UploadPage() {
                 <p style={{ marginTop: 8 }}>支持的格式：<Tag>.xlsx</Tag> <Tag>.xls</Tag> <Tag>.csv</Tag></p>
               </>
             )}
-            {(errorModal.code === 'UPLOAD_FAIL' || errorModal.code === 'NETWORK_ERROR') && (
+            {errorModal.code === 'UPLOAD_FAIL' && (
               <>
-                <Tag color="error">{errorModal.code}</Tag>
+                <Tag color="error">UPLOAD_FAIL</Tag>
                 <p>文件无法识别</p>
                 <p>{errorModal.message}</p>
               </>
             )}
+            {errorModal.code === 'NETWORK_ERROR' && (
+              <>
+                <Tag color="error">NETWORK_ERROR</Tag>
+                <p>上传失败：无法连接服务器</p>
+                <p>{errorModal.message}</p>
+              </>
+            )}
           </div>
-          <p style={{ marginTop: 16, color: '#666', fontSize: 12 }}>
-            💡 提示：请按照标准模板格式上传数据
-          </p>
+          {errorModal.code !== 'NETWORK_ERROR' && (
+            <p style={{ marginTop: 16, color: '#666', fontSize: 12 }}>
+              💡 提示：请按照标准模板格式上传数据
+            </p>
+          )}
         </div>
       </Modal>
 
@@ -926,6 +975,9 @@ export default function UploadPage() {
                   {datasetMap[activeFileId] && !qcStatusMap[activeFileId]?.checked && (
                     <Tag color="green">数据集已就绪</Tag>
                   )}
+                  {genMap[activeFileId]?.done && (
+                    <Tag color="success" icon={<CheckCircleOutlined />}>看板已生成</Tag>
+                  )}
                 </Space>
               }
               extra={
@@ -991,7 +1043,32 @@ export default function UploadPage() {
               </div>
 
                 {
-                (activeFileId && datasetMap[activeFileId]) ? (
+                (genMap[activeFileId]?.done) ? (
+                  <div className="file-section" style={{ textAlign: 'center', padding: '32px 0' }}>
+                    <CheckCircleOutlined style={{ fontSize: 44, color: '#52c41a' }} />
+                    <h3 style={{ margin: '12px 0 4px', fontWeight: 600, fontSize: 18 }}>看板已生成</h3>
+                    <Text type="secondary">该报表已完成看板生成，可直接查看或重新生成</Text>
+                    <div style={{ marginTop: 18 }}>
+                      <Space>
+                        {genMap[activeFileId]?.dashboardId && (
+                          <Button
+                            type="primary"
+                            icon={<FileTextOutlined />}
+                            onClick={() => { window.location.href = `/dashboard?id=${genMap[activeFileId].dashboardId}` }}
+                          >
+                            查看看板
+                          </Button>
+                        )}
+                        <Button
+                          icon={<ReloadOutlined />}
+                          onClick={() => setGenMap(prev => { const n = { ...prev }; delete n[activeFileId!]; return n })}
+                        >
+                          重新生成看板
+                        </Button>
+                      </Space>
+                    </div>
+                  </div>
+                ) : (activeFileId && datasetMap[activeFileId]) ? (
                   <QualityCheckPanel
                     fileId={activeFileId}
                     fileName={previewMap[activeFileId]?.fileName}
@@ -1090,8 +1167,9 @@ export default function UploadPage() {
         footer={null}
         centered
         width={Math.min(720, (typeof window !== 'undefined' ? window.innerWidth : 720) - 48)}
-        closable={!loadingComplete}
+        closable
         maskClosable={false}
+        keyboard={false}
         destroyOnClose
         styles={{
           body: { padding: '24px 24px', maxHeight: 'calc(100vh - 140px)', overflowY: 'auto' },
@@ -1107,11 +1185,22 @@ export default function UploadPage() {
           onComplete={(dashboardId: string) => {
             setLoadingComplete(true)
             setLoadingModalOpen(false)
-            const targetId = dashboardId || datasetMap[activeFileId || '']
+            // 记录该文件看板已生成（持久化），返回本页时显示"已生成看板"而非"待生成看板"
+            const doneFid = activeFileId || Object.keys(datasetMap)[0] || ''
+            const doneDsId = datasetMap[doneFid] || ''
+            if (doneFid) {
+              setGenMap(prev => ({ ...prev, [doneFid]: { done: true, dashboardId: dashboardId || '' } }))
+            }
+            if (doneDsId) {
+              localStorage.removeItem(`brain_run_${doneDsId}`)
+            }
+            const targetId = dashboardId && dashboardId.startsWith('dash_') ? dashboardId : ''
             setTimeout(() => {
               if (targetId) {
                 window.location.href = `/dashboard?id=${targetId}`
               } else {
+                // 生成未返回有效看板ID：留在列表也提示（用 message）
+                message.info('看板已生成，但未返回有效看板ID，已跳转到看板列表')
                 window.location.href = '/dashboard'
               }
             }, 500)

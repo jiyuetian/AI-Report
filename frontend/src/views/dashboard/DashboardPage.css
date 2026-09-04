@@ -23,6 +23,64 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  transition: width 0.3s ease, opacity 0.3s ease, min-width 0.3s ease;
+}
+
+/* 折叠对话面板 → 看板全屏 */
+.dashboard-with-chat.chat-collapsed .dashboard-chat-sidebar {
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dashboard-with-chat.chat-collapsed .dashboard-main {
+  padding-right: 16px;
+}
+
+/* 折叠后悬浮的"展开对话"按钮（吸附右侧） */
+.chat-reopen-zone {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.chat-reopen-btn {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #ececf0;
+  border-right: 0;
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  color: #4c6ef5;
+  transition: all 0.2s;
+}
+
+.chat-reopen-btn:hover {
+  background: #4c6ef5;
+  color: #fff;
+}
+
+.reopen-icon {
+  font-size: 16px;
+}
+
+.reopen-text {
+  font-size: 12px;
+  font-weight: 500;
+  writing-mode: horizontal-tb;
+  white-space: nowrap;
 }
 
 .dashboard-chat-sidebar .chat-panel {
@@ -106,6 +164,8 @@
 
 .kpi-content {
   padding: 8px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .kpi-header {
@@ -113,15 +173,28 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .kpi-title {
   color: #666;
   font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kpi-value {
   margin-bottom: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.kpi-value .ant-statistic-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kpi-change {

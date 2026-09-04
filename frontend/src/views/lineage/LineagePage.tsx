@@ -8,15 +8,14 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   Card, Input, Button, Tabs, Tag, Empty, Spin, 
   Tree, Badge, Tooltip, Drawer, List, Statistic, Row, Col,
-  message, Segmented, Typography, Space
+  message, Segmented, Typography
 } from 'antd';
 import { 
   ArrowLeftOutlined, SearchOutlined, FileOutlined, DatabaseOutlined, 
   ToolOutlined, CalculatorOutlined, BarChartOutlined,
   CheckCircleOutlined, WarningOutlined, 
   QuestionCircleOutlined, SyncOutlined,
-  ShareAltOutlined, InfoCircleOutlined,
-  CloseOutlined, MessageOutlined
+  ShareAltOutlined, InfoCircleOutlined
 } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts';
@@ -24,6 +23,7 @@ import * as echarts from 'echarts';
 (window as any).echarts = echarts;
 import './LineagePage.css';
 import { http } from '../../utils/request';
+import ChatPanel from '../../components/chat/ChatPanel';
 
 const { TabPane } = Tabs;
 const { Search } = Input;
@@ -486,36 +486,11 @@ const LineagePage: React.FC = () => {
           )}
         </div>
 
-        {/* 血缘问答右侧面板 */}
+        {/* 血缘问答右侧面板 — 复用统一 AI 助手样式（同一套标准） */}
         {chatPanelVisible && (
-          <Card className="chat-panel" title={
-            <Space>
-              <MessageOutlined />
-              <span>血缘智能问答</span>
-            </Space>
-          } extra={
-            <Button type="text" icon={<CloseOutlined />} onClick={() => setChatPanelVisible(false)} />
-          }>
-            <div className="lineage-chat">
-              <div className="chat-messages">
-                <div className="chat-message assistant">
-                  <p>您好！我是血缘助手，可以帮您：</p>
-                  <ul>
-                    <li>查询字段来源</li>
-                    <li>分析变更影响</li>
-                    <li>解释业务口径</li>
-                  </ul>
-                  <p>请问有什么可以帮您？</p>
-                </div>
-              </div>
-              <div className="chat-input">
-                <Input.Search
-                  placeholder="例如：担保金额字段从哪里来的？"
-                  enterButton="发送"
-                />
-              </div>
-            </div>
-          </Card>
+          <div className="lineage-chat-panel">
+            <ChatPanel />
+          </div>
         )}
       </div>
 

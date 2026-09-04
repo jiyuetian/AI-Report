@@ -1,20 +1,40 @@
 .dash-ops {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0 20px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.dash-ops-crumb {
+  font-size: 13px;
+  color: var(--text-3, rgba(0, 0, 0, 0.45));
+  display: flex;
+  align-items: center;
+}
+.dash-ops-crumb .ant-breadcrumb li {
+  line-height: 1.4;
+}
+.dash-ops-row {
+  display: flex;
   align-items: center;
   gap: 16px;
-  padding: 4px 0 16px;
+  min-width: 0;
 }
-.dash-ops-back { font-size: 14px; }
 .dash-ops-title {
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
   margin: 0;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
-.dash-ops-title-edit { font-size: 14px; color: var(--text-3, rgba(0,0,0,.45)); }
+.dash-ops-title-edit { font-size: 14px; color: var(--text-3, rgba(0, 0, 0, 0.45)); }
 .dash-ops-title:hover .dash-ops-title-edit { color: var(--primary, #1677ff); }
-.dash-ops-title-input { max-width: 360px; }
+.dash-ops-title-input { max-width: 420px; }
 .dash-ops-spacer { flex: 1; }

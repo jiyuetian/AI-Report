@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Card, Button, Tag, Table, Modal, Radio, Input, Space, Divider, Alert, message, Typography, Empty } from 'antd'
 import {
   CheckCircleOutlined, WarningOutlined, CloseCircleOutlined,
-  ToolOutlined, ArrowRightOutlined, ReloadOutlined, ThunderboltOutlined,
+  ToolOutlined, ArrowRightOutlined, ReloadOutlined, ThunderboltOutlined, LoadingOutlined,
 } from '@ant-design/icons'
 
 // 后端返回的单个问题结构
@@ -138,6 +138,73 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
   const [state, setState] = useState<CheckState>(() => getStateForFile(fileId, groupIssuesByType([])))
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState(false)
+  const [aiStatus, setAiStatus] = useState<'idle' | 'running' | 'done' | 'failed'>('idle')
+
+  // 供轮询回调读取最新状态，避免闭包拿到过期值
+  const stateRef = useRef(state)
+  useEffect(() => { stateRef.current = state }, [state])
+  const aiIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // 同步状态（依赖fileId，确保状态落在正确文件下）
+  const updateState = useCallback((newState: CheckState) => {
+    setState(newState)
+    saveStateForFile(fileId, newState.checks, newState.fixedKeys)
+  }, [fileId])
+
+  // 组件卸载时清理轮询
+  useEffect(() => {
+    return () => {
+      if (aiIntervalRef.current) clearInterval(aiIntervalRef.current)
+    }
+  }, [])
+
+  // 将AI补充检测结果合并进面板（规则结果已显示，无需重新请求）
+  const mergeAiResult = useCallback((newAiIssues: ApiQualityIssue[]) => {
+    const cur = stateRef.current
+    const nonAi = cur.checks.flatMap(c => c.issues).filter(i => i.type !== 'ai')
+    const grouped = groupIssuesByType([...nonAi, ...newAiIssues])
+    const next = { checks: grouped, fixedKeys: cur.fixedKeys }
+    updateState(next)
+    stateRef.current = next
+  }, [updateState])
+
+  // 轮询AI补充检测结果（后台任务完成后自动合并）
+  const pollAiResult = useCallback((dsId: string) => {
+    if (aiIntervalRef.current) clearInterval(aiIntervalRef.current)
+    let attempts = 0
+    const MAX_ATTEMPTS = 45  // ~90秒后停止轮询
+    const timer = setInterval(async () => {
+      attempts++
+      try {
+        const res = await fetch(`${API_BASE}/quality/check/ai/${dsId}`)
+        const data = await res.json()
+        if (data.status === 'done') {
+          clearInterval(timer)
+          aiIntervalRef.current = null
+          setAiStatus('done')
+          const issues = (data.issues || []) as ApiQualityIssue[]
+          mergeAiResult(issues)
+          if (data.ai_issues_count > 0) {
+            message.info(`AI补充检测完成，发现 ${data.ai_issues_count} 个潜在问题`)
+          }
+        } else if (data.status === 'failed') {
+          clearInterval(timer)
+          aiIntervalRef.current = null
+          setAiStatus('failed')
+          message.warning(`AI补充检测暂不可用：${data.error || '未知原因'}（规则检测结果不受影响）`)
+        }
+        // running/pending：继续轮询
+      } catch (e) {
+        // 瞬态请求错误忽略，继续轮询
+      }
+      if (attempts >= MAX_ATTEMPTS) {
+        clearInterval(timer)
+        aiIntervalRef.current = null
+        setAiStatus(s => (s === 'idle' || s === 'running') ? 'failed' : s)
+      }
+    }, 2000)
+    aiIntervalRef.current = timer
+  }, [mergeAiResult])
   const [fixModal, setFixModal] = useState<{
     open: boolean
     checkKey: string
@@ -145,15 +212,15 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
   }>({ open: false, checkKey: '', issue: null })
   const [selectedStrategy, setSelectedStrategy] = useState('')
   const [customValue, setCustomValue] = useState('')
+  const [fixing, setFixing] = useState(false)
   
-  // 同步状态
-  const updateState = (newState: CheckState) => {
-    setState(newState)
-    saveStateForFile(fileId, newState.checks, newState.fixedKeys)
-  }
-  
-  // 切换文件时同步质检状态
+  // 切换文件时同步质检状态，并清理上一文件的AI轮询
   useEffect(() => {
+    if (aiIntervalRef.current) {
+      clearInterval(aiIntervalRef.current)
+      aiIntervalRef.current = null
+    }
+    setAiStatus('idle')
     const existing = getStateForFile(fileId, groupIssuesByType([]))
     setState(existing)
   }, [fileId])
@@ -187,27 +254,35 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
     }
   }, [hasBlockingErrors, totalIssues, passCount, state.checks.length, checked])
   
-  // 重新质检 — 调用后端API获取最新结果
+  // 重新质检 — 规则检测秒回，AI补充检测后台异步合并
   const runCheck = useCallback(async () => {
     if (!datasetId) {
       message.warning('数据集未创建，请等待预览完成')
       return
     }
     setChecking(true)
+    setAiStatus('running')
+    message.loading({ content: '正在进行规则质检（秒级），AI补充检测后台进行中...', key: 'qc', duration: 0 })
+    // 规则检测很快，仅保留45秒兜底超时，避免按钮卡在loading
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 45000)
     try {
       const response = await fetch(`${API_BASE}/quality/check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataset_id: datasetId })
+        body: JSON.stringify({ dataset_id: datasetId }),
+        signal: ctrl.signal,
       })
       const data = await response.json()
       
       if (!response.ok) {
+        message.destroy('qc')
         message.error(data.detail?.message || '质检失败')
+        setAiStatus('failed')
         return
       }
       
-      // 后端返回扁平化issues，分组处理
+      // 后端秒回规则检测结果，分组处理
       const apiIssues: ApiQualityIssue[] = data.issues || []
       const grouped = groupIssuesByType(apiIssues)
       
@@ -217,23 +292,26 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       }
       
       updateState(newState)
+      stateRef.current = newState
       setChecked(true)
       
-      // 提示AI分析情况
-      if (data.summary?.ai_analysis) {
-        const ai = data.summary.ai_analysis
-        if (ai.ai_issues_count > 0) {
-          message.info(`AI补充检测完成，发现 ${ai.ai_issues_count} 个潜在问题`)
-        }
+      message.destroy('qc')
+      message.success(`规则质检完成（${fileName || fileId}），AI补充检测后台进行中`)
+      // 启动后台轮询，AI结果就绪后自动合并进面板
+      pollAiResult(datasetId)
+    } catch (error: any) {
+      message.destroy('qc')
+      if (error?.name === 'AbortError') {
+        message.error('质检超时，请重试')
+      } else {
+        message.error('质检请求失败')
       }
-      
-      message.success(`质检完成（${fileName || fileId}）`)
-    } catch (error) {
-      message.error('质检请求失败')
+      setAiStatus('failed')
     } finally {
+      clearTimeout(timer)
       setChecking(false)
     }
-  }, [fileId, fileName, datasetId])
+  }, [fileId, fileName, datasetId, pollAiResult])
   
   const openFix = (checkKey: string, issue: ApiQualityIssue) => {
     setFixModal({ open: true, checkKey, issue })
@@ -242,16 +320,19 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
     setCustomValue('')
   }
   
-  // 修复 — 调用后端修复API，标记该问题为已修复
+  // 修复 — 调用后端修复API；立即给出反馈，后端失败明确报错，不误报成功
   const applyFix = async () => {
     const { checkKey, issue } = fixModal
     if (!issue || !datasetId) {
       message.error('参数错误')
       return
     }
-    
+
+    // 立即反馈：按钮loading + 持续loading提示，避免"点了没反应"
+    setFixing(true)
+    message.loading({ content: '正在应用修复方案，请稍候...', key: 'fix', duration: 0 })
     try {
-      await fetch(`${API_BASE}/quality/fix`, {
+      const response = await fetch(`${API_BASE}/quality/fix`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -261,11 +342,21 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
           fix_strategy: selectedStrategy,
         })
       })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setFixing(false)
+        message.destroy('fix')
+        message.error(data.detail?.message || '修复失败，请重试')
+        return  // 保留弹窗与问题，不误标成功
+      }
     } catch (e) {
-      console.warn('后端修复调用失败，继续本地标记:', e)
+      setFixing(false)
+      message.destroy('fix')
+      message.error('修复请求失败（网络异常），请重试')
+      return
     }
-    
-    // 本地更新状态：移除该问题
+
+    // 后端修复成功 → 本地更新状态：移除该问题
     const newChecks = state.checks.map(check => {
       if (check.key === checkKey) {
         // 移除该问题
@@ -280,16 +371,18 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       }
       return check
     })
-    
+
     const newFixedKeys = new Set(state.fixedKeys)
     newFixedKeys.add(`${checkKey}-${issue.column}`)
-    
+
     updateState({
       checks: newChecks,
       fixedKeys: newFixedKeys,
     })
-    
+
+    message.destroy('fix')
     setFixModal({ open: false, checkKey: '', issue: null })
+    setFixing(false)
     message.success(`已修复 ${issue.column}，问题移除`)
   }
   
@@ -332,6 +425,23 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       extra={<Button icon={<ReloadOutlined />} loading={checking} onClick={runCheck}>重新质检</Button>}
       style={{ marginTop: 0 }}
     >
+      {(aiStatus === 'running' || aiStatus === 'idle') && checked && (
+        <Alert
+          type="info"
+          icon={<LoadingOutlined spin />}
+          showIcon
+          message="规则检测已完成；AI补充检测正在后台进行，结果就绪后会自动补充到下方"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      {aiStatus === 'failed' && (
+        <Alert
+          type="warning"
+          showIcon
+          message="AI补充检测暂不可用，当前显示为规则检测结果（阻断性判定不受影响）"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       {hasBlockingErrors && (
         <Alert
           type="error"
@@ -471,7 +581,7 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
           <Button key="cancel" onClick={() => setFixModal({ open: false, checkKey: '', issue: null })}>
             取消
           </Button>,
-          <Button key="apply" type="primary" icon={<ThunderboltOutlined />} onClick={applyFix}>
+          <Button key="apply" type="primary" icon={<ThunderboltOutlined />} loading={fixing} disabled={fixing} onClick={applyFix}>
             应用修复方案
           </Button>,
         ]}

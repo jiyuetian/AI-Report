@@ -32,11 +32,13 @@ def _resolve_db_url() -> str:
 
 
 # 创建异步引擎
-engine = create_async_engine(
-    _resolve_db_url(),
-    echo=settings.DEBUG,
-    future=True
-)
+_ENGINE_URL = _resolve_db_url()
+_ENGINE_KWARGS = {"echo": settings.DEBUG, "future": True}
+# SQLite：提升 busy_timeout，避免并发写锁导致 "database is locked"（默认5秒在同时跑质检+生成时过短）
+if _ENGINE_URL.startswith("sqlite"):
+    _ENGINE_KWARGS["connect_args"] = {"timeout": 30}
+
+engine = create_async_engine(_ENGINE_URL, **_ENGINE_KWARGS)
 
 # 创建异步会话工厂
 async_session_factory = async_sessionmaker(

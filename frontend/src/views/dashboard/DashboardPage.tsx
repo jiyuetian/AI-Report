@@ -3,16 +3,15 @@
  * L1 KPI卡 + L2趋势/分布/对比 + L3明细 + 右侧血缘问答
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Row, Col, Card, Statistic, Badge, Spin, Empty, Table, message, Typography, Breadcrumb } from 'antd';
 import ReactECharts from 'echarts-for-react';
-import { WarningOutlined, RiseOutlined, FallOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { WarningOutlined, RiseOutlined, FallOutlined, ArrowLeftOutlined, BulbOutlined } from '@ant-design/icons';
 import { http } from '../../utils/request';
 import './DashboardPage.css';
 import ChatPanel from '../../components/chat/ChatPanel';
 import DashboardOps from './DashboardOps';
-import { API_BASE } from '../../utils/request';
 
 // KPI卡片组件
 interface KPICardProps {
@@ -39,6 +38,11 @@ const KPICard: React.FC<KPICardProps> = ({
   const trendIcon = trend === 'up' ? <RiseOutlined style={{color: '#52c41a'}} /> : 
                    trend === 'down' ? <FallOutlined style={{color: '#ff4d4f'}} /> : null;
 
+  // 金额过长时自适应缩小字号，避免数字溢出卡片
+  const displayText = `${prefix ?? ''}${value ?? ''}${suffix ?? ''}`;
+  const len = String(displayText).length;
+  const valueFont = len >= 16 ? 20 : len >= 11 ? 24 : 28;
+
   return (
     <Card 
       className={`kpi-card ${warning ? 'kpi-card-warning' : ''}`}
@@ -64,7 +68,7 @@ const KPICard: React.FC<KPICardProps> = ({
             value={value}
             prefix={prefix}
             suffix={suffix}
-            valueStyle={{fontSize: '28px', fontWeight: 'bold'}}
+            valueStyle={{fontSize: valueFont, fontWeight: 'bold', whiteSpace: 'nowrap'}}
           />
         </div>
         
@@ -103,7 +107,102 @@ interface DashboardConfig {
   score: number;
 }
 
-const API_ROOT = API_BASE;
+// ======== 稳健图表数据解析 helper（弱化 LLM 字段映射不准的影响）========
+
+/** 把任意日期样字符串规约为 YYYY-MM（无法识别返回 null） */
+function guessMonth(v: any): string | null {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  // YYYY年MM月DD日
+  let m = s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日?$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  // YYYY年MM
+  m = s.match(/^(\d{4})年(\d{1,2})月?$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  // YYYY-MM-DD / YYYY/MM/DD
+  m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T].*)?$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  // YYYY-MM
+  m = s.match(/^(\d{4})[-/年](\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  // YYYY-MM-DD 末尾带中文
+  m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[\u4e00-\u9fff ]+$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
+  if (/^\d{4}$/.test(s)) return s;
+  return null;
+}
+
+/** 数值字段集合 */
+function numericFieldSet(chartData: any): Set<string> {
+  return new Set(Object.keys(chartData?.numeric_stats || {}));
+}
+
+/** 是否为"风险/异常"取值（用于文本指标计算比率） */
+function isRiskValue(v: any): boolean {
+  const s = String(v ?? '').trim();
+  if (!s || s === '未知') return false;
+  if (s.includes('正常') || s.includes('按时') || s.includes('健康')) return false;
+  return true;
+}
+
+/** 去掉数值格式化后的尾零/小数点 */
+function trimNum(x: string): string {
+  return x.replace(/\.?0+$/, '').replace(/\.$/, '');
+}
+
+/** 为饼图/分布图解析真正的分类维度列名 */
+function resolveCategoricalDim(chart: ChartConfig, chartData: any): string | null {
+  const title = chart.title || '';
+  const x = chart.category_field || chart.x_field || '';
+  const numFields = numericFieldSet(chartData);
+  const columns = chartData?.columns || [];
+  const cand = columns.filter((c: string) => !numFields.has(c));
+  if (!cand.length) {
+    return columns.includes(x) ? x : columns[0] || null;
+  }
+  const dist = chartData?.categorical_stats || {};
+  if (x && cand.includes(x)) return x;
+  const byName = cand.find((c: string) => title.includes(c));
+  if (byName) return byName;
+  let best: string | null = null;
+  let bestS = -Infinity;
+  let bestCard = Infinity;
+  const kw = ['类型', '分类', '类别', '地区', '区域', '省份', '城市', '状态', '阶段', '担保', '抵押', '贷款', '方式', '性质'];
+  for (const c of cand) {
+    let s = 0;
+    for (const k of kw) {
+      if (c.includes(k) && title.includes(k)) s += 4;
+    }
+    if (/分布|构成|占比|结构|分类|类型/.test(title) && /类型|类别|分类|担保|抵押|地区|贷款|状态|阶段/.test(c)) s += 3;
+    if (c === '贷款类型') s += 6;
+    if (c === '担保类型') s += 6;
+    if (c === '地区' || c === '区域' || c === '省份') s += 4;
+    if (/状态|阶段|类别/.test(c) && /状态|阶段|类别/.test(title)) s += 2;
+    const card = (dist[c] && dist[c].length) || 0;
+    if (s > bestS || (s === bestS && (card < bestCard || bestCard === Infinity))) {
+      best = c;
+      bestS = s;
+      bestCard = card;
+    }
+  }
+  return best || x || columns[0] || null;
+}
+
+/** 大数字紧凑格式化（万元/亿元），避免卡片溢出 */
+function formatCompact(val: number, fmt?: string): { value: any; prefix?: string; suffix?: string } {
+  if (typeof val !== 'number' || isNaN(val)) return { value: '--' };
+  const a = Math.abs(val);
+  if (fmt === 'currency') {
+    const prefix = '¥';
+    if (a >= 1e8) return { value: trimNum((val / 1e8).toFixed(2)) + '亿', prefix };
+    if (a >= 1e4) return { value: trimNum((val / 1e4).toFixed(2)) + '万', prefix };
+    return { value: Number.isInteger(val) ? val.toLocaleString() : val, prefix };
+  }
+  if (fmt === 'percent') return { value, suffix: '%' };
+  if (a >= 1e8) return { value: trimNum((val / 1e8).toFixed(2)) + '亿' };
+  if (a >= 1e7) return { value: trimNum((val / 1e4).toFixed(1)) + '万' };
+  return { value: Number.isInteger(val) ? val.toLocaleString() : val };
+}
 
 const DashboardPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -112,6 +211,7 @@ const DashboardPage: React.FC = () => {
   const [config, setConfig] = useState<DashboardConfig | null>(null);
   const [title, setTitle] = useState('看板');
   const [chartData, setChartData] = useState<any>(null);
+  const [chatCollapsed, setChatCollapsed] = useState(false); // 折叠右侧对话，看板全屏
 
   // 处理AI动作（对话调整）
   const handleAction = useCallback((action: any) => {
@@ -247,7 +347,7 @@ const DashboardPage: React.FC = () => {
     if (changed) {
       setConfig(newConfig);
       // 保存到后端
-      http.patch(`${API_ROOT}/dashboards/${urlId}`, { config: newConfig })
+      http.patch(`/dashboards/${urlId}`, { config: newConfig })
         .catch((err: any) => console.warn('保存配置到后端失败:', err));
     }
   }, [config, urlId]);
@@ -273,7 +373,7 @@ const DashboardPage: React.FC = () => {
         }
         
         // 1. 加载看板配置（标题、图表列表）
-        const dashboardRes = await http.get<any>(`${API_ROOT}/dashboards/${urlId}`);
+        const dashboardRes = await http.get<any>(`/dashboards/${urlId}`);
         if (dashboardRes?.name) {
           setTitle(dashboardRes.name);
         }
@@ -281,8 +381,13 @@ const DashboardPage: React.FC = () => {
           setConfig(dashboardRes.config);
         }
         
-        // 2. 加载图表实际数据
-        const dataRes = await http.get<any>(`${API_ROOT}/datasets/${dashboardRes.primary_dataset_id}/chart-data`);
+        // 2. 主数据集ID（详情接口已返回；若缺失则回退到 datasets/dataset_ids）
+        const primaryDs =
+          dashboardRes.primary_dataset_id ||
+          dashboardRes.dataset_ids?.[0] ||
+          dashboardRes.datasets?.[0]?.id;
+        // 3. 加载图表实际数据
+        const dataRes = await http.get<any>(`/datasets/${primaryDs}/chart-data`);
         if (dataRes) {
           setChartData(dataRes);
         }
@@ -301,6 +406,29 @@ const DashboardPage: React.FC = () => {
     loadDashboard();
     return () => { mounted = false; };
   }, [urlId]);
+
+  // 有效图表列表：在LLM编排结果基础上，自动补足"贷款类型/地区/担保类型"分布图（如缺失）
+  const effectiveCharts = useMemo(() => {
+    if (!config) return config?.charts || [];
+    const base = config.charts || [];
+    if (!chartData?.columns?.length) return base;
+    const covered = new Set<string>();
+    base.forEach((c: any) => {
+      if (c.chart_type !== 'kpi') covered.add(c.x_field || c.category_field || '');
+    });
+    const want = ['贷款类型', '地区', '担保类型'];
+    const auto: any[] = [];
+    for (const w of want) {
+      if (
+        chartData.columns.includes(w) &&
+        !covered.has(w) &&
+        !base.some((c: any) => (c.title || '').includes(w))
+      ) {
+        auto.push({ chart_type: 'pie', title: `${w}分布`, x_field: w, _auto: true });
+      }
+    }
+    return auto.length ? [...base, ...auto] : base;
+  }, [config, chartData]);
 
   // 根据配置和真实数据生成ECharts option
   const generateChartOption = (chart: ChartConfig) => {
@@ -322,26 +450,66 @@ const DashboardPage: React.FC = () => {
         return {};
       
       case 'line': {
-        // 折线图：x_field = 日期，y_field = 数值
-        const xValues = [...new Set(data.map((r: any) => r[x_field || '']))].filter(v => v != null && v !== '');
-        const yData = data.map((r: any) => {
-          const yVal = parseFloat(String(r[y_field || '']));
-          return isNaN(yVal) ? null : yVal;
-        }).filter((v: any) => v !== null);
-        
-        const xAxisData = xValues.slice(0, 50);
-        const seriesData = yData.slice(0, 50);
-        
+        // 折线图：x=日期(按月份规约)，y=数值指标；若 y 为文本状态则计算"风险占比"或"计数量"
+        const xF = x_field || '';
+        const yF = y_field || '';
+        const numFields = numericFieldSet(chartData);
+        const numY = !!yF && numFields.has(yF);
+
+        // 按月份分桶
+        const measureMap = new Map<string, number[]>(); // 每个桶的度量样本
+        const totalMap = new Map<string, number>();     // 每个桶的总样本数
+        let hasDate = false;
+        data.forEach((r: any) => {
+          const raw = String(r[xF] ?? '').trim();
+          const bucket = guessMonth(raw);
+          if (bucket) hasDate = true;
+          const key = bucket || raw || '未知';
+          totalMap.set(key, (totalMap.get(key) || 0) + 1);
+          const arr = measureMap.get(key) || [];
+          if (numY) {
+            const v = parseFloat(String(r[yF] ?? ''));
+            if (!isNaN(v)) arr.push(v);
+          } else {
+            arr.push(isRiskValue(r[yF]) ? 1 : 0);
+          }
+          measureMap.set(key, arr);
+        });
+
+        const keys = Array.from(measureMap.keys()).sort();
+        let seriesData: number[];
+        let yName: string;
+        if (numY) {
+          seriesData = keys.map(k => {
+            const a = measureMap.get(k)!;
+            return a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 100) / 100 : 0;
+          });
+          yName = yF;
+        } else {
+          const anyRisk = data.some((r: any) => isRiskValue(r[yF]));
+          const distinctValues = new Set(data.map((r: any) => String(r[yF] ?? '').trim()).filter(Boolean));
+          if (anyRisk && distinctValues.size > 1) {
+            seriesData = keys.map(k => {
+              const a = measureMap.get(k)!;
+              const n = totalMap.get(k) || 1;
+              return Math.round((a.filter(x => x === 1).length / n) * 10000) / 100;
+            });
+            yName = '逾期率(%)';
+          } else {
+            seriesData = keys.map(k => (totalMap.get(k) || 0));
+            yName = '数量';
+          }
+        }
+        if (!hasDate && keys.length <= 1) {
+          seriesData = [];
+        }
+
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
           tooltip: { trigger: 'axis' },
           grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-          xAxis: { 
-            type: 'category', 
-            data: xAxisData,
-            boundaryGap: false
-          },
-          yAxis: { type: 'value', name: y_field },
+          xAxis: { type: 'category', data: keys, boundaryGap: false },
+          yAxis: { type: 'value', name: yName },
           series: [{
             data: seriesData,
             type: 'line',
@@ -389,23 +557,21 @@ const DashboardPage: React.FC = () => {
       }
 
       case 'pie': {
-        // 饼图：category_field = 分类，value_field = 数值
-        const valueMap = new Map();
+        // 饼图：维度=解析出的真实分类列（避免落到数值列），值=每类计数（构成占比）
+        const dim = resolveCategoricalDim(chart, chartData) || x_field || '';
+        const cnt = new Map<string, number>();
         data.forEach((r: any) => {
-          const cat = String(r[category_field || '']);
-          const val = parseFloat(String(r[value_field || '']));
-          if (!isNaN(val) && val > 0) {
-            valueMap.set(cat, (valueMap.get(cat) || 0) + val);
-          }
+          const v = String(r[dim] ?? '').trim() || '未知';
+          cnt.set(v, (cnt.get(v) || 0) + 1);
         });
-        const seriesData = Array.from(valueMap.entries())
+        const seriesData = Array.from(cnt.entries())
           .map(([name, value]) => ({ name, value }))
           .sort((a, b) => b.value - a.value)
-          .slice(0, 8); // 饼图不超过8块
-        
+          .slice(0, 8);
+
         return {
-          title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
-          tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+          title: { text: `${title}（按${dim}）`, left: 'center', textStyle: { fontSize: 14 } },
+          tooltip: { trigger: 'item', formatter: '{b}: {c} 笔 ({d}%)' },
           legend: { orient: 'vertical' as const, left: 'left', top: 'center' },
           series: [{
             type: 'pie',
@@ -414,7 +580,7 @@ const DashboardPage: React.FC = () => {
             emphasis: {
               itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0, 0.5)' }
             },
-            label: { formatter: '{b}: {d}%' }
+            label: { formatter: '{b}\n{d}%' }
           }]
         };
       }
@@ -462,30 +628,61 @@ const DashboardPage: React.FC = () => {
     }
   };
 
+  // 派生KPI值：config.value 缺全省略时，从真实数据按 aggregate 计算
+  const deriveKpi = (chart: ChartConfig): { value: any; prefix?: string; suffix?: string; change?: number; trend?: string; warning?: boolean; warningText?: string } => {
+    const c = chart.config || {};
+    if (c.value !== undefined && c.value !== null) {
+      return { value: c.value, prefix: c.prefix, suffix: c.suffix, change: c.change, trend: c.trend, warning: c.warning, warningText: c.warningText };
+    }
+    const field = chart.y_field || chart.x_field || '';
+    const data = chartData?.data || [];
+    if (!field) return { value: '--' };
+    const nums = data
+      .map((r: any) => parseFloat(String(r[field])))
+      .filter((v: any) => !isNaN(v));
+    if (!nums.length) return { value: '--' };
+    const agg = c.aggregate || 'sum';
+    let val: number;
+    if (agg === 'max') val = Math.max(...nums);
+    else if (agg === 'min') val = Math.min(...nums);
+    else if (agg === 'mean' || agg === 'avg') val = nums.reduce((a, b) => a + b, 0) / nums.length;
+    else val = nums.reduce((a, b) => a + b, 0);
+    // 大金额紧凑格式化，避免卡片溢出显示不全
+    const compact = formatCompact(val, c.format);
+    return {
+      value: compact.value,
+      prefix: compact.prefix ?? (c.format === 'currency' ? '¥' : (c.prefix || '')),
+      suffix: compact.suffix ?? (c.format === 'percent' ? '%' : (c.suffix || '')),
+    };
+  };
+
   // 渲染KPI层
   const renderKPILayer = () => {
     if (!config) return null;
-    const kpiCharts = config.charts.filter(c => c.chart_type === 'kpi');
+    const kpiCharts = effectiveCharts.filter((c: any) => c.chart_type === 'kpi');
     
     if (kpiCharts.length === 0) return null;
 
     return (
       <div className="kpi-layer">
         <Row gutter={[16, 16]}>
-          {kpiCharts.map((chart, index) => (
-            <Col xs={24} sm={12} md={6} key={`kpi-${index}`}>
+          {kpiCharts.map((chart, index) => {
+            const kv = deriveKpi(chart);
+            return (
+            <Col xs={24} sm={12} lg={6} key={`kpi-${index}`}>
               <KPICard
                 title={chart.title}
-                value={chart.config.value}
-                prefix={chart.config.prefix}
-                suffix={chart.config.suffix}
-                change={chart.config.change}
-                trend={chart.config.trend}
-                warning={chart.config.warning}
-                warningText={chart.config.warningText}
+                value={kv.value}
+                prefix={kv.prefix}
+                suffix={kv.suffix}
+                change={kv.change || 0}
+                trend={(kv.trend as any) || 'stable'}
+                warning={kv.warning}
+                warningText={kv.warningText}
               />
             </Col>
-          ))}
+            );
+          })}
         </Row>
       </div>
     );
@@ -494,7 +691,7 @@ const DashboardPage: React.FC = () => {
   // 渲染图表层（非KPI）
   const renderChartLayer = () => {
     if (!config) return null;
-    const nonKpiCharts = config.charts.filter(c => c.chart_type !== 'kpi' && c.chart_type !== 'table');
+    const nonKpiCharts = effectiveCharts.filter(c => c.chart_type !== 'kpi' && c.chart_type !== 'table');
     
     if (nonKpiCharts.length === 0) return null;
 
@@ -503,7 +700,7 @@ const DashboardPage: React.FC = () => {
         <h3 className="layer-title">趋势与对比分析</h3>
         <Row gutter={[16, 16]}>
           {nonKpiCharts.map((chart, index) => (
-            <Col xs={24} lg={index % 2 === 0 ? 12 : 12} key={`chart-${index}`}>
+            <Col xs={24} md={12} key={`chart-${index}`}>
               <Card title={chart.title} className="chart-card">
                 <ReactECharts option={generateChartOption(chart)} style={{ height: 300 }} />
               </Card>
@@ -559,7 +756,20 @@ const DashboardPage: React.FC = () => {
   }
 
   return (
-    <div className="dashboard-with-chat">
+    <div className={`dashboard-with-chat ${chatCollapsed ? 'chat-collapsed' : ''}`}>
+      {/* 折叠时悬浮的"展开对话"按钮 */}
+      {chatCollapsed && (
+        <div className="chat-reopen-zone">
+          <button
+            className="chat-reopen-btn"
+            onClick={() => setChatCollapsed(false)}
+            title="展开数据对话，查看数据看板说明/提问"
+          >
+            <BulbOutlined className="reopen-icon" />
+            <span className="reopen-text">数据助手</span>
+          </button>
+        </div>
+      )}
       <div className="dashboard-main">
         {/* 看板头部：返回/标题/操作菜单 */}
         <DashboardOps
@@ -581,7 +791,7 @@ const DashboardPage: React.FC = () => {
 
       {/* 右侧对话面板 */}
       <div className="dashboard-chat-sidebar">
-        <ChatPanel dashboardId={urlId} onAction={handleAction} />
+        <ChatPanel dashboardId={urlId} onAction={handleAction} onCollapse={() => setChatCollapsed(true)} />
       </div>
     </div>
   );

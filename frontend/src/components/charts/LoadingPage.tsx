@@ -1,9 +1,11 @@
 /**
- * M2-12 Loading页 - 流式SSE接收五阶段进度(POST)
- * 5阶段进度切换 + 取消 + 进度详情
+ * M2-12 Loading页 - 后台任务轮询(可离开页面恢复)
+ * 任务在服务端后台执行，前端通过 run_id 轮询状态：
+ * - 运行中：固定展示加载进度，离开再回来不变
+ * - 已结束：展示最终结果（成功跳看板 / 失败引导重试）
  */
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Card, Progress, Button, Space, Typography, Steps, message } from 'antd';
+import { Alert, Card, Progress, Button, Space, Typography, Steps, message } from 'antd';
 import {
   LoadingOutlined,
   CheckCircleOutlined,
@@ -21,6 +23,9 @@ const STAGES = [
   { key: 'S4', name: '编排优化' },
   { key: 'S5', name: '评分验证' },
 ];
+
+// 用datasetId隔离run_id，支持离开页面后重进恢复
+const RUN_KEY = (datasetId: string) => `brain_run_${datasetId}`;
 
 interface LoadingPageProps {
   datasetId: string;
@@ -40,132 +45,33 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
   const [currentStageIdx, setCurrentStageIdx] = useState(0);
   const [progress, setProgress] = useState(0);
   const [details, setDetails] = useState<string[]>(STAGES.map(() => '等待中...'));
-  const [isComplete, setIsComplete] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<'starting' | 'running' | 'completed' | 'failed' | 'cancelled'>('starting');
   const [dashboardId, setDashboardId] = useState<string>('');
-  const [timeoutHit, setTimeoutHit] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const abortRef = useRef<AbortController | null>(null);
-  const lastProgressRef = useRef<number>(Date.now());
+  const runIdRef = useRef<string>('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mountedRef = useRef(true);
+  const phaseRef = useRef<'starting' | 'running' | 'completed' | 'failed' | 'cancelled'>('starting');
 
-  // 30秒无进度超时检测
-  useEffect(() => {
-    if (isComplete || error) return;
-    const timer = setInterval(() => {
-      const elapsed = Date.now() - lastProgressRef.current;
-      if (elapsed > 30000 && !timeoutHit) {
-        setTimeoutHit(true);
-        const errMsg = '生成看板超时（30秒无响应），请检查后端服务状态后重试';
-        setError(errMsg);
-        message.error(errMsg);
-        abortRef.current?.abort();
-      }
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [isComplete, error, timeoutHit]);
+  const clearPoll = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
 
-  // 连接SSE（POST流式）
-  useEffect(() => {
-    if (!datasetId) return;
-
-    const abortController = new AbortController();
-    abortRef.current = abortController;
-
-    const fetchSSE = async () => {
-      try {
-        const response = await fetch(`${API_BASE}/brain/run`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dataset_id: datasetId, user_id: 'current' }),
-          signal: abortController.signal,
-        });
-
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          const errMsg = errData.detail?.message || errData.detail?.error || `请求失败 (${response.status})`;
-          setError(errMsg);
-          message.error(errMsg);
-          return;
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          setError('无法读取响应流');
-          return;
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          
-          // 解析SSE事件
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // 保留未完成行
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                handleEvent(data);
-              } catch (e) {
-                console.warn('[Loading] 解析SSE行失败:', line);
-              }
-            }
-          }
-        }
-
-        // 处理剩余buffer
-        if (buffer.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(buffer.slice(6));
-            handleEvent(data);
-          } catch (e) {}
-        }
-
-      } catch (err: any) {
-        if (err.name === 'AbortError') {
-          console.log('[Loading] 请求已取消');
-        } else {
-          console.error('[Loading] SSE请求失败:', err);
-          setError(err.message || '网络错误');
-          message.error('生成看板请求失败');
-        }
-      }
-    };
-
-    fetchSSE();
-
-    return () => {
-      abortController.abort();
-    };
-  }, [datasetId, retryCount]);
-
-  // 处理SSE事件
-  const handleEvent = (data: any) => {
-    console.log('[Loading] SSE事件:', data);
-    
-    // 收到任何进度事件都重置超时计时器
-    lastProgressRef.current = Date.now();
-    
+  // 提交一次状态快照到界面（emitComplete: 完成时是否自动跳转）
+  const applyStatus = useCallback((data: any, emitComplete: boolean) => {
     const stage = data.stage || '';
     const status = data.status || '';
     const msg = data.message || '';
-    const pct = data.progress || 0;
-    
-    const stageIdx = STAGES.findIndex(s => s.key === stage);
-    if (stageIdx >= 0) {
-      setCurrentStageIdx(stageIdx);
-    }
-    
-    setProgress(pct);
+    const pct = Number(data.progress) || 0;
 
-    // 更新详情
-    if (stageIdx >= 0 && stageIdx < STAGES.length && msg) {
+    const stageIdx = STAGES.findIndex(s => s.key === stage);
+    if (stageIdx >= 0) setCurrentStageIdx(stageIdx);
+    setProgress(pct);
+    if (stageIdx >= 0 && msg) {
       setDetails(prev => {
         const next = [...prev];
         next[stageIdx] = msg;
@@ -173,28 +79,119 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
       });
     }
 
-    // 完成
-    if (stage === 'COMPLETE' && status === 'completed') {
-      setIsComplete(true);
-      setProgress(100);
-      const did = data.detail?.dashboard_id;
-      if (did) {
-        setDashboardId(did);
+    if (status === 'completed') {
+      clearPoll();
+      setPhase('completed');
+      phaseRef.current = 'completed';
+      const did = data.detail?.dashboard_id || '';
+      setDashboardId(did);
+      if (!mountedRef.current) return;
+      if (emitComplete) {
         message.success('看板生成完成！');
         if (onComplete) {
-          setTimeout(() => onComplete(did), 1000);
+          setTimeout(() => onComplete(did), 800);
         }
       }
+    } else if (status === 'failed') {
+      clearPoll();
+      setPhase('failed');
+      phaseRef.current = 'failed';
+      setError(msg || '生成失败，请重试');
+    } else if (status === 'cancelled') {
+      clearPoll();
+      setPhase('cancelled');
+      phaseRef.current = 'cancelled';
+    } else if (status === 'unknown') {
+      clearPoll();
+      setPhase('failed');
+      phaseRef.current = 'failed';
+      setError('未找到该后台任务（可能已被清除），请重新生成');
+    } else {
+      setPhase('running');
+      phaseRef.current = 'running';
+    }
+  }, [onComplete]);
+
+  // 查询单次状态
+  const fetchStatus = useCallback(async (runId: string, emitComplete: boolean = true) => {
+    try {
+      const res = await fetch(`${API_BASE}/brain/run/${runId}/status`);
+      const data = await res.json();
+      if (mountedRef.current) applyStatus(data, emitComplete);
+    } catch (e) {
+      // 瞬态错误忽略，轮询继续
+    }
+  }, [applyStatus]);
+
+  // 启动轮询
+  const startPoll = useCallback((runId: string) => {
+    clearPoll();
+    pollRef.current = setInterval(() => fetchStatus(runId, true), 2500);
+  }, [fetchStatus]);
+
+  // 启动一个新任务
+  const startRun = useCallback(async () => {
+    if (!datasetId) return;
+    phaseRef.current = 'starting';
+    setPhase('starting');
+    setProgress(0);
+    setCurrentStageIdx(0);
+    setDetails(STAGES.map(() => '等待中...'));
+    try {
+      const res = await fetch(`${API_BASE}/brain/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataset_id: datasetId, user_id: 'current' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPhase('failed');
+        phaseRef.current = 'failed';
+        setError(data.detail?.message || `开始失败 (${res.status})`);
+        return;
+      }
+      runIdRef.current = data.run_id;
+      localStorage.setItem(RUN_KEY(datasetId), data.run_id);
+      setPhase('running');
+      phaseRef.current = 'running';
+      // 立即查询一次；仅当仍为运行中才轮询
+      await fetchStatus(data.run_id, true);
+      if (mountedRef.current && phaseRef.current === 'running') {
+        startPoll(data.run_id);
+      }
+    } catch (e) {
+      setPhase('failed');
+      phaseRef.current = 'failed';
+      setError('无法连接后台任务（网络异常）');
+    }
+  }, [datasetId, fetchStatus, startPoll]);
+
+  // 挂载逻辑：有run_id则恢复（已完成不自动跳转），否则新起
+  useEffect(() => {
+    mountedRef.current = true;
+    if (!datasetId) return;
+
+    const storedRunId = localStorage.getItem(RUN_KEY(datasetId));
+    if (storedRunId) {
+      // 恢复模式：先查一次状态；已完成则展示结果不自动跳转，运行中才轮询
+      runIdRef.current = storedRunId;
+      fetchStatus(storedRunId, false).then(() => {
+        if (mountedRef.current && phaseRef.current === 'running') {
+          startPoll(storedRunId);
+        }
+      });
+    } else {
+      startRun();
     }
 
-    // 失败
-    if (status === 'failed') {
-      setError(msg);
-      message.error(`生成失败: ${msg}`);
-    }
-  };
+    return () => {
+      mountedRef.current = false;
+      clearPoll();
+    };
+  }, [datasetId, retryCount, fetchStatus, startPoll, startRun]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleViewDashboard = () => {
+    localStorage.removeItem(RUN_KEY(datasetId));
     if (dashboardId) {
       window.location.href = `/dashboard?id=${dashboardId}`;
     } else if (onComplete) {
@@ -203,14 +200,27 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
   };
 
   const handleRetry = () => {
+    localStorage.removeItem(RUN_KEY(datasetId));
     setError(null);
-    setTimeoutHit(false);
-    setProgress(0);
-    setCurrentStageIdx(0);
-    setDetails(STAGES.map(() => '等待中...'));
-    setIsComplete(false);
+    setDashboardId('');
     setRetryCount(c => c + 1);
   };
+
+  const handleCancel = async () => {
+    const runId = runIdRef.current;
+    if (runId) {
+      try {
+        await fetch(`${API_BASE}/brain/run/${runId}/cancel`, { method: 'POST' });
+      } catch (e) { /* 忽略 */ }
+      localStorage.removeItem(RUN_KEY(datasetId));
+    }
+    clearPoll();
+    setPhase('cancelled');
+    onCancel?.();
+  };
+
+  const isComplete = phase === 'completed';
+  const isError = phase === 'failed' || phase === 'cancelled';
 
   return (
     <div className="loading-page">
@@ -220,8 +230,8 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           <Title level={4}>
             {isComplete ? (
               <><CheckCircleOutlined style={{ color: '#52c41a' }} /> 看板生成完成</>
-            ) : error ? (
-              <><CloseCircleOutlined style={{ color: '#ff4d4f' }} /> 看板生成失败</>
+            ) : isError ? (
+              <><CloseCircleOutlined style={{ color: '#ff4d4f' }} /> {phase === 'cancelled' ? '任务已取消' : '看板生成失败'}</>
             ) : (
               <><LoadingOutlined spin /> AI正在生成看板</>
             )}
@@ -235,7 +245,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
         <div className="overall-progress">
           <Progress
             percent={progress}
-            status={error ? 'exception' : (isComplete ? 'success' : 'active')}
+            status={isError ? 'exception' : (isComplete ? 'success' : 'active')}
             strokeColor="#1677ff"
             trailColor="#e8e8e8"
             strokeWidth={12}
@@ -243,23 +253,38 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           <div className="progress-label">
             <Text strong style={{ fontSize: 18 }}>{progress}%</Text>
             <Text type="secondary" style={{ marginLeft: 8 }}>
-              {error ? error : (isComplete ? '看板生成完成！' : `${STAGES[currentStageIdx]?.name}中...`)}
+              {isError ? (phase === 'cancelled' ? '任务已取消' : '看板生成失败') : (isComplete ? '看板生成完成！' : `${STAGES[currentStageIdx]?.name}中...`)}
             </Text>
           </div>
         </div>
+
+        {/* 失败/取消时：独立错误横幅，仅展示一次，避免与进度和步骤重复拼接 */}
+        {isError && (
+          <Alert
+            type={phase === 'cancelled' ? 'warning' : 'error'}
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={phase === 'cancelled' ? '任务已取消' : '看板生成失败'}
+            description={
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {error || (phase === 'cancelled' ? '任务已取消' : '生成失败，请重试')}
+              </div>
+            }
+          />
+        )}
 
         {/* 步骤条 */}
         <div className="steps-container">
           <Steps
             current={currentStageIdx}
-            status={error ? 'error' : (isComplete ? 'finish' : 'process')}
+            status={isError ? 'error' : (isComplete ? 'finish' : 'process')}
             direction="vertical"
             size="small"
             items={STAGES.map((stage, i) => ({
               title: (
                 <span>
                   {stage.name}
-                  {i === currentStageIdx && !isComplete && !error && (
+                  {i === currentStageIdx && !isComplete && !isError && (
                     <LoadingOutlined style={{ marginLeft: 8, color: '#1677ff' }} />
                   )}
                   {(i < currentStageIdx || isComplete) && (
@@ -269,8 +294,8 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
               ),
               description: (
                 <Text type="secondary" style={{ fontSize: 13 }}>
-                  {error && i >= currentStageIdx
-                    ? (i === currentStageIdx ? error : '处理中断')
+                  {isError && i >= currentStageIdx
+                    ? (i === currentStageIdx ? (phase === 'cancelled' ? '任务已取消' : '处理失败') : '未执行')
                     : details[i]}
                 </Text>
               ),
@@ -278,18 +303,28 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           />
         </div>
 
+        {/* 运行中常驻提示：可离开页面，任务后台继续 */}
+        {!isComplete && !isError && (
+          <div className="duration-hint">
+            <LoadingOutlined spin style={{ color: '#1677ff', marginRight: 6 }} />
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              任务在后台运行中，可离开本页；稍后回来即可查看进度与最终结果
+            </Text>
+          </div>
+        )}
+
         {/* 操作按钮 */}
         <div className="loading-actions">
           <Space>
-            {!isComplete && !error && onCancel && (
-              <Button onClick={() => { abortRef.current?.abort(); onCancel(); }} danger>
+            {!isComplete && !isError && (
+              <Button onClick={handleCancel} danger>
                 取消生成
               </Button>
             )}
-            {!isComplete && error && (
+            {!isComplete && isError && (
               <>
-                <Button onClick={() => { if (abortRef.current) abortRef.current.abort(); onCancel?.(); }} danger>
-                  取消生成
+                <Button onClick={handleCancel} danger>
+                  取消
                 </Button>
                 <Button type="primary" onClick={handleRetry}>
                   重新尝试
@@ -304,11 +339,13 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           </Space>
         </div>
 
-        <div className="cancel-hint">
-          <Text type="secondary">
-            取消后可在"生成历史"中查看进度
-          </Text>
-        </div>
+        {!isComplete && !isError && (
+          <div className="cancel-hint">
+            <Text type="secondary">
+              关闭本页或离开，任务都不会中断；可在"重新生成看板"处随时回到该任务
+            </Text>
+          </div>
+        )}
       </Card>
     </div>
   );

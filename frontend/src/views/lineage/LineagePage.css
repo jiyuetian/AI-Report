@@ -310,3 +310,34 @@
   color: #333;
   font-size: 14px;
 }
+
+/* ============ 血缘问答右侧面板：复用统一 AI 助手（ChatPanel）============ */
+.lineage-chat-panel {
+  width: 380px;
+  min-width: 320px;
+  position: sticky;
+  top: 80px;
+  height: calc(100vh - 100px);
+  display: flex;
+  flex-direction: column;
+}
+
+.lineage-chat-panel > .chat-panel {
+  height: 100%;
+  min-height: 0;
+  border-radius: 8px;
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.06);
+}
+
+.lineage-main.has-chat-panel .lineage-chat-panel {
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .lineage-chat-panel {
+    width: 100% !important;
+    min-width: 0;
+    position: static;
+    height: 520px;
+  }
+}

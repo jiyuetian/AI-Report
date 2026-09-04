@@ -21,7 +21,9 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":5173 " ^| findstr LISTENING
 
 :: ---------- 2. 启动后端 ----------
 echo [2/4] 启动后端服务(自动用SQLite，无需装数据库)...
-start "AIBI-Backend" /min cmd /c "cd /d "%ROOT%backend" && "%PYTHON%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "%ROOT%backend\server.log" 2>&1"
+pushd "%ROOT%backend"
+start "AIBI-Backend" /min cmd /c "%PYTHON% -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1"
+popd
 set /a tries=0
 :wait_backend
 timeout /t 2 /nobreak >nul
@@ -37,7 +39,9 @@ echo      后端已就绪 http://localhost:8000 ✓
 :: ---------- 3. 启动前端 ----------
 :frontend
 echo [3/4] 启动前端服务...
-start "AIBI-Frontend" /min cmd /c "cd /d "%ROOT%frontend" && npm run dev > "%ROOT%\frontend\vite.log" 2>&1"
+pushd "%ROOT%frontend"
+start "AIBI-Frontend" /min cmd /c "npm run dev > vite.log 2>&1"
+popd
 set /a ftries=0
 :wait_frontend
 timeout /t 2 /nobreak >nul
