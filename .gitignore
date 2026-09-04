@@ -53,7 +53,8 @@ alembic.ini.bak
 backend/data/
 
 # 临时调试脚本（勿入库）
-/_dbg*.py
-/_probe*.py
+_dbg*.py
+_probe*.py
+_perf*.py
 backend/app/_scan.py
 backend/scripts/smoke_test_async_quality.py
