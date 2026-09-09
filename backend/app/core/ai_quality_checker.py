@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field, asdict
 
 from app.core.llm_gateway import get_llm_gateway, LLMRequest, LLMResponse
+from app.core.prompt_loader import load_prompt
 
 
 @dataclass
@@ -114,7 +115,7 @@ class AIQualityChecker:
         }
     
     def _build_prompt(self, sample_data: Dict, existing_issues: List[Dict]) -> str:
-        """构建AI分析提示词"""
+        """构建AI分析提示词（被控版：优先读 prompts/ai_quality_checker.md，缺失回退内置默认）"""
         # 列描述
         col_desc = []
         for c in sample_data["columns"]:
@@ -132,15 +133,19 @@ class AIQualityChecker:
                 f"- [{i.get('severity', 'warning')}] {i.get('column', '?')}: {i.get('message', '?')}"
                 for i in existing_issues[:10]
             ])
-        
-        prompt = f"""你是一个专业的数据质量分析师。请分析以下数据集，识别规则检测无法覆盖的潜在数据质量问题。
+
+        columns_desc = chr(10).join(col_desc)
+        sample_rows_json = json.dumps(sample_data['sample_rows'], ensure_ascii=False, default=str)[:3000]
+
+        # 内置默认（外置文件缺失时的回退，保持与原逻辑一致）
+        default_prompt = f"""你是一个专业的数据质量分析师。请分析以下数据集，识别规则检测无法覆盖的潜在数据质量问题。
 
 ## 数据表结构
-{chr(10).join(col_desc)}
+{columns_desc}
 
 ## 数据样本（前20行）
 ```json
-{json.dumps(sample_data['sample_rows'], ensure_ascii=False, default=str)[:3000]}
+{sample_rows_json}
 ```
 
 ## 规则检测已发现的问题
@@ -149,6 +154,7 @@ class AIQualityChecker:
 ## 分析要求
 请从以下角度检测数据问题：
 1. **数据分布异常**：数值字段是否存在极端离群值？数据分布是否合理？
+1.5 **类型一致性（重点）**：数值列是否存在"文本型数字"（如 1,234 / ￥100 / "5000" / 混入 "N/A"、"未填写" 导致整列被读成文本）？请判定这些列**是否应转成真正的数值**；同时注意**编号/标识类列**（如"借据编号 123456"，看着像数字但语义是唯一ID）应保持文本、**不要转数值**，避免误判。
 2. **语义异常**：字段值是否存在不符合业务语义的情况？（如姓名中出现数字、金额字段出现负数等）
 3. **字段关联矛盾**：字段组合是否存在不符合业务逻辑的情况？（规则检测未覆盖的）
 4. **编码异常**：是否存在编码不一致、乱码、特殊字符等问题？
@@ -180,9 +186,19 @@ class AIQualityChecker:
 - **warning**: 不影响整体分析但建议关注的问题（如部分异常值、分布不均等）
 
 ## 修复方案要求
-每个问题必须提供至少2个修复选项，供用户选择。"""
-        
-        return prompt
+- 每个问题必须提供至少2个修复选项，供用户选择。
+- 对于「类型一致性」里的**确应转数值**的列，必须给出 `strategy=coerce_numeric` 的「强制转为数值」修复选项；
+- 对于**判定为编号/标识、不应转数值**的列，不要报告为类型问题。"""
+
+        # 外置被控提示词优先；文件存在则用其模板填充，否则用内置默认
+        return load_prompt(
+            "ai_quality_checker",
+            default_prompt,
+            columns=columns_desc,
+            stats=existing_desc,
+            sample_rows=sample_rows_json,
+            existing_issues=existing_desc,
+        )
     
     async def analyze(self, existing_issues: Optional[List[Dict]] = None) -> AIQualityResult:
         """

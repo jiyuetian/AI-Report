@@ -15,6 +15,11 @@ from app.models.dashboard import Dashboard, DashboardVersion
 
 OWNER = "anonymous"  # 列表接口 user_id 默认值，故种子归属此用户
 
+# 说明：dataset_ids 一律留空，不硬编码 ds_xxx。
+# 看板关联的数据集必须在 seed 时已存在于 datasets 表（由上传/建集流程生成真实 UUID），
+# 否则关联会指向不存在的记录。需要演示数据时，先用上传接口建数据集，
+# 再通过 PATCH /dashboards/{id} 写入真实 dataset_ids。
+
 SEED_DASHBOARDS = [
     {
         "name": "担保风控看板",
@@ -22,7 +27,7 @@ SEED_DASHBOARDS = [
         "status": "published",
         "score": 85,
         "passed": 1,
-        "dataset_ids": ["ds_001", "ds_002"],
+        "dataset_ids": [],
         "config": {"theme": "default", "tags": ["风控"]},
     },
     {
@@ -31,7 +36,7 @@ SEED_DASHBOARDS = [
         "status": "draft",
         "score": 72,
         "passed": 1,
-        "dataset_ids": ["ds_003"],
+        "dataset_ids": [],
         "config": {"theme": "default", "tags": ["信贷"]},
     },
     {
@@ -49,7 +54,7 @@ SEED_DASHBOARDS = [
         "status": "published",
         "score": 90,
         "passed": 1,
-        "dataset_ids": ["ds_001"],
+        "dataset_ids": [],
         "config": {"theme": "default", "tags": ["反欺诈"]},
     },
     {

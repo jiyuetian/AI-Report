@@ -78,7 +78,7 @@ except Exception:
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 MAX_RETRIES = 1
-TIMEOUT_SECONDS = 25
+TIMEOUT_SECONDS = 60
 CONCURRENCY_LIMIT = 2  # 并发限制
 
 
@@ -432,19 +432,18 @@ class LLMGateway:
             # 全部重试失败
             print(f"[LLM] 调用失败，已重试{MAX_RETRIES}次，使用降级响应")
             
-            # 使用降级响应
+            # 降级响应一律标记为失败，不再伪装成功
             if fallback_response:
                 duration_ms = int((time.time() - start_time) * 1000)
                 return LLMResponse(
-                    success=True,  # 标记为成功，但实际是降级
-                    content=json.dumps(fallback_response, ensure_ascii=False),
-                    response_json=fallback_response,
+                    success=False,  # 明确标记为失败
+                    content=None,
+                    error=last_error or "LLM全部重试失败，已降级",
                     tokens_used=0,
                     tokens_prompt=0,
                     tokens_completion=0,
                     duration_ms=duration_ms,
                     model="fallback",
-                    error=last_error,
                     retry_count=MAX_RETRIES,
                     fallback_used=True
                 )
@@ -461,84 +460,65 @@ class LLMGateway:
             await rate_limiter.release()
     
     def _generate_mock_response(self, request: LLMRequest) -> Dict:
-        """生成Mock响应 (R3返工: 字段名对齐Schema)"""
-        # 根据prompt内容生成合理的mock数据
+        """生成Mock响应 - 根据prompt类型返回合理结构，字段名来自request上下文"""
         prompt = request.prompt.lower()
-        
+
         if "主题" in prompt or "theme" in prompt:
-            # S1 mock: 加 "method": "dictionary", "llm_called": false
             return {
-                "theme_tag": "担保风控",
-                "confidence": 0.95,
-                "reason": "数据集包含担保、抵押、质押等字段，匹配担保风控主题词典",
-                "matched_keywords": ["担保", "抵押", "质押"],
+                "theme_tag": "通用分析",
+                "confidence": 0.85,
+                "reason": "基于字段命名规则推断",
+                "matched_keywords": [],
                 "method": "dictionary",
                 "llm_called": False
             }
-        
+
         if "目标" in prompt or "goal" in prompt:
+            # 从prompt中提取字段名，避免硬编码业务字段
+            import re
+            field_matches = re.findall(r'[\u4e00-\u9fa5]{2,10}|[a-zA-Z_][a-zA-Z0-9_]{2,20}', request.prompt)
             return {
                 "goals": [
-                    {"goal_id": "G1", "title": "逾期率趋势监控", "description": "分析各月份逾期率变化趋势", "type": "趋势"},
-                    {"goal_id": "G2", "title": "地区风险对比", "description": "比较不同地区的担保风险水平", "type": "对比"},
-                    {"goal_id": "G3", "title": "抵押物风险分布", "description": "分析抵押物类型与风险关系", "type": "分布"},
-                    {"goal_id": "G4", "title": "大额担保风险预警", "description": "识别担保金额过大的高风险记录", "type": "预警"},
-                    {"goal_id": "G5", "title": "客户风险画像", "description": "基于历史数据评估客户风险等级", "type": "画像"},
-                    {"goal_id": "G6", "title": "担保期限分析", "description": "分析担保期限与逾期率关系", "type": "关联"}
+                    {"goal_id": "G1", "title": f"整体数据概览", "description": "了解数据整体规模与分布", "type": "概览"},
+                    {"goal_id": "G2", "title": f"趋势变化分析", "description": "观察数据随时间的变化趋势", "type": "趋势"},
+                    {"goal_id": "G3", "title": f"结构对比分析", "description": "分析各维度的结构与对比关系", "type": "对比"}
                 ]
             }
-        
+
         if "图表" in prompt or "chart" in prompt:
-            # R3返工: 字段名对齐Schema
-            # "chart_type" 而非 "type"
-            # "x_field" 而非 "x"
-            # "y_field" 而非 "y"
-            # "value_field" 而非 "value"
-            # "category_field" 而非 "category"
-            return {
-                "charts": [
-                    {
-                        "chart_type": "line",
-                        "title": "逾期率月度趋势",
-                        "x_field": "月份",
-                        "y_field": "逾期率",
-                        "recommendation_score": 0.92
-                    },
-                    {
-                        "chart_type": "bar",
-                        "title": "地区风险对比",
-                        "x_field": "地区",
-                        "y_field": "担保金额",
-                        "recommendation_score": 0.88
-                    },
-                    {
-                        "chart_type": "pie",
-                        "title": "担保类型分布",
-                        "category_field": "担保类型",
-                        "value_field": "金额",
-                        "recommendation_score": 0.85
-                    },
-                    {
-                        "chart_type": "kpi",
-                        "title": "总担保金额",
-                        "config": {"value": "12.5亿", "change": "+15%"},
-                        "recommendation_score": 0.95
-                    },
-                    {
-                        "chart_type": "table",
-                        "title": "高风险明细",
-                        "grain": "detail",
-                        "recommendation_score": 0.80
-                    }
-                ]
-            }
-        
-        # 默认返回
-        return {
-            "status": "success",
-            "message": "Mock LLM响应",
-            "prompt_preview": request.prompt[:100] + "..." if len(request.prompt) > 100 else request.prompt
-        }
+            # 从prompt中提取字段名，动态生成图表
+            import re
+            fields = re.findall(r'"([^"]+)"', request.prompt)
+            if not fields:
+                fields = re.findall(r'[\u4e00-\u9fa5]{2,8}', request.prompt)
+            # 取前4个作为字段
+            used = list(dict.fromkeys(fields))[:4]
+            charts = []
+            if len(used) >= 2:
+                charts.append({
+                    "chart_type": "bar",
+                    "title": f"{used[1]} vs {used[0]}",
+                    "x_field": used[0],
+                    "y_field": used[1],
+                    "recommendation_score": 0.85
+                })
+            if len(used) >= 3:
+                charts.append({
+                    "chart_type": "pie",
+                    "title": f"{used[2]}占比",
+                    "category_field": used[2],
+                    "value_field": used[1] if len(used) > 1 else used[0],
+                    "recommendation_score": 0.80
+                })
+            charts.append({
+                "chart_type": "table",
+                "title": "数据明细",
+                "grain": "detail",
+                "recommendation_score": 0.75
+            })
+            return {"charts": charts}
+
+        return {"status": "success", "message": "Mock LLM响应", "prompt_preview": request.prompt[:100] + "..." if len(request.prompt) > 100 else request.prompt}
     
     async def _record_usage(self, user_id: str, tokens: int):
         """记录token使用量（Redis不可用时忽略）"""

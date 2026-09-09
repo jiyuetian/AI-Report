@@ -254,7 +254,7 @@ async def brain_run_pipeline(
                 theme=theme_tag,
                 fields=fields,
                 grain=grain,
-                use_llm=False
+                use_llm=True
             )
             await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals}), "S2")
             
@@ -292,7 +292,7 @@ async def brain_run_pipeline(
             if not charts:
                 print("[Brain] S3图表为空（可能LLM限流），回退到引擎默认图表")
                 try:
-                    from app.core.brain_modules.s3_chart_engine import S3ChartEngine
+                    from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
                     engine = S3ChartEngine()
                     default_cfg = engine.generate_dashboard_config(fields=fields, grain=grain)
                     charts = default_cfg.get("charts", [])
@@ -352,7 +352,58 @@ async def brain_run_pipeline(
             yield progress.to_event()
             
             print(f"[Brain] S4+S5完成: score={overall_score}, passed={passed}")
-            
+
+            # ========== S4b: LLM 生成分析说明文本（结论→佐证→建议） ==========
+            progress.current_stage = "S4b"
+            progress.stage_status = "running"
+            progress.progress = 92
+            progress.message = "正在生成分析说明..."
+            yield progress.to_event()
+
+            analysis_text = ""
+            try:
+                from app.core.llm_gateway import llm_chat
+                from app.core.prompt_loader import load_prompt
+
+                charts_summary = ""
+                for i, c in enumerate(final_charts[:6], 1):
+                    charts_summary += f"{i}. [{c.get('chart_type','?')}] {c.get('title','')} (维度: {c.get('x_field') or c.get('category_field','')} / 指标: {c.get('y_field') or c.get('value_field','')})\n"
+
+                goals_summary = "\n".join(f"- {g.get('goal','')}" for g in goals[:5]) if goals else "无"
+
+                prompt_text = (
+                    f"你是一位资深数据分析师。请为以下看板生成一段简短的分析说明（200字以内）。\n\n"
+                    f"## 看板主题\n{theme_tag}\n\n"
+                    f"## 分析目标\n{goals_summary}\n\n"
+                    f"## 图表配置\n{charts_summary}\n\n"
+                    f"## 要求\n"
+                    f"1. 用3-5句话概括核心发现\n"
+                    f"2. 说明数据反映的业务含义\n"
+                    f"3. 给出1-2条 actionable 建议\n"
+                    f"4. 中文输出，不要JSON\n\n"
+                    f"分析说明："
+                )
+                system_prompt = load_prompt(
+                    "ai_assistant_spec",
+                    "你是一位资深 BI 数据分析师。"
+                )
+                llm_resp = await llm_chat(
+                    prompt=system_prompt + "\n\n" + prompt_text,
+                    json_mode=False,
+                    user_id="analysis_text"
+                )
+                if llm_resp.success and llm_resp.content:
+                    analysis_text = llm_resp.content.strip()
+                else:
+                    analysis_text = f"基于「{theme_tag}」主题，系统已自动生成{len(final_charts)}个分析图表，覆盖核心业务维度和关键指标。"
+            except Exception as e:
+                print(f"[Brain] 分析文本生成失败（不影响看板生成）: {e}")
+                analysis_text = f"基于「{theme_tag}」主题，系统已自动生成{len(final_charts)}个分析图表。"
+
+            progress.stage_status = "completed"
+            yield progress.to_event()
+            print(f"[Brain] S4b完成: analysis_text_len={len(analysis_text)}")
+
             # ========== 保存看板到数据库 ==========
             dashboard_id = f"dash_{dataset_id[:8]}_{uuid.uuid4().hex[:6]}"
             
@@ -367,7 +418,8 @@ async def brain_run_pipeline(
                     "overall": overall_score,
                     "passed": passed,
                     "dimensions": s4_s5_result.get("dimension_scores", {})
-                }
+                },
+                "analysis_text": analysis_text
             }
             
             # 保存Dashboard记录

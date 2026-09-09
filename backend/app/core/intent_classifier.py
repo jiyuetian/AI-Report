@@ -5,10 +5,43 @@ LLM增强：规则匹配<70分时调用LLM兜底
 """
 import json
 import re
+import asyncio
 from typing import Dict, Any, Tuple, Optional, List
 from enum import Enum
 
 from app.core.llm_gateway import LLMGateway
+from app.core.prompt_loader import load_prompt
+
+
+# 内置默认系统提示词（外置 prompts/intent_classifier.md 缺失时的回退）
+_DEFAULT_SYSTEM_PROMPT = """你是一个自然语言意图分类器，请将用户的消息分类为以下意图之一：
+
+可用意图：
+- change_chart: 修改图表类型（把饼图改成折线图等）
+- add_chart: 新增一个图表
+- delete_chart: 删除一个图表
+- reorder_chart: 调整图表位置/排序
+- filter_drill: 筛选数据、下钻分析
+- attribution: 追问原因、归因分析
+- edit_title: 修改标题
+- unknown: 不确定
+
+当前看板上下文：
+{context}
+
+请返回 JSON 格式：
+{
+  "intent_type": "change_chart",
+  "confidence": 85,
+  "analysis": {
+    "raw_message": "用户说的话",
+    "extracted_params": {
+      "target_type": "line"
+    }
+  }
+}
+
+只返回 JSON，不解释。"""
 
 
 class IntentType(str, Enum):
@@ -20,6 +53,7 @@ class IntentType(str, Enum):
     FILTER_DRILL = "filter_drill"      # 筛选下钻
     ATTRIBUTION = "attribution"        # 归因追问
     EDIT_TITLE = "edit_title"          # 标题编辑
+    QUALITY_FIX = "quality_fix"        # 数据质量修复（清洗层）
     UNKNOWN = "unknown"
 
 
@@ -31,12 +65,14 @@ class IntentClassifier:
         IntentType.CHANGE_CHART: [
             r"(换|改|变成|换成).{0,5}(图|图表|饼图|柱图|线图|散点图|表格)",
             r"(饼图|柱图|线图|散点图).{0,3}(改|换).{0,3}(饼图|柱图|线图|散点图|表格)",
-            r"把.{0,10}(改|换).{0,3}(成|为)",
+            r"(把|将|给).{0,8}?(图|图表|柱状图|柱图|饼图|线图|折线图|散点图|圆环图|环形图|表格).{0,6}(改|换|变成)(成|为)",
         ],
         IntentType.ADD_CHART: [
-            r"(新增|添加|加|插入).{0,5}(图|图表|一张)",
-            r"再.{0,3}(来|加|放).{0,3}(个|张)?.{0,5}(图|图表)",
-            r"能不能.{0,5}(加|添加)",
+            r"(新增|添加|加|插入|加个|加张).{0,8}(图|图表|饼图|柱图|线图|散点图|表格|指标|业务量|KPI|卡)",
+            r"(再|右边|右侧|下面|上面|旁边|追加).{0,4}(加|放|来|新增).{0,3}(个|张)?.{0,6}(图|图表|饼图|柱图|线图|散点图|表格|指标|KPI)",
+            r"(能不能|帮我).{0,6}(加|添加|新增|来).{0,2}(图|图表|指标|KPI)",
+            r"(新增|加|添加).{0,4}(一个|一张|个)?.{0,4}(指标|业务量|笔数|总额|KPI|kpi卡)",
+            r"来\s*(一个|一张|个|张)?\s*(图|图表|饼图|柱状图|柱图|线图|折线图|散点图|圆环图|表格)",
         ],
         IntentType.DELETE_CHART: [
             r"(删除|移除|去掉|删掉|删了).{0,5}(图|图表|这个|那个|第.{1,2}个)",
@@ -49,19 +85,31 @@ class IntentClassifier:
             r"(上移|下移|置顶|置底)",
         ],
         IntentType.FILTER_DRILL: [
-            r"(筛选|过滤|只看|显示).{0,10}(的|数据)?",
+            r"(只看|只查|只显示|只查看|过滤掉|排除)[^，。；]*?(的|数据|记录)?",
+            r"(筛选|过滤)[^，。；]*?(的|数据)?",
+            r"按.{0,4}(地区|区域|省份|城市|类别|类型|状态|分类|分组|维度).{0,6}(的|数据)?",
             r"(下钻|钻取|深入|展开).{0,5}(看|分析)?",
             r"(按|根据).{0,5}(分类|分组|维度)",
         ],
         IntentType.ATTRIBUTION: [
             r"(为什么|怎么回事|什么原因|为何).{0,10}(异常|波动|变化|下降|上升)?",
             r"(分析|解释|说明).{0,5}(原因|理由)",
+            r"(分析|解释|看看|看下|说明|说下|讲下).{0,8}(一下|下|这个|这|这种)?[^，。；]{0,6}(上升|下降|异常|波动|变化|趋势|原因)",
+            r"[^，。；]*?(上升|下降|异常|波动|变化|增长|骤增)的原因",
             r"(归因|溯源|追溯)",
         ],
         IntentType.EDIT_TITLE: [
             r"(改|修改|编辑|换).{0,5}(标题|名字|名称)",
             r"标题.{0,3}(改|换成|改为)",
             r"(重命名|改名)",
+        ],
+        IntentType.QUALITY_FIX: [
+            r"(质检|质量检查|质量检测).{0,8}(发现|查出|提示)?.{0,6}(问题|重复|空值|缺失|异常|格式|错误)?",
+            r"(修复|清洗|清理).{0,6}(数据|重复|空值|缺失|异常|格式|错误|问题)?",
+            r"(去重|去重复|消除重复|合并重复).{0,6}(数据|记录)?",
+            r"[^，。；]*?(重复|重复数据|一列多值|空值|缺失值|格式不正确|乱码).{0,6}(修复|处理|清理|去重|补全|纠正)?",
+            r"(帮我|请|把).{0,4}(修复|去重|清洗|清理|补全).{0,6}(数据|重复|空值|缺失)?",
+            r"(数据|字段).{0,4}(有|存在|出现).{0,4}(重复|空值|缺失|异常|格式问题)",
         ],
     }
     
@@ -93,64 +141,51 @@ class IntentClassifier:
     @classmethod
     def _llm_classify(cls, message: str, context: Dict[str, Any] = None) -> Optional[Tuple[IntentType, int, Dict]]:
         """LLM兜底分类（规则匹配失败时）"""
-        system_prompt = """你是一个自然语言意图分类器，请将用户的消息分类为以下意图之一：
+        # 外置被控提示词优先（prompts/intent_classifier.md），缺失回退内置默认
+        system_prompt = load_prompt(
+            "intent_classifier",
+            _DEFAULT_SYSTEM_PROMPT,
+            context=json.dumps(context or {}, ensure_ascii=False),
+        )
 
-可用意图：
-- change_chart: 修改图表类型（把饼图改成折线图等）
-- add_chart: 新增一个图表
-- delete_chart: 删除一个图表
-- reorder_chart: 调整图表位置/排序
-- filter_drill: 筛选数据、下钻分析
-- attribution: 追问原因、归因分析
-- edit_title: 修改标题
-- unknown: 不确定
-
-用户当前看板上下文：
-{context}
-
-请返回 JSON 格式：
-{
-  "intent_type": "change_chart",
-  "confidence": 85,
-  "analysis": {
-    "raw_message": "用户说的话",
-    "extracted_params": {
-      "target_type": "line"
-    }
-  }
-}
-
-只返回 JSON，不解释。"""
-
-        user_prompt = f"""用户消息：{message}
-
-请分类意图并提取参数。"""
+        user_prompt = f"""请分类意图并提取参数。"""
 
         try:
-            llm = LLMGateway.get_instance()
-            prompt = system_prompt.format(context=json.dumps(context or {}))
-            response = llm.chat_completion([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_prompt}
-            ], response_format="json")
-            
-            if not response:
+            from app.core.llm_gateway import get_llm_gateway, LLMRequest
+            prompt = system_prompt
+            prompt += f"\n用户消息：{message}\n{user_prompt}"
+
+            # 可能在 async 事件循环内被同步调用，用独立线程跑 asyncio.run 避免冲突
+            import concurrent.futures
+            request = LLMRequest(
+                prompt=prompt,
+                json_mode=True,
+                max_tokens=500,
+                temperature=0.2
+            )
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(
+                    lambda r: asyncio.run(get_llm_gateway().chat_complete(r)),
+                    request
+                )
+                response = future.result(timeout=40)
+            if not response or not response.success or not response.content:
                 return None
-            
-            data = json.loads(response)
+
+            data = response.response_json or json.loads(response.content)
             intent_type = data.get("intent_type", "unknown")
             confidence = int(data.get("confidence", 0))
             analysis = data.get("analysis", {})
             analysis["raw_message"] = message
             analysis["classified_by"] = "llm"  # 标记是LLM分类的
-            
+
             # 转换到枚举
             try:
                 intent_enum = IntentType(intent_type)
                 return (intent_enum, confidence, analysis)
             except ValueError:
                 return None
-        except Exception as e:
+        except Exception:
             # LLM分类失败，返回None让规则兜底返回unknown
             return None
     
@@ -182,6 +217,7 @@ class IntentClassifier:
             IntentType.FILTER_DRILL: ["筛选", "过滤", "只看", "下钻", "钻取", "按"],
             IntentType.ATTRIBUTION: ["为什么", "原因", "怎么回事", "分析", "归因"],
             IntentType.EDIT_TITLE: ["标题", "改名", "重命名", "名称"],
+            IntentType.QUALITY_FIX: ["质检", "修复", "去重", "重复", "清洗", "空值", "缺失"],
         }
         return keywords.get(intent_type, [])
     
@@ -208,12 +244,39 @@ class IntentClassifier:
                 }
         
         elif intent_type == IntentType.ADD_CHART:
-            # 提取要添加的图表类型
-            chart_types = ["饼图", "柱图", "柱状图", "线图", "折线图", "散点图", "表格", "kpi"]
-            for t in chart_types:
-                if t in message:
-                    analysis["extracted_params"] = {"chart_type": t}
-                    break
+            # 提取要添加的图表类型（优先具体图表类型，如"饼图"）
+            chart_types = ["饼图", "柱图", "柱状图", "线图", "折线图", "散点图", "表格"]
+            kpi_keywords = ["指标", "业务量", "笔数", "总额", "kpi", "KPI", "金额", "余额", "数量"]
+            is_kpi = any(kw in message for kw in kpi_keywords) and not any(t in message for t in chart_types)
+            if is_kpi:
+                analysis["extracted_params"] = {"chart_type": "kpi"}
+                # 尝试提取指标名（如"借据总笔数"）
+                m = re.search(r"(新增|添加|加)\s*(?:一个|一张|个)?([^，。；\s]{2,16}?(?:指标|笔数|总额|金额|余额|数量|KPI|kpi))", message)
+                if not m:
+                    m = re.search(r"([^，。；\s]{2,16}?(?:指标|笔数|总额|金额|余额|数量))", message)
+                if m:
+                    analysis["extracted_params"]["metric_name"] = m.group(1).lstrip("新增添加加个一张和")
+                if analysis["extracted_params"].get("metric_name") in (None, ""):
+                    analysis["extracted_params"]["metric_name"] = "新增指标"
+            else:
+                for t in chart_types:
+                    if t in message:
+                        analysis["extracted_params"] = {"chart_type": t}
+                        break
+
+            # 尝试提取指标名（如"借据总笔数""担保总额"）
+            metric_raw = ""
+            mm = re.search(r"([一-龥A-Za-z_]*)(总笔数|总金额|总额|笔数|金额|余额|数量)", message)
+            if mm:
+                metric_raw = mm.group(1) + mm.group(2)
+                for stop in ("新增", "添加", "看板", "指标", "一个", "一张", "加", "和"):
+                    metric_raw = metric_raw.replace(stop, "")
+            metric_name = metric_raw or analysis["extracted_params"].get("metric_name") or "新增指标"
+            # 清除括在指标名里的非指标残留
+            metric_name = metric_name.strip("新增添加加个一张和看板指标完")
+            if not metric_name:
+                metric_name = "新增指标"
+            analysis["extracted_params"]["metric_name"] = metric_name
         
         elif intent_type == IntentType.DELETE_CHART:
             # 提取要删除的图表序号或类型
@@ -246,10 +309,21 @@ class IntentClassifier:
         
         elif intent_type == IntentType.FILTER_DRILL:
             # 提取筛选字段和值
-            filter_match = re.search(r"(只看|筛选|过滤).{0,5}([^的\s]+)", message)
+            filter_match = re.search(r"(只看|只查看|只显示|筛选|过滤|聚焦)[^，。；]*?(地区|区域|省份|城市|类别|类型|状态|分类)", message)
+            val_match = re.search(r"(只看|只查看|只看|只显示|筛选|过滤|聚焦)\s*([^，。；的\s]{2,16}?(?:省|市|区|县|类别|类型|状态))", message)
             if filter_match:
                 analysis["extracted_params"] = {
-                    "filter_value": filter_match.group(2)
+                    "filter_field": filter_match.group(2),
+                    "filter_value": None
+                }
+                # 提取具体值（如"华东""杭州"）
+                m = re.search(r"(只看|只查看|只显示|筛选|过滤|聚焦)([^，。；的\s]{1,12}?)[的地区省市区]", message)
+                if m:
+                    analysis["extracted_params"]["filter_value"] = m.group(2)
+            elif val_match:
+                analysis["extracted_params"] = {
+                    "filter_field": None,
+                    "filter_value": val_match.group(2)
                 }
         
         elif intent_type == IntentType.ATTRIBUTION:
@@ -266,6 +340,41 @@ class IntentClassifier:
                 analysis["extracted_params"] = {
                     "new_title": title_match.group(2)
                 }
+
+        elif intent_type == IntentType.QUALITY_FIX:
+            # 数据质量修复：提取问题类型、目标列、修复策略
+            ep = {}
+            # 问题类型
+            if re.search(r"重复|去重|一列多值", message):
+                ep["issue_type"] = "duplicate"
+            elif re.search(r"空值|缺失|null|为空", message):
+                ep["issue_type"] = "null"
+            elif re.search(r"格式|日期|乱码|不正确", message):
+                ep["issue_type"] = "format"
+            elif re.search(r"异常|越界|超范围", message):
+                ep["issue_type"] = "anomaly"
+            else:
+                ep["issue_type"] = "duplicate"  # 默认按重复处理
+
+            # 目标列（如"借据号""借据编号"）——优先匹配"XX号/编号"
+            col_match = re.search(r"([一-龥A-Za-z_]{1,8}?(?:号|编号|序号|类型|日期|状态))", message)
+            if col_match:
+                col = col_match.group(1)
+                for noise in ("质检", "发现", "检查", "清洗", "修复", "有", "后", "异常", "问题", "重复", "缺失", "空值", "帮我", "请", "的"):
+                    col = col.replace(noise, "")
+                ep["column"] = col
+            elif "借据" in message:
+                ep["column"] = "借据号"
+            else:
+                ep["column"] = ""
+
+            # 修复策略
+            if "去重" in message:
+                ep["fix_strategy"] = "keep_first"
+            else:
+                ep["fix_strategy"] = "keep_first"
+
+            analysis["extracted_params"] = ep
         
         # 添加上下文信息
         if context:

@@ -21,7 +21,13 @@ UPLOAD_DIR = Path(settings.UPLOAD_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 允许的文件扩展名
-ALLOWED_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
+# P1: 多格式输入扩展 - 表格类 + 文档类 + 图片类
+ALLOWED_EXTENSIONS = {
+    '.xlsx', '.xls', '.csv',          # 原有表格格式
+    '.json', '.tsv',                  # 新增表格类
+    '.docx', '.pdf', '.md', '.txt',  # 新增文档类
+    '.png', '.jpg', '.jpeg', '.webp', # 新增图片类
+}
 
 # 最大文件大小 100MB
 MAX_FILE_SIZE = 100 * 1024 * 1024
@@ -74,7 +80,7 @@ async def upload_file(
     """
     上传数据文件
     
-    支持格式: .xlsx, .xls, .csv
+    支持格式: .xlsx, .xls, .csv, .json, .tsv, .docx, .pdf, .md, .txt, .png, .jpg, .jpeg, .webp
     最大大小: 100MB
     自动计算hash指纹用于查重
     """
@@ -419,7 +425,9 @@ async def preview_file(
     file_path = None
     file_ext = None
     
-    for ext in ['.xlsx', '.xls', '.csv']:
+    # P1: 支持所有允许的扩展名
+    all_exts = ['.xlsx', '.xls', '.csv', '.json', '.tsv', '.docx', '.pdf', '.md', '.txt', '.png', '.jpg', '.jpeg', '.webp']
+    for ext in all_exts:
         path = UPLOAD_DIR / f"{file_id}{ext}"
         if path.exists():
             file_path = path

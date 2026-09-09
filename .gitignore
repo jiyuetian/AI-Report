@@ -59,3 +59,16 @@ _probe*.py
 _perf*.py
 backend/app/_scan.py
 backend/scripts/smoke_test_async_quality.py
+scripts/smoke_test_async_quality.py
+scripts/_repro_s3_out.txt
+
+# 一次性诊断/冒烟脚本已归档（保留在仓库但不再作为入口，避免误跑）
+backend/scripts/_archive/
+scripts/_archive/
+
+# 自测脚本运行产物（可复现，无需入库）
+tests/_reports/
+tests/_*.png
+
+# 浏览器截图调试产物（勿入库）
+dashboard_*.png

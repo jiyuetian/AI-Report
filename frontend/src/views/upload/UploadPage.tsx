@@ -112,6 +112,8 @@ export default function UploadPage() {
   }
 
   // 恢复会话
+  // 规则：已生成看板的文件视为"本上传任务已结束"，不再恢复到上传页。
+  // 用户可去对应看板内迭代；重新进入上传页应从干净的空状态开始（可上传新数据、生成新看板）。
   const restoreSession = () => {
     try {
       const raw = localStorage.getItem(SESSION_KEY)
@@ -121,17 +123,43 @@ export default function UploadPage() {
         localStorage.removeItem(SESSION_KEY)
         return
       }
-      setFileList(session.fileList)
-      setPreviewMap(session.previewMap || {})
-      setDatasetMap(session.datasetMap || {})
-      setPreviewFailures(session.previewFailures || {})
-      setDatasetErrors(session.datasetErrors || {})
-      setGenMap(session.genMap || {})
-      if (session.activeFileId) {
+      const gen = session.genMap || {}
+      const completedIds = new Set(Object.keys(gen).filter(k => gen[k]?.done))
+
+      // 过滤掉已完成看板的文件及其关联数据
+      const nextFileList = session.fileList.filter((f: UploadItem) => !(f.fileId && completedIds.has(f.fileId)))
+      const nextPreviewMap = { ...(session.previewMap || {}) }
+      const nextDatasetMap = { ...(session.datasetMap || {}) }
+      const nextPreviewFailures = { ...(session.previewFailures || {}) }
+      const nextDatasetErrors = { ...(session.datasetErrors || {}) }
+      const nextGenMap = { ...gen }
+      completedIds.forEach(id => {
+        delete nextPreviewMap[id]
+        delete nextDatasetMap[id]
+        delete nextPreviewFailures[id]
+        delete nextDatasetErrors[id]
+        delete nextGenMap[id]
+      })
+
+      // 所有文件都已生成看板 → 全部结束，返回干净的初始空状态
+      if (nextFileList.length === 0) {
+        localStorage.removeItem(SESSION_KEY)
+        return
+      }
+
+      setFileList(nextFileList)
+      setPreviewMap(nextPreviewMap)
+      setDatasetMap(nextDatasetMap)
+      setPreviewFailures(nextPreviewFailures)
+      setDatasetErrors(nextDatasetErrors)
+      setGenMap(nextGenMap)
+      if (session.activeFileId && nextPreviewMap[session.activeFileId]) {
         setActiveFileId(session.activeFileId)
+      } else {
+        setActiveFileId(Object.keys(nextPreviewMap)[0] || null)
       }
       setSessionRestored(true)
-      message.info('已恢复上次上传进度')
+      message.info('检测到未完成的上传任务，已恢复其中未生成看板的部分')
     } catch (e) {
       localStorage.removeItem(SESSION_KEY)
     }
@@ -630,19 +658,18 @@ export default function UploadPage() {
   const uploadProps: UploadProps = {
     name: 'file',
     multiple: true,
-    accept: '.xlsx,.xls,.csv',
+    accept: '.xlsx,.xls,.csv,.json,.tsv,.docx,.pdf,.md,.txt,.png,.jpg,.jpeg,.webp',
     customRequest,
     showUploadList: false,
     beforeUpload: (file) => {
-      const isValidType = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'application/vnd.ms-excel', 'text/csv'].includes(file.type) || 
-        file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.csv')
+      const validExts = ['.xlsx', '.xls', '.csv', '.json', '.tsv', '.docx', '.pdf', '.md', '.txt', '.png', '.jpg', '.jpeg', '.webp']
+      const isValidType = validExts.some(ext => file.name.toLowerCase().endsWith(ext))
       
       if (!isValidType) {
         setErrorModal({
           visible: true,
           code: 'UPLOAD_415',
-          message: `不支持的文件类型，仅支持 .xlsx, .xls, .csv`,
+          message: `不支持的文件类型，仅支持 .xlsx, .xls, .csv, .json, .tsv, .docx, .pdf, .md, .txt, .png, .jpg, .jpeg, .webp`,
           fileName: file.name
         })
         return Upload.LIST_IGNORE
@@ -658,7 +685,7 @@ export default function UploadPage() {
   return (
     <div className="upload-page">
       <Title level={2}>数据上传</Title>
-      <Text type="secondary">支持 Excel (.xlsx/.xls) 和 CSV 格式，单个文件最大 100MB</Text>
+      <Text type="secondary">支持 Excel/CSV/JSON/TSV 表格、DOCX/PDF/MD/TXT 文档、PNG/JPG/WEBP 图片，单个文件最大 100MB</Text>
 
       <Steps
         size="small"
@@ -692,7 +719,7 @@ export default function UploadPage() {
             </p>
             <p className="upload-text">点击或拖拽文件到此区域上传</p>
             <p className="ant-upload-hint">
-              支持 .xlsx, .xls, .csv 格式，文件大小不超过 100MB
+              支持 .xlsx, .xls, .csv, .json, .tsv, .docx, .pdf, .md, .txt, .png, .jpg, .webp 格式，文件大小不超过 100MB
             </p>
           </Dragger>
         </div>
@@ -825,7 +852,7 @@ export default function UploadPage() {
                 <Tag color="error">UPLOAD_415</Tag>
                 <p>不支持的文件格式</p>
                 <p>{errorModal.message}</p>
-                <p style={{ marginTop: 8 }}>支持的格式：<Tag>.xlsx</Tag> <Tag>.xls</Tag> <Tag>.csv</Tag></p>
+                <p style={{ marginTop: 8 }}>支持的格式：<Tag>.xlsx</Tag> <Tag>.xls</Tag> <Tag>.csv</Tag> <Tag>.json</Tag> <Tag>.tsv</Tag> <Tag>.docx</Tag> <Tag>.pdf</Tag> <Tag>.md</Tag> <Tag>.txt</Tag> <Tag>.png</Tag> <Tag>.jpg</Tag> <Tag>.webp</Tag></p>
               </>
             )}
             {errorModal.code === 'UPLOAD_FAIL' && (

@@ -10,6 +10,7 @@ import json
 
 from app.core.brain_config_manager import BrainConfigManager
 from app.core.llm_gateway import llm_chat
+from app.core.prompt_loader import load_prompt
 
 
 @dataclass
@@ -223,28 +224,20 @@ class S2GoalGenerator:
         # 1. 先基于规则生成
         base_goals = self.generate_goals_rule_based(theme, fields, grain)
         
-        # 2. 加载Prompt模板
-        try:
-            template_config = await BrainConfigManager.get_config(db, "goal_prompt_v1")
-            if template_config:
-                template = template_config["content"].get("template", "")
-            else:
-                template = self._default_prompt_template()
-        except:
-            template = self._default_prompt_template()
-        
-        # 3. 构建Prompt
+        # 2. 构建Prompt（外置被控提示词优先 prompts/s2_goal_generator.md，缺失回退内置默认）
         base_goals_json = json.dumps([g.to_dict() for g in base_goals], ensure_ascii=False, indent=2)
-        
-        prompt = template.replace("{{theme}}", theme) \
-                         .replace("{{grain}}", grain) \
-                         .replace("{{fields}}", json.dumps(fields, ensure_ascii=False)) \
-                         .replace("{{base_goals}}", base_goals_json)
-        
-        if sample_data:
-            prompt = prompt.replace("{{sample_data}}", json.dumps(sample_data[:3], ensure_ascii=False))
-        
-        # 4. 调用LLM
+        sample_json = json.dumps(sample_data[:3], ensure_ascii=False) if sample_data else ""
+
+        # 3. 调用LLM
+        prompt = load_prompt(
+            "s2_goal_generator",
+            self._default_prompt_template(),
+            theme=theme,
+            grain=grain,
+            fields=json.dumps(fields, ensure_ascii=False),
+            base_goals=base_goals_json,
+            sample_data=sample_json,
+        )
         response = await llm_chat(
             prompt=prompt,
             json_mode=True,
@@ -275,15 +268,15 @@ class S2GoalGenerator:
         return base_goals
     
     def _default_prompt_template(self) -> str:
-        """默认Prompt模板"""
+        """默认Prompt模板（外置 prompts/s2_goal_generator.md 缺失时的回退）"""
         return """你是一位资深风控分析师。请基于以下信息优化分析目标：
 
-数据主题: {{theme}}
-数据粒度: {{grain}}
-字段列表: {{fields}}
+数据主题: {theme}
+数据粒度: {grain}
+字段列表: {fields}
 
 基础目标（由规则生成）：
-{{base_goals}}
+{base_goals}
 
 要求：
 1. 目标必须是中文业务化表述，避免技术术语（如"维度分析"、"指标"等）
@@ -297,6 +290,8 @@ class S2GoalGenerator:
    - 1个画像/关联类（如"客户风险长什么样"）
 
 4. 描述要通俗易懂，不用专业术语
+
+{sample_data}
 
 请以JSON格式返回优化后的目标：
 {

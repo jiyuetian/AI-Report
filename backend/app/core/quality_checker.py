@@ -57,6 +57,9 @@ class QualityChecker:
         """
         self.db = db_manager
         self.config = brain_config or {}
+        # 强制解析（coerce_numeric 清理货币/空白）与警告态修复受限开关
+        self.coerce_numeric_on = bool(self.config.get("coerce_numeric_on", True))
+        self._type_options_restricted = bool(self.config.get("restrict_repair_when_warn", False))
         
         # 默认阈值（从brain_configs读取，否则使用默认值）
         self.thresholds = {
@@ -88,6 +91,7 @@ class QualityChecker:
                 issues.extend(self._check_null(table_name, columns))
             elif issue_type == IssueType.FORMAT:
                 issues.extend(self._check_format(table_name, columns))
+                issues.extend(self._check_type_consistency(table_name, columns))
             elif issue_type == IssueType.UNIQUE:
                 issues.extend(self._check_unique(table_name, columns))
             elif issue_type == IssueType.RANGE:
@@ -147,12 +151,13 @@ class QualityChecker:
             IssueType.NULL: [
                 {"strategy": "fill_mean", "label": "用均值填充", "description": "使用该字段的平均值填充空值"},
                 {"strategy": "fill_median", "label": "用中位数填充", "description": "使用该字段的中位数填充空值"},
-                {"strategy": "fill_mode", "label": "用众数填充", "description": "使用该字段出现最多的值填充"},
+                {"strategy": "fill_mode", "label": "用众数填充", "description": "使用该字段出现最多的值填充空值"},
                 {"strategy": "fill_constant", "label": "指定值填充", "description": "输入自定义值填充空值"},
                 {"strategy": "drop", "label": "删除空值行", "description": "删除包含空值的行"},
             ],
             IssueType.FORMAT: [
                 {"strategy": "convert_standard", "label": "统一转换为标准格式", "description": "自动转换为标准格式（如日期YYYY-MM-DD）"},
+                {"strategy": "coerce_numeric", "label": "强制转换为数值", "description": "清理千分位/货币/空格，尝试转为真正的数值类型"},
                 {"strategy": "mark_anomaly", "label": "标记为异常值", "description": "标记为异常值，后续分析时跳过"},
                 {"strategy": "drop", "label": "删除错误行", "description": "删除格式错误的数据行"},
             ],
@@ -178,6 +183,12 @@ class QualityChecker:
                 {"strategy": "drop", "label": "删除异常码值行", "description": "删除包含非标准码值的行"},
             ],
         }
+        # 警告（非阻断）时不提供破坏性修复，只建议确认/忽略，防止误删干净数据
+        if self._type_options_restricted:
+            REPAIR_OPTIONS = {
+                t: [o for o in opts if o["strategy"] != "drop"]
+                for t, opts in REPAIR_OPTIONS.items()
+            }
         return REPAIR_OPTIONS.get(issue_type, [])
     
     # ==================== M1-08a: 空值检测（必拦/提示） ====================
@@ -437,7 +448,82 @@ class QualityChecker:
             return "number"
         
         return "unknown"
-    
+
+    # ==================== 文本型数字检测（数值被识别成文本，必拦） ====================
+    # 通用规则（不依赖AI，可随业务不断丰富）：把"看起来像数值、实际被读成文本"的列识别出来，
+    # 并给出「强制转数值」一键修复。规则库常量放文件底部 _TEXTNUM_RE 等，便于持续扩充。
+
+    def _normalize_numeric_str(self, s: str) -> str:
+        """把文本型数字清洗成可解析形式。清洗规则必须与 /quality/fix 的 coerce_numeric 完全一致，
+        否则会出现『检测判定可转、修复却置 NULL』的不一致。当前仅处理：货币符/千分位/空白(NBSP)。
+        尾缀单位（元/万元/%）不做剥离，避免量级误转（如 1.2万元→1.2）。"""
+        return re.sub(r'[￥¥$\s\u00a0,，]', '', s.strip())
+
+    def _coercible_numeric(self, s: str) -> bool:
+        """该值清洗后能否转为 float（据此判断"文本型数字"）"""
+        if s is None:
+            return True  # 空值不参与文本污染判断
+        try:
+            float(self._normalize_numeric_str(str(s)))
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def _check_type_consistency(self, table_name: str, columns: List[Dict]) -> List[QualityIssue]:
+        """
+        类型一致性检测 - 必拦项
+        识别"数值列被读成文本"（如 1,234 / ￥100 / '5000' / 混入'N/A' 导致整列文本）。
+        高置信文本型数字 → 强转数值修复（写清洗层，不动原始层）。
+        """
+        issues = []
+        if not self.coerce_numeric_on:
+            return issues
+
+        total = self.db.conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()[0]
+        if not total:
+            return issues
+
+        for col in columns:
+            col_name = col["name"]
+            if self._is_primary_key(col_name):
+                continue
+            rows = self.db.conn.execute(
+                f'SELECT rowid, CAST("{col_name}" AS VARCHAR) FROM {table_name} '
+                f'WHERE "{col_name}" IS NOT NULL AND TRIM(CAST("{col_name}" AS VARCHAR)) != \'\''
+            ).fetchall()
+            if not rows:
+                continue
+            values = [r[1] for r in rows]
+            contaminated = [v for v in values if not self._coercible_numeric(v)]
+            coercible_rate = (len(values) - len(contaminated)) / len(values)
+
+            # 高置信判数值：可转率过半才进入数字判定；真实枚举列（性别/状态）可转率低，天然被这个门槛挡掉
+            if coercible_rate < _NUMERIC_RATIO:
+                continue
+            if not contaminated:
+                continue
+
+            severity = (
+                IssueSeverity.BLOCKING
+                if len(contaminated) / len(values) <= _NUMERIC_DOMINANT_RATIO
+                else IssueSeverity.WARNING
+            )
+            rule_name = "文本型数字强制检测" if severity == IssueSeverity.BLOCKING else "文本型数字提示验证"
+            issues.append(QualityIssue(
+                issue_type=IssueType.FORMAT,
+                severity=severity,
+                column=col_name,
+                row_indices=[r[0] for r in rows[:10]],
+                message=(
+                    f"字段『{col_name}』疑似数值被读成文本：{len(contaminated)}/{len(values)} 行无法转数值"
+                    f"（样例 {contaminated[:3]}），建议一键转为数值后继续"
+                ),
+                sample_values=contaminated[:5],
+                rule_name=rule_name,
+                repair_options=self._get_repair_options(IssueType.FORMAT, col_name)
+            ))
+        return issues
+
     # ==================== M1-08b: 其余四类（提示项） ====================
     
     def _check_unique(self, table_name: str, columns: List[Dict]) -> List[QualityIssue]:
@@ -575,3 +661,21 @@ class QualityChecker:
                     ))
         
         return issues
+
+
+# ==================== 类型一致性规则库（可生长，不依赖AI） ====================
+# 规则引擎的可迭代规则库：数值尾缀单位、判定阈值都集中在此，后续按行业/场景持续扩充，
+# 让系统在完全不依赖 LLM 的情况下也能识别"文本型数字"，AI 只在规则低置信时介入增强。
+
+# 文本型数字常见"尾缀单位"（判定与清洗共用，可随业务扩充）
+_NUMERIC_SUFFIXES = [
+    r'万元', r'千元', r'亿元', r'元', r'万', r'亿',
+    r'公斤', r'千克', r'克', r'吨', r'斤',
+    r'万元', r'mm', r'cm', r'm', r'km',
+    r'个百分点', r'个百分点', r'%', r'％',
+    r'个', r'笔', r'户', r'人', r'次', r'家', r'辆',
+]
+
+# 判定阈值（集中管理，便于调优/演进）
+_NUMERIC_RATIO = 0.5            # 可转数值占比≥50% 才视为"疑似数值列"（低置信交给AI）
+_NUMERIC_DOMINANT_RATIO = 0.3   # 脏值占比≤30% → 高置信数值列，阻断强转；超过则数值/文本五五开，降为提示交AI验证

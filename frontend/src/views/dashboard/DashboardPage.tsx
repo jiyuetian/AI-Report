@@ -105,6 +105,7 @@ interface DashboardConfig {
   charts: ChartConfig[];
   theme: string;
   score: number;
+  analysis_text?: string;
 }
 
 // ======== 稳健图表数据解析 helper（弱化 LLM 字段映射不准的影响）========
@@ -198,7 +199,7 @@ function formatCompact(val: number, fmt?: string): { value: any; prefix?: string
     if (a >= 1e4) return { value: trimNum((val / 1e4).toFixed(2)) + '万', prefix };
     return { value: Number.isInteger(val) ? val.toLocaleString() : val, prefix };
   }
-  if (fmt === 'percent') return { value, suffix: '%' };
+  if (fmt === 'percent') return { value: val, suffix: '%' };
   if (a >= 1e8) return { value: trimNum((val / 1e8).toFixed(2)) + '亿' };
   if (a >= 1e7) return { value: trimNum((val / 1e4).toFixed(1)) + '万' };
   return { value: Number.isInteger(val) ? val.toLocaleString() : val };
@@ -248,13 +249,26 @@ const DashboardPage: React.FC = () => {
         // 新增图表
         const charts = newConfig.charts;
         const chartType = params.chart_type || 'bar';
+        // 从已有图表推导真实字段：数值 y / 维度 x / 数据集ID，避免生成空图（x='category'/y='value' 不存在）
+        let xf = '', yf = '', dsId = '';
+        for (const c of charts) {
+          if (!dsId) dsId = (c.dataset_id || c.datasetId || '');
+          const y = c.y_field || c.value_field || '';
+          const x = c.x_field || c.category_field || '';
+          if (chartType === 'kpi' && y) { xf = x; yf = y; break; }
+          if (!yf) yf = y;
+          if (!xf) xf = x;
+          if (yf && xf) break;
+        }
         const newChart = {
           id: `chart_${charts.length + 1}`,
           chart_type: chartType,
-          title: `新增${chartType}`,
-          dataset_id: urlId,
-          x_field: 'category',
-          y_field: 'value',
+          title: params.title || `新增${chartType}`,
+          dataset_id: dsId || urlId,
+          x_field: xf || undefined,
+          y_field: yf || undefined,
+          category_field: (params.category_field) || undefined,
+          value_field: (params.value_field) || undefined,
           config: {},
         };
         charts.push(newChart);
@@ -391,8 +405,6 @@ const DashboardPage: React.FC = () => {
         if (dataRes) {
           setChartData(dataRes);
         }
-        
-        message.success('看板加载完成');
       } catch (err: any) {
         if (mounted) {
           message.warning(`看板详情加载失败: ${err?.message || '网络错误'}，将展示默认看板`);
@@ -409,7 +421,7 @@ const DashboardPage: React.FC = () => {
 
   // 有效图表列表：在LLM编排结果基础上，自动补足"贷款类型/地区/担保类型"分布图（如缺失）
   const effectiveCharts = useMemo(() => {
-    if (!config) return config?.charts || [];
+    if (!config) return [];
     const base = config.charts || [];
     if (!chartData?.columns?.length) return base;
     const covered = new Set<string>();
@@ -645,8 +657,8 @@ const DashboardPage: React.FC = () => {
     let val: number;
     if (agg === 'max') val = Math.max(...nums);
     else if (agg === 'min') val = Math.min(...nums);
-    else if (agg === 'mean' || agg === 'avg') val = nums.reduce((a, b) => a + b, 0) / nums.length;
-    else val = nums.reduce((a, b) => a + b, 0);
+    else if (agg === 'mean' || agg === 'avg') val = nums.reduce((a: number, b: number) => a + b, 0) / nums.length;
+    else val = nums.reduce((a: number, b: number) => a + b, 0);
     // 大金额紧凑格式化，避免卡片溢出显示不全
     const compact = formatCompact(val, c.format);
     return {
@@ -666,7 +678,7 @@ const DashboardPage: React.FC = () => {
     return (
       <div className="kpi-layer">
         <Row gutter={[16, 16]}>
-          {kpiCharts.map((chart, index) => {
+          {kpiCharts.map((chart: ChartConfig, index: number) => {
             const kv = deriveKpi(chart);
             return (
             <Col xs={24} sm={12} lg={6} key={`kpi-${index}`}>
@@ -699,7 +711,7 @@ const DashboardPage: React.FC = () => {
       <div className="evidence-layer">
         <h3 className="layer-title">趋势与对比分析</h3>
         <Row gutter={[16, 16]}>
-          {nonKpiCharts.map((chart, index) => (
+          {nonKpiCharts.map((chart: ChartConfig, index: number) => (
             <Col xs={24} md={12} key={`chart-${index}`}>
               <Card title={chart.title} className="chart-card">
                 <ReactECharts option={generateChartOption(chart)} style={{ height: 300 }} />
@@ -743,6 +755,24 @@ const DashboardPage: React.FC = () => {
     );
   };
 
+  // 渲染分析说明文本（L0 层，图表上方）
+  const renderAnalysisText = () => {
+    if (!config || !config.analysis_text) return null;
+    return (
+      <div className="analysis-text-layer">
+        <div className="analysis-text-card">
+          <div className="analysis-text-icon">
+            <BulbOutlined />
+          </div>
+          <div className="analysis-text-content">
+            <div className="analysis-text-title">AI 分析摘要</div>
+            <div className="analysis-text-body">{config.analysis_text}</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="dashboard-loading">
@@ -776,15 +806,20 @@ const DashboardPage: React.FC = () => {
           id={urlId}
           title={title}
           onRename={setTitle}
-          onDelete={() => { setConfig(null); setTitle(''); }}
+          // onDelete 由 DashboardOps 内部在删除成功后跳转到 /dashboards；
+          // 这里不再置空 config，避免跳转前闪屏"看板不存在"
+          onDelete={() => {}}
         />
 
         {/* L1 KPI层 */}
         {renderKPILayer()}
-        
+
+        {/* L0 分析说明 */}
+        {renderAnalysisText()}
+
         {/* L2 图表层 */}
         {renderChartLayer()}
-        
+
         {/* L3 明细表 */}
         {renderDetailTable()}
       </div>

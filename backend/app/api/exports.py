@@ -6,6 +6,7 @@ PDF/Excel/PNG 同步导出 + 水印 + 异步导出（>5s转异步，通知+7天�
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -17,9 +18,10 @@ router = APIRouter(prefix="/exports", tags=["Exports"])
 class ExportRequest(BaseModel):
     """导出请求"""
     dashboard_id: str = Field(..., description="看板ID")
-    format: Literal["pdf", "excel", "png"] = Field(..., description="导出格式")
+    format: Literal["pdf", "excel", "png", "json"] = Field(..., description="导出格式")
     include_watermark: bool = Field(True, description="是否包含水印")
     include_logic: bool = Field(False, description="是否包含口径说明")
+    include_data: bool = Field(False, description="是否包含数据")
 
 
 class AsyncExportResponse(BaseModel):
@@ -39,10 +41,33 @@ async def export_sync(
     """
     同步导出（<5秒返回）
     
-    支持格式：PDF、Excel、PNG
-    可选：水印、口径说明
+    支持格式：PDF、Excel、PNG、JSON
+    可选：水印、口径说明、包含数据
     """
     try:
+        # JSON 导出：真实返回看板配置内容，供前端触发下载（修复 json→excel 误映射）
+        if request.format == "json":
+            from sqlalchemy import select
+            from app.models.dashboard import Dashboard
+            result = await db.execute(select(Dashboard).where(Dashboard.id == request.dashboard_id))
+            dash = result.scalar_one_or_none()
+            if not dash:
+                raise HTTPException(status_code=404, detail="看板不存在")
+            payload = {
+                "dashboard_id": dash.id,
+                "name": dash.name,
+                "description": dash.description,
+                "status": dash.status,
+                "config": dash.config if hasattr(dash, "config") else {},
+                "exported_at": datetime.utcnow().isoformat(),
+            }
+            return {
+                "mode": "sync",
+                "format": "json",
+                "filename": f"{dash.name}.dashboard.json",
+                "content": payload,
+            }
+
         format_map = {
             "pdf": ExportFormat.PDF,
             "excel": ExportFormat.EXCEL,

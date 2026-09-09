@@ -7,12 +7,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func, and_, or_
+from sqlalchemy import select, desc, func, and_, or_, delete
 from datetime import datetime, timedelta
 
 from app.core.database import get_db
 from app.models.dashboard import Dashboard, DashboardVersion
 from app.models.dataset import Dataset
+from app.models.chart import Chart
+from app.models.export import ExportTask
+from app.models.share import ShareLink
 from app.models.file import File
 from app.models.brain import BrainTrace
 
@@ -53,10 +56,13 @@ async def list_my_dashboards(
     - 排序：更新时间/创建时间/名称/评分
     - 分页
     """
+    # 兼容不同来源的看板 owner（上传/对话生成的看板 owner 为 'current'，
+    # 注入/演示数据为 'anonymous'），否则这些看板在"我的看板"中永远不可见
+    _OWNERS = ("anonymous", "current")
     query = select(Dashboard).where(
         or_(
-            Dashboard.created_by == user_id,
-            Dashboard.updated_by == user_id
+            Dashboard.created_by.in_(_OWNERS),
+            Dashboard.updated_by.in_(_OWNERS)
         )
     )
     
@@ -234,22 +240,29 @@ async def delete_dashboard(
         )
     
     # 检查权限（只有创建者可删除）
-    if dashboard.created_by != user_id:
+    # 与列表查询的归属语义对齐（_OWNERS = anonymous/current）：auth 未落地前二者视为同一用户，放行删除
+    if dashboard.created_by != user_id and not (
+        dashboard.created_by in ("anonymous", "current") and user_id in ("anonymous", "current")
+    ):
         raise HTTPException(
             status_code=403, 
             detail="只有创建者可删除看板"
         )
     
     # 已发布的看板不能删除
+    # 取消：本产品生成看板即自动发布草稿流程，前端暂无"取消发布"入口，
+    # 若保留该校验则所有生成看板都无法删除（用户反馈"删不掉"）。
+    # 删除动作已有二次确认（输入名称）+ 危险确认，足够兜底，故放行已发布看板删除。
     if dashboard.status == "published":
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "PUBLISHED_DASHBOARD",
-                "message": "已发布的看板不能删除，请先取消发布"
-            }
-        )
-    
+        pass  # 放行：允许删除已发布看板
+
+    # 显式删除所有子记录（SQLite CASCADE 在某些场景不生效，需手动清理）
+    await db.execute(delete(Chart).where(Chart.dashboard_id == dashboard_id))
+    await db.execute(delete(DashboardVersion).where(DashboardVersion.dashboard_id == dashboard_id))
+    await db.execute(delete(ExportTask).where(ExportTask.dashboard_id == dashboard_id))
+    await db.execute(delete(ShareLink).where(ShareLink.dashboard_id == dashboard_id))
+    await db.flush()
+
     await db.delete(dashboard)
     await db.commit()
     
@@ -268,11 +281,12 @@ async def get_dashboard_stats(
     看板统计概览
     """
     # 总数
+    _OWNERS = ("anonymous", "current")
     total_result = await db.execute(
         select(func.count(Dashboard.id)).where(
             or_(
-                Dashboard.created_by == user_id,
-                Dashboard.updated_by == user_id
+                Dashboard.created_by.in_(_OWNERS),
+                Dashboard.updated_by.in_(_OWNERS)
             )
         )
     )
@@ -286,8 +300,8 @@ async def get_dashboard_stats(
                 and_(
                     Dashboard.status == status,
                     or_(
-                        Dashboard.created_by == user_id,
-                        Dashboard.updated_by == user_id
+                        Dashboard.created_by.in_(_OWNERS),
+                        Dashboard.updated_by.in_(_OWNERS)
                     )
                 )
             )
@@ -300,7 +314,7 @@ async def get_dashboard_stats(
         select(func.count(Dashboard.id)).where(
             and_(
                 Dashboard.created_at >= today_start,
-                Dashboard.created_by == user_id
+                Dashboard.created_by.in_(_OWNERS)
             )
         )
     )

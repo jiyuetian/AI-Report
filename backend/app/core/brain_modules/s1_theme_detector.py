@@ -10,6 +10,32 @@ import re
 
 from app.core.brain_config_manager import BrainConfigManager
 from app.core.llm_gateway import llm_chat
+from app.core.prompt_loader import load_prompt
+
+
+# 主题域提示（LLM兜底时展示给模型的主题候选）
+_THEME_DOMAINS = """- 担保风控（包含担保、抵押、质押等字段）
+- 逾期分析（包含逾期、违约等字段）
+- 地区分布（包含省份、城市等字段）
+- 客户画像（包含客户、企业等字段）
+- 产品分析（包含贷款、借据等字段）"""
+
+# 内置默认提示词（外置 prompts/s1_theme_detector.md 缺失时的回退）
+_PROMPT_TPL = """你是一位数据分析师。请分析以下数据集的主题：
+
+数据集名称: {dataset_name}
+字段列表: {fields}
+字段数量: {field_count}{sample_str}
+
+请从以下主题中识别最匹配的一个，或提出新的主题：
+{theme_domains}
+
+请以JSON格式返回：
+{
+    "theme_tag": "主题标签",
+    "confidence": 0.95,
+    "reason": "识别理由"
+}"""
 
 
 @dataclass
@@ -143,26 +169,18 @@ class S1ThemeDetector:
         sample_str = ""
         if sample_data:
             sample_str = f"\n样本数据（前3行）:\n{str(sample_data[:3])[:500]}"
-        
-        prompt = f"""你是一位数据分析师。请分析以下数据集的主题：
 
-数据集名称: {dataset_name}
-字段列表: {', '.join(fields)}
-字段数量: {len(fields)}{sample_str}
-
-请从以下主题中识别最匹配的一个，或提出新的主题：
-- 担保风控（包含担保、抵押、质押等字段）
-- 逾期分析（包含逾期、违约等字段）
-- 地区分布（包含省份、城市等字段）
-- 客户画像（包含客户、企业等字段）
-- 产品分析（包含贷款、借据等字段）
-
-请以JSON格式返回：
-{{
-    "theme_tag": "主题标签",
-    "confidence": 0.95,
-    "reason": "识别理由"
-}}"""
+        fields_str = ", ".join(fields)
+        # 外置被控提示词优先（prompts/s1_theme_detector.md），缺失回退内置默认
+        prompt = load_prompt(
+            "s1_theme_detector",
+            _PROMPT_TPL,
+            dataset_name=dataset_name,
+            fields=fields_str,
+            field_count=str(len(fields)),
+            sample_str=sample_str,
+            theme_domains=_THEME_DOMAINS,
+        )
         
         # 调用LLM
         response = await llm_chat(

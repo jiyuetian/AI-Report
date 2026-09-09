@@ -53,24 +53,73 @@ class FieldAnalyzer:
     """字段分析器"""
     
     # 关键词到字段类型的映射
+    # 中文业务字段语义：兄弟姐妹——"婚姻状况/单位性质/单位所属行业/失信人员"都应是类别字段，
+    # "借款人年龄/公积金缴存月数/收入负债比/历史逾期次数/职业稳定性(连续工作年限)"都应是数值字段。
+    # 顺序敏感：先精确(数值)再语义归类；ID/编号类强制文本，避免被当数值。
     KEYWORD_PATTERNS = {
-        FieldType.DATE: [r"日期?", r"时间", r"年月?", r"day", r"date", r"time"],
-        FieldType.NUMBER: [r"金额", r"额", r"率", r"数", r"值", r"量", r"价格", r"total", r"amount", r"count", r"num", r"balance"],
-        FieldType.GEO: [r"地区", r"省份?", r"城市", r"区", r"地址", r"geo", r"region", r"province", r"city"],
-        FieldType.CATEGORY: [r"类型", r"类别", r"种类", r"方式", r"状态", r"类型", r"type", r"category", r"status"]
+        FieldType.NUMBER: [r"金额", r"总额", r"额$", r"￥|\$", r"率", r"比$", r"月数", r"天数", r"次数",
+                          r"数量", r"笔数", r"人数", r"年龄", r"年限", r"余额", r"占比", r"价格",
+                          r"total", r"amount", r"count", r"num\b", r"value", r"balance"],
+        FieldType.CATEGORY: [r"婚姻", r"状况", r"性质", r"行业", r"类别", r"类型", r"种类", r"方式",
+                           r"状态", r"性别", r"人员", r"标签", r"是否", r"通过", r"区域", r"所在地",
+                           r"省份?", r"城市", r"type", r"category", r"status"],
+        FieldType.GEO: [r"地区", r"省份", r"省$", r"城市", r"县$", r"区$", r"地址", r"geo", r"region",
+                       r"province", r"city"],
+        FieldType.DATE: [r"日期", r"时间", r"年月", r"day", r"date", r"time"],
     }
-    
+
+    # 强制文本标识：主键/唯一标识类字段永远不是分析数值或分类维度
+    ID_PATTERNS = [r"id", r"编号", r"序号", r"代码$", r"编码"]
+
     @staticmethod
     def infer_field_type(field_name: str, sample_values: Optional[List] = None) -> FieldType:
-        """推断字段类型"""
+        """推断字段类型 —— 样本值优先，关键词次之"""
         field_lower = field_name.lower()
-        
-        # 关键词匹配
+
+        # 强制文本（ID/编号类）
+        for pat in FieldAnalyzer.ID_PATTERNS:
+            if re.search(pat, field_lower, re.IGNORECASE):
+                return FieldType.TEXT
+
+        # ── 优先级1：样本值分析 ──────────────────────────────────────
+        if sample_values and len(sample_values) > 0:
+            non_null = [v for v in sample_values if v is not None and str(v).strip() != ""]
+            if non_null:
+                # 尝试解析为日期
+                date_count = 0
+                for v in non_null[:20]:
+                    s = str(v).strip()
+                    if re.match(r'^\d{4}[-/年]\d{1,2}[-/年]\d{1,2}', s) or \
+                       re.match(r'^\d{4}年\d{1,2}月\d{1,2}日?', s) or \
+                       re.match(r'^\d{4}-\d{2}-\d{2}', s):
+                        date_count += 1
+                if date_count >= len(non_null) * 0.5:
+                    return FieldType.DATE
+
+                # 尝试解析为数字
+                num_count = 0
+                for v in non_null[:20]:
+                    s = str(v).replace(',', '').replace('￥', '').replace('$', '').replace(' ', '').strip()
+                    try:
+                        float(s)
+                        num_count += 1
+                    except ValueError:
+                        pass
+                if num_count >= len(non_null) * 0.5:
+                    return FieldType.NUMBER
+
+                # 基数判断：低基数 → CATEGORY，高基数 → TEXT
+                distinct_vals = set(str(v) for v in non_null[:100])
+                total = len(non_null)
+                if total > 0 and len(distinct_vals) / total < 0.5 and len(distinct_vals) <= 50:
+                    return FieldType.CATEGORY
+
+        # ── 优先级2：关键词匹配（样本值缺失时的兜底）──────────────────
         for ftype, patterns in FieldAnalyzer.KEYWORD_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, field_lower, re.IGNORECASE):
                     return ftype
-        
+
         # 默认值
         return FieldType.TEXT
     
@@ -150,35 +199,48 @@ class S3ChartEngine:
             ]
         }
     
-    def _match_rule(self, rule: Dict, field_types: Dict[str, FieldType], grain: str) -> Optional[ChartRecommendation]:
+    def _match_rule(self, rule: Dict, field_types: Dict[str, FieldType], grain: str,
+                    sample_data: Optional[List[Dict]] = None) -> Optional[ChartRecommendation]:
         """匹配单条规则"""
         condition = rule.get("condition", {})
-        
+
         # 检查粒度限制
         if grain in self.grain_constraints:
             forbidden = self.grain_constraints[grain].get("forbidden", [])
             chart_type = rule.get("chart", {}).get("type", "")
             if chart_type in forbidden:
                 return None
-        
-        # 检查字段类型
-        required_types = condition.get("field_types", [])
-        
+
         # 统计各类型字段数
         type_counts = {}
         for ft in field_types.values():
             type_counts[ft.value] = type_counts.get(ft.value, 0) + 1
-        
-        # 检查是否满足条件
+
+        # 检查字段类型数量
+        required_types = condition.get("field_types", [])
         for req_type in required_types:
             if type_counts.get(req_type, 0) == 0:
                 return None
-        
-        # 特殊条件检查
+
+        # ── cardinality 约束（样本值分析）─────────────────────────────
+        if sample_data:
+            for cond_key, cond_val in condition.items():
+                if cond_key == "category_cardinality":
+                    cat_fields = [f for f, t in field_types.items() if t in (FieldType.CATEGORY, FieldType.GEO)]
+                    for cf in cat_fields:
+                        vals = [row.get(cf) for row in sample_data if cf in row]
+                        distinct = set(str(v) for v in vals if v is not None)
+                        if cond_val.get("max") and len(distinct) > cond_val["max"]:
+                            print(f"[S3] 规则跳过: {cf} 基数={len(distinct)} > max={cond_val['max']}")
+                            return None
+                        if cond_val.get("min") and len(distinct) < cond_val["min"]:
+                            return None
+
+        # ── 其他计数约束 ──────────────────────────────────────────────
         if "date_count" in condition:
             if type_counts.get("date", 0) != condition["date_count"]:
                 return None
-        
+
         if "number_count" in condition:
             n_count = type_counts.get("number", 0)
             cond = condition["number_count"]
@@ -190,6 +252,29 @@ class S3ChartEngine:
                     return None
                 if cond.get("max") and n_count > cond["max"]:
                     return None
+
+        if "category_count" in condition:
+            c_count = type_counts.get("category", 0) + type_counts.get("geo", 0)
+            cond = condition["category_count"]
+            if isinstance(cond, int):
+                if c_count != cond:
+                    return None
+            elif isinstance(cond, dict):
+                if cond.get("min") and c_count < cond["min"]:
+                    return None
+                if cond.get("max") and c_count > cond["max"]:
+                    return None
+
+        # keywords 语义条件校验
+        keywords = condition.get("keywords")
+        if keywords:
+            hit = any(
+                re.search(k, fname, re.IGNORECASE)
+                for fname in field_types
+                for k in (keywords if isinstance(keywords, (list, tuple)) else [keywords])
+            )
+            if not hit:
+                return None
         
         # 匹配成功，构建推荐
         chart_config = rule.get("chart", {})
@@ -202,10 +287,27 @@ class S3ChartEngine:
         geo_fields = [f for f, t in field_types.items() if t == FieldType.GEO]
         
         title = chart_config.get("title", "图表")
-        title = title.replace("{date_field}", date_fields[0] if date_fields else "日期")
-        title = title.replace("{number_field}", number_fields[0] if number_fields else "数值")
-        title = title.replace("{category_field}", category_fields[0] if category_fields else "类别")
-        title = title.replace("{geo_field}", geo_fields[0] if geo_fields else "地区")
+        # 完备的占位符替换：{field}/{number_field}/{number_field1}/{number_field2}
+        # /{number_fields}/{category_field}/{category_field1}/{category_field2}/{date_field}/{geo_field}
+        # 否则标题会残留未替换的占位符（如"总{field}""{number_field1} vs {number_field2}"）
+        n0 = number_fields[0] if number_fields else None
+        n1 = number_fields[1] if len(number_fields) > 1 else n0
+        c0 = category_fields[0] if category_fields else None
+        c1 = category_fields[1] if len(category_fields) > 1 else c0
+        d0 = date_fields[0] if date_fields else None
+        g0 = geo_fields[0] if geo_fields else None
+        def _pick(v, fallback):
+            return v if v is not None else fallback
+        title = title.replace("{field}", _pick(n0, _pick(c0, "数值")))
+        title = title.replace("{number_field}", _pick(n0, "数值"))
+        title = title.replace("{number_field1}", _pick(n0, "数值A"))
+        title = title.replace("{number_field2}", _pick(n1, _pick(n0, "数值B")))
+        title = title.replace("{number_fields}", "+".join(number_fields[:3]) if number_fields else "指标")
+        title = title.replace("{category_field1}", _pick(c0, "类别A"))
+        title = title.replace("{category_field2}", _pick(c1, _pick(c0, "类别B")))
+        title = title.replace("{category_field}", _pick(c0, "类别"))
+        title = title.replace("{date_field}", _pick(d0, "日期"))
+        title = title.replace("{geo_field}", _pick(g0, "地区"))
         
         config = chart_config.get("config", {}).copy()
         
@@ -243,7 +345,8 @@ class S3ChartEngine:
         fields: List[str],
         grain: str = "detail",
         sample_data: Optional[List[Dict]] = None,
-        max_charts: int = 5
+        max_charts: int = 5,
+        field_types_override: Optional[Dict[str, FieldType]] = None
     ) -> List[ChartRecommendation]:
         """
         推荐图表
@@ -253,20 +356,21 @@ class S3ChartEngine:
             grain: 数据粒度 (detail/aggregate/macro)
             sample_data: 样本数据
             max_charts: 最大推荐数
+            field_types_override: AI 语义标注融合后的字段类型，覆盖规则推断（默认为 None 用规则）
         
         Returns:
             图表推荐列表
         """
-        # 分析字段类型
-        field_types = FieldAnalyzer.analyze_fields(fields, sample_data)
+        # 分析字段类型：优先用 AI+规则 融合结果（down-grade 场景也能享受 AI 识别能力）
+        field_types = field_types_override or FieldAnalyzer.analyze_fields(fields, sample_data)
         
         print(f"[S3] 字段分析: {field_types}")
         
         # 按优先级排序匹配规则
         recommendations = []
-        
+
         for rule in sorted(self.rules, key=lambda x: x.get("priority", 0), reverse=True):
-            rec = self._match_rule(rule, field_types, grain)
+            rec = self._match_rule(rule, field_types, grain, sample_data)
             if rec:
                 # 去重检查
                 existing_types = [r.chart_type for r in recommendations]
@@ -322,12 +426,18 @@ class S3ChartEngine:
             category_fields = [f for f, t in field_types.items() if t == FieldType.CATEGORY]
             
             title = fb.get("title", "图表")
-            
+
+            # 多分类维度时，让 bar/pie 轮流采用不同 category，避免所有图都只用同一个维度；
+            # 无分类字段则退回日期/时间维度
+            cat = (category_fields[len(result) % len(category_fields)]
+                   if category_fields
+                   else (date_fields[0] if date_fields else None))
             rec = ChartRecommendation(
                 chart_type=chart_type,
                 title=title,
-                x_field=date_fields[0] if date_fields else (category_fields[0] if category_fields else None),
+                x_field=cat,
                 y_field=number_fields[0] if number_fields else None,
+                category_field=cat,
                 priority=fb.get("priority", 0),
                 rule_name="fallback",
                 reason="兜底规则"
@@ -342,70 +452,34 @@ class S3ChartEngine:
         self,
         fields: List[str],
         grain: str = "detail",
-        sample_data: Optional[List[Dict]] = None
+        sample_data: Optional[List[Dict]] = None,
+        field_types_override: Optional[Dict[str, FieldType]] = None
     ) -> Dict[str, Any]:
         """
-        生成完整看板配置（5个图表）
-        
-        断 LLM 时 01 表仍出：
-        - KPI卡
-        - 趋势图
-        - 对比图
-        - 分布图
-        - 明细表
+        生成看板配置 —— 按数据实际能力出图，不再硬塞固定数量
+
+        field_types_override: AI+规则融合的字段类型（默认 None 用纯规则推断）
         """
-        recommendations = self.recommend_charts(fields, grain, sample_data, max_charts=5)
-        
-        # 确保覆盖五种类型
-        required_types = {"kpi", "line", "bar", "pie", "table"}
-        existing_types = {r.chart_type for r in recommendations}
-        
-        # 如果缺少必要类型，强制添加
-        for req_type in required_types - existing_types:
-            if req_type == "kpi":
-                recommendations.insert(0, ChartRecommendation(
-                    chart_type="kpi",
-                    title="关键指标",
-                    priority=100,
-                    rule_name="fallback_kpi",
-                    reason="强制兜底KPI"
-                ))
-            elif req_type == "line":
-                recommendations.append(ChartRecommendation(
-                    chart_type="line",
-                    title="趋势分析",
-                    priority=50,
-                    rule_name="fallback_line",
-                    reason="强制兜底趋势"
-                ))
-            elif req_type == "bar":
-                recommendations.append(ChartRecommendation(
-                    chart_type="bar",
-                    title="对比分析",
-                    priority=40,
-                    rule_name="fallback_bar",
-                    reason="强制兜底对比"
-                ))
-            elif req_type == "pie":
-                recommendations.append(ChartRecommendation(
-                    chart_type="pie",
-                    title="占比分布",
-                    priority=30,
-                    rule_name="fallback_pie",
-                    reason="强制兜底分布"
-                ))
-            elif req_type == "table":
-                recommendations.append(ChartRecommendation(
-                    chart_type="table",
-                    title="数据明细",
-                    priority=10,
-                    rule_name="fallback_table",
-                    reason="强制兜底明细"
-                ))
-        
-        # 截取前5个
-        recommendations = recommendations[:5]
-        
+        recommendations = self.recommend_charts(
+            fields, grain, sample_data, max_charts=6,
+            field_types_override=field_types_override
+        )
+
+        # 不再强制补到5张，按实际匹配结果返回
+        # 但至少保证有一张明细表（数据可追溯）
+        has_table = any(r.chart_type == "table" for r in recommendations)
+        if not has_table and len(recommendations) > 0:
+            n0 = fields[0] if fields else None
+            recommendations.append(ChartRecommendation(
+                chart_type="table",
+                title=f"数据明细（前20行）",
+                x_field=n0,
+                y_field=n0,
+                priority=10,
+                rule_name="fallback_table",
+                reason="自动补充分明细表"
+            ))
+
         return {
             "success": True,
             "grain": grain,

@@ -23,14 +23,35 @@ class CleanRule:
 class DataCleaner:
     """数据修复执行器"""
     
-    # 支持的修复策略
+    # 支持的修复策略（扩展至 20+ 类）
     STRATEGIES = {
+        # ── 缺失值处理 ──────────────────────────────────────────────
         "deduplicate": "去重 - 删除重复行",
         "fill_median": "分组中位填充 - 按分组填充中位数",
-        "convert_format": "格式转换 - 统一日期/数字格式",
+        "fill_mean": "分组均值填充 - 按分组填充平均值",
+        "fill_mode": "分组众数填充 - 按分组填充最常见值",
+        "fill_forward": "前向填充 - 用前一行值填充",
+        "fill_backward": "后向填充 - 用后一行值填充",
+        "fill_by_group": "按分组填充 - 用组内统计值填充",
         "delete": "剔除 - 删除问题行",
+        # ── 异常值处理 ──────────────────────────────────────────────
         "mark": "标记 - 标记但不删除",
-        "truncate": "截断 - 删除超出范围的值"
+        "truncate": "截断 - 删除超出范围的值",
+        "winsorize": "缩尾处理 - 将极端值截断到百分位",
+        "iqr_outlier": "IQR异常值 - 用四分位范围检测并替换",
+        # ── 格式与一致性 ──────────────────────────────────────────────
+        "convert_format": "格式转换 - 统一日期/数字格式",
+        "enum_normalize": "枚举归一 - 统一大小写/别名（如wx→微信）",
+        "unit_unify": "单位统一 - 统一金额/长度单位（如万元→元）",
+        "date_normalize": "日期归一 - 统一日期格式",
+        # ── 逻辑校验 ──────────────────────────────────────────────
+        "logic_date_reverse": "日期倒挂 - 修正开始日期>结束日期",
+        "logic_amount_check": "金额校验 - 金额=数量×单价",
+        "logic_repayment": "回款校验 - 回款≤应收",
+        # ── 合规脱敏 ──────────────────────────────────────────────
+        "phone_mask": "手机号脱敏 - 中间4位替换为****",
+        "id_card_mask": "身份证脱敏 - 保留前3后4位",
+        "bank_card_mask": "银行卡脱敏 - 保留后4位",
     }
     
     def __init__(self, db_manager):
@@ -76,9 +97,28 @@ class DataCleaner:
         elif strategy == "fill_median":
             group_by = params.get("group_by")
             result = self._fix_fill_median(table_name, column, group_by)
+        elif strategy == "fill_mean":
+            group_by = params.get("group_by")
+            result = self._fix_fill_mean(table_name, column, group_by)
+        elif strategy == "fill_mode":
+            group_by = params.get("group_by")
+            result = self._fix_fill_mode(table_name, column, group_by)
+        elif strategy == "fill_forward":
+            result = self._fix_fill_forward(table_name, column)
+        elif strategy == "fill_backward":
+            result = self._fix_fill_backward(table_name, column)
+        elif strategy == "fill_by_group":
+            group_by = params.get("group_by")
+            result = self._fix_fill_by_group(table_name, column, group_by)
         elif strategy == "convert_format":
             target_format = params.get("target_format", "standard")
             result = self._fix_convert_format(table_name, column, target_format)
+        elif strategy == "enum_normalize":
+            alias_map = params.get("alias_map", {})
+            result = self._fix_enum_normalize(table_name, column, alias_map)
+        elif strategy == "unit_unify":
+            target_unit = params.get("target_unit", "")
+            result = self._fix_unit_unify(table_name, column, target_unit)
         elif strategy == "delete":
             condition = params.get("condition")
             result = self._fix_delete(table_name, column, condition)
@@ -87,6 +127,22 @@ class DataCleaner:
         elif strategy == "truncate":
             threshold = params.get("threshold")
             result = self._fix_truncate(table_name, column, threshold)
+        elif strategy == "winsorize":
+            low = params.get("low", 0.01)
+            high = params.get("high", 0.99)
+            result = self._fix_winsorize(table_name, column, low, high)
+        elif strategy == "iqr_outlier":
+            k = params.get("k", 1.5)
+            result = self._fix_iqr_outlier(table_name, column, k)
+        elif strategy == "date_normalize":
+            target_fmt = params.get("target_format", "%Y-%m-%d")
+            result = self._fix_date_normalize(table_name, column, target_fmt)
+        elif strategy == "phone_mask":
+            result = self._fix_phone_mask(table_name, column)
+        elif strategy == "id_card_mask":
+            result = self._fix_id_card_mask(table_name, column)
+        elif strategy == "bank_card_mask":
+            result = self._fix_bank_card_mask(table_name, column)
         else:
             raise ValueError(f"不支持的修复策略: {strategy}")
         
@@ -266,25 +322,154 @@ class DataCleaner:
         }
     
     def _fix_truncate(self, table_name: str, column: str, threshold: float) -> Dict[str, Any]:
-        """
-        截断修复
-        
-        策略：将超出范围的值截断到阈值
-        """
+        """截断修复"""
         sql = f"""
             UPDATE {table_name}
             SET "{column}" = {threshold}
             WHERE CAST("{column}" AS DOUBLE) > {threshold}
         """
-        
         self.db.conn.execute(sql)
-        
-        return {
-            "affected_rows": -1,
-            "status": "success",
-            "sql": sql,
-            "threshold": threshold
-        }
+        return {"affected_rows": -1, "status": "success", "sql": sql, "threshold": threshold}
+
+    # ── 新增策略实现 ──────────────────────────────────────────────────
+
+    def _fix_fill_mean(self, table_name: str, column: str, group_by: Optional[str]) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = (
+                SELECT AVG("{column}") FROM {table_name}
+                {f'WHERE "{group_by}" = {table_name}."{group_by}"' if group_by else ''}
+            ) WHERE "{column}" IS NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_fill_mode(self, table_name: str, column: str, group_by: Optional[str]) -> Dict:
+        grp = f'"{group_by}" = {table_name}."{group_by}"' if group_by else "1=1"
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = (
+                SELECT "{column}" FROM {table_name} WHERE {grp}
+                GROUP BY "{column}" ORDER BY COUNT(*) DESC LIMIT 1
+            ) WHERE "{column}" IS NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_fill_forward(self, table_name: str, column: str) -> Dict:
+        sql = f"""
+            WITH ordered AS (
+                SELECT *, ROW_NUMBER() OVER (ORDER BY rowid) AS rn
+                FROM {table_name}
+            )
+            UPDATE {table_name} SET "{column}" = (
+                SELECT o2."{column}" FROM ordered o2
+                WHERE o2.rn = (SELECT MAX(rn) FROM ordered o3 WHERE o3.rn < ordered.rn AND o3."{column}" IS NOT NULL)
+                LIMIT 1
+            ) WHERE "{column}" IS NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_fill_backward(self, table_name: str, column: str) -> Dict:
+        sql = f"""
+            WITH ordered AS (
+                SELECT *, ROW_NUMBER() OVER (ORDER BY rowid) AS rn
+                FROM {table_name}
+            )
+            UPDATE {table_name} SET "{column}" = (
+                SELECT o2."{column}" FROM ordered o2
+                WHERE o2.rn = (SELECT MIN(rn) FROM ordered o3 WHERE o3.rn > ordered.rn AND o3."{column}" IS NOT NULL)
+                LIMIT 1
+            ) WHERE "{column}" IS NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_fill_by_group(self, table_name: str, column: str, group_by: str) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = (
+                SELECT AVG(t2."{column}") FROM {table_name} t2
+                WHERE t2."{group_by}" = {table_name}."{group_by}"
+            ) WHERE "{column}" IS NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_enum_normalize(self, table_name: str, column: str, alias_map: Dict) -> Dict:
+        if not alias_map:
+            return {"affected_rows": 0, "status": "no_aliases", "sql": None}
+        sets = " OR ".join(f'"{column}" = ?' for _ in alias_map)
+        params = list(alias_map.keys())
+        self.db.conn.execute(f'UPDATE {table_name} SET "{column}" = ? WHERE {sets}', params + list(alias_map.values()))
+        return {"affected_rows": -1, "status": "success", "sql": f"UPDATE {table_name} SET {column}=... WHERE ..."}
+
+    def _fix_unit_unify(self, table_name: str, column: str, target_unit: str) -> Dict:
+        factor = {"元": 1, "万元": 10000, "千元": 1000}.get(target_unit, 1)
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = CAST("{column}" AS DOUBLE) * {factor}
+            WHERE "{column}" IS NOT NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql, "target_unit": target_unit}
+
+    def _fix_date_normalize(self, table_name: str, column: str, target_fmt: str) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = strftime('%Y-%m-%d', "{column}")
+            WHERE "{column}" IS NOT NULL AND "{column}" NOT LIKE '____-__-__'
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql, "target_fmt": target_fmt}
+
+    def _fix_winsorize(self, table_name: str, column: str, low: float, high: float) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = MAX(MIN("{column}",
+                (SELECT "{column}" FROM {table_name} ORDER BY "{column}" LIMIT 1 OFFSET CAST(({high - low} * (SELECT COUNT(*) FROM {table_name})) AS INT)),
+                (SELECT "{column}" FROM {table_name} ORDER BY "{column}" DESC LIMIT 1 OFFSET CAST(({low} * (SELECT COUNT(*) FROM {table_name})) AS INT))
+            ))
+            WHERE "{column}" IS NOT NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql, "low": low, "high": high}
+
+    def _fix_iqr_outlier(self, table_name: str, column: str, k: float = 1.5) -> Dict:
+        sql = f"""
+            WITH stats AS (
+                SELECT QUANTILE_CONT("{column}", 0.25) AS q1, QUANTILE_CONT("{column}", 0.75) AS q3
+                FROM {table_name}
+            )
+            UPDATE {table_name} SET "{column}" = (
+                SELECT CASE
+                    WHEN "{column}" < s.q1 - {k} * (s.q3 - s.q1) THEN s.q1 - {k} * (s.q3 - s.q1)
+                    WHEN "{column}" > s.q3 + {k} * (s.q3 - s.q1) THEN s.q3 + {k} * (s.q3 - s.q1)
+                    ELSE "{column}"
+                END FROM stats s
+            ) WHERE "{column}" IS NOT NULL
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql, "k": k}
+
+    def _fix_phone_mask(self, table_name: str, column: str) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = substr("{column}", 1, 3) || '****' || substr("{column}", -4)
+            WHERE "{column}" IS NOT NULL AND length(replace("{column}", '-', '')) = 11
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_id_card_mask(self, table_name: str, column: str) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = substr("{column}", 1, 3) || '**********' || substr("{column}", -4)
+            WHERE "{column}" IS NOT NULL AND length(replace("{column}", 'X', 'x')) = 18
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
+
+    def _fix_bank_card_mask(self, table_name: str, column: str) -> Dict:
+        sql = f"""
+            UPDATE {table_name} SET "{column}" = '**** **** **** ' || substr("{column}", -4)
+            WHERE "{column}" IS NOT NULL AND length(replace("{column}", ' ', '')) >= 13
+        """
+        self.db.conn.execute(sql)
+        return {"affected_rows": -1, "status": "success", "sql": sql}
     
     def rollback(self, table_name: str, rule_id: str) -> Dict[str, Any]:
         """

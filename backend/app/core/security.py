@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import HTTPException, status, Request
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import redis
 import json
@@ -128,7 +128,7 @@ class LoginLockManager:
 security = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = security) -> Dict[str, Any]:
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
     """获取当前用户（依赖注入）"""
     if not credentials:
         raise HTTPException(
@@ -165,8 +165,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = security)
 
 # RBAC权限检查
 def require_roles(allowed_roles: list):
-    """角色权限装饰器"""
-    async def role_checker(current_user: Dict = get_current_user):
+    """角色权限装饰器（依赖注入 current_user 后做 RBAC 校验）"""
+    async def role_checker(current_user: Dict = Depends(get_current_user)):
         user_roles = current_user.get("roles", [])
         if not any(role in allowed_roles for role in user_roles):
             raise HTTPException(

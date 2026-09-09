@@ -76,7 +76,7 @@ class VersionManager:
             version_number=version_number,
             name=name or f"版本 {version_number}",
             description=description,
-            config_snapshot=dashboard.config_json,
+            config_snapshot=dashboard.config,
             prompt_version=prompt_version,
             created_by=created_by,
             is_auto_save=is_auto_save
@@ -95,7 +95,7 @@ class VersionManager:
             version_number=version_number,
             name=version.name,
             description=version.description,
-            config_snapshot=dashboard.config_json,
+            config_snapshot=dashboard.config,
             prompt_version=prompt_version,
             created_by=created_by,
             created_at=version.created_at,
@@ -196,7 +196,7 @@ class VersionManager:
         )
         
         # 回退配置
-        dashboard.config_json = target_version.config_snapshot
+        dashboard.config = target_version.config_snapshot
         dashboard.updated_at = datetime.utcnow()
         
         await db.commit()
@@ -331,7 +331,7 @@ class VersionManager:
         
         # 如果配置没有变化，不保存
         if latest_auto_save:
-            if latest_auto_save.config_snapshot == dashboard.config_json:
+            if latest_auto_save.config_snapshot == dashboard.config:
                 return None
         
         # 创建新的自动存档

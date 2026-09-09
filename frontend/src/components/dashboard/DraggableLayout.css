@@ -46,6 +46,15 @@
   flex-direction: column;
 }
 
+/* 图表卡标题允许换行完整展示，避免长标题被截断 */
+.widget-card .ant-card-head-title {
+  white-space: normal;
+  word-break: break-all;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+}
+
 .widget-card .ant-card-body {
   flex: 1;
   overflow: auto;

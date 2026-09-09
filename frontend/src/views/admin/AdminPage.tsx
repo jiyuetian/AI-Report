@@ -12,9 +12,10 @@ import {
   DashboardOutlined, UserOutlined, TeamOutlined,
   WalletOutlined, FileTextOutlined, SettingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, WarningOutlined,
-  CheckCircleOutlined, ClockCircleOutlined
+  CheckCircleOutlined, ClockCircleOutlined, ThunderboltOutlined
 } from '@ant-design/icons';
 import './AdminPage.css';
+import PromptCenter from './PromptCenter';
 
 const { TabPane } = Tabs;
 
@@ -255,6 +256,9 @@ const AdminPage: React.FC = () => {
         </TabPane>
         <TabPane tab={<span><FileTextOutlined /> 审计</span>} key="audit">
           <AuditTab />
+        </TabPane>
+        <TabPane tab={<span><ThunderboltOutlined /> Prompt 中心</span>} key="prompts">
+          <PromptCenter />
         </TabPane>
         <TabPane tab={<span><SettingOutlined /> 设置</span>} key="settings">
           <SettingsTab />

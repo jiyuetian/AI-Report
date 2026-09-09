@@ -366,6 +366,31 @@ async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = D
                    OR TRY_STRPTIME(CAST("{column}" AS VARCHAR), '%Y%m%d') IS NOT NULL
                    OR TRY_STRPTIME(CAST("{column}" AS VARCHAR), '%Y年%m月%d日') IS NOT NULL
             """)
+
+        elif request.fix_strategy == "coerce_numeric":
+            # 文本型数字 → 真实数值列（写清洗层，不动原始层）
+            # 三步：①清洗显示值(货币/千分位/空白) ②不可转残留(如'N/A')置NULL ③真正把列类型改为DOUBLE
+            # 关键：仅改值是"伪转数"，列仍是VARCHAR，下游SUM/报表依然无法聚合；必须ALTER改列类型。
+            # DuckDB(RE2) 不支持 \u00a0，须用 \x{00a0}
+            col_v = f'"{column}"'
+            pattern = r'[￥¥$\s\x{00a0},，]'
+            # ① 清洗可解析的文本数字
+            db.conn.execute(f"""
+                UPDATE {cleaned_table}
+                SET {col_v} = REGEXP_REPLACE(TRIM(CAST({col_v} AS VARCHAR)), '{pattern}', '', 'g')
+                WHERE {col_v} IS NOT NULL AND TRIM(CAST({col_v} AS VARCHAR)) != ''
+            """)
+            # ② 非数值残留（如 'N/A'、'未知'）置 NULL，保证整列可转数值
+            db.conn.execute(f"""
+                UPDATE {cleaned_table}
+                SET {col_v} = NULL
+                WHERE {col_v} IS NOT NULL
+                  AND TRY_CAST(CAST({col_v} AS VARCHAR) AS DOUBLE) IS NULL
+            """)
+            # ③ 真正改列类型，让下游能识别为数值并聚合
+            db.conn.execute(f"""
+                ALTER TABLE {cleaned_table} ALTER {col_v} SET DATA TYPE DOUBLE
+            """)
             
         elif request.fix_strategy == "swap_values":
             cols = request.column.split(',')
@@ -477,3 +502,92 @@ async def test_quality_check():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"message": str(e)}
         )
+
+
+@router.get("/debug/clean-stats")
+async def debug_clean_stats(
+    dataset_id: str,
+    column: Optional[str] = None,
+):
+    """
+    只读查询清洗层实时统计 - 用于从外部(HTTP)验证去重/清洗是否真实写入 DuckDB。
+    查询在 uvicorn 进程内复用全局 DuckDB 连接，不受单进程文件锁限制。
+    返回原始层/清洗层行数、聚类列、去重后剩余重复行数与空值数。
+    """
+    db = get_duckdb()
+    try:
+        cleaned = db.get_layer_table_name(dataset_id, "cleaned")
+        if not db.table_exists(cleaned):
+            return {"exists": False, "dataset_id": dataset_id, "message": "清洗层尚未生成"}
+
+        raw = db.get_layer_table_name(dataset_id, "raw")
+        raw_rows = db.conn.execute(f'SELECT COUNT(*) FROM "{raw}"').fetchone()[0] if db.table_exists(raw) else None
+        clean_rows = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+        cols = [c["name"] for c in db.get_table_info(cleaned)["columns"]]
+
+        # 探测聚类(去重)列：优先显式指定，其次含"借据"的列，最后常见编号类列
+        col = column
+        if not col:
+            col = next((c for c in cols if "借据" in c), None)
+        if not col:
+            col = next((c for c in cols if c in ("编号", "序号", "借据编号", "客户编号", "合同号")), None)
+
+        stats = {
+            "exists": True,
+            "dataset_id": dataset_id,
+            "raw_table": raw,
+            "cleaned_table": cleaned,
+            "raw_rows": raw_rows,
+            "cleaned_rows": clean_rows,
+            "diff_rows": (raw_rows - clean_rows) if raw_rows is not None else None,
+            "column_count": len(cols),
+            "dedup_column": col,
+        }
+        if col:
+            non_null = db.conn.execute(
+                f'SELECT COUNT(*) FROM "{cleaned}" WHERE "{col}" IS NOT NULL AND TRIM(CAST("{col}" AS VARCHAR)) != \'\''
+            ).fetchone()[0]
+            distinct = db.conn.execute(f'SELECT COUNT(DISTINCT "{col}") FROM "{cleaned}"').fetchone()[0]
+            duplicate_remaining = non_null - distinct
+            stats["dedup_column"] = col
+            stats["non_null_rows"] = non_null
+            stats["distinct_count"] = distinct
+            stats["duplicate_remaining"] = max(duplicate_remaining, 0)
+            stats["null_count"] = clean_rows - non_null
+        return stats
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"message": f"清洗层查询失败: {e}"}
+        )
+
+
+class InjectDupRequest(BaseModel):
+    dataset_id: str
+    column: Optional[str] = None
+    count: int = 3
+
+
+@router.post("/debug/inject-dup")
+async def debug_inject_dup(req: InjectDupRequest):
+    """
+    [仅调试] 在指定 dataset 的清洗层按聚类列临时复制几行制造重复，用于端到端演示/验证
+    "造重复 → 对话质量修复 → 去重归零" 的完整闭环。影响仅在清洗层，不影响输出层看板。
+    """
+    db = get_duckdb()
+    cleaned = db.get_layer_table_name(req.dataset_id, "cleaned")
+    if not db.table_exists(cleaned):
+        raise HTTPException(status_code=404, detail={"message": "清洗层不存在，请先上传/清洗"})
+    cols = [c["name"] for c in db.get_table_info(cleaned)["columns"]]
+    col = req.column
+    if not col:
+        col = next((c for c in cols if "借据" in c), None) or next(
+            (c for c in cols if c in ("编号", "序号", "借据编号", "客户编号", "合同号")), None)
+    if not col:
+        raise HTTPException(status_code=400, detail={"message": "无法定位可去重列，请显式传入column"})
+    n = max(1, min(int(req.count), 50))
+    db.conn.execute(f'INSERT INTO "{cleaned}" SELECT * FROM (SELECT * FROM "{cleaned}" LIMIT {n})')
+    rows = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+    dup = db.conn.execute(f'SELECT COUNT(*) - COUNT(DISTINCT "{col}") FROM "{cleaned}"').fetchone()[0]
+    return {"inserted": n, "column": col, "cleaned_rows": rows,
+            "duplicate_remaining": max(dup, 0), "message": f"已注入{n}条重复(列:{col})"}

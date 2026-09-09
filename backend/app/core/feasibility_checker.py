@@ -221,10 +221,11 @@ class FeasibilityChecker:
         
         if missing_fields:
             available = ", ".join(field_names[:8])
+            missing_str = "、".join(missing_fields[:3])
             return {
                 "severity": "blocking",
                 "type": "field_missing",
-                "message": f"数据中没有'{'、'.join(missing_fields[:3])}'字段",
+                "message": f"数据中没有'{missing_str}'字段",
                 "suggestion": f"可用的字段有：{available}，是否用这些字段分析？"
             }
         

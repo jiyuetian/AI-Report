@@ -19,6 +19,25 @@ router = APIRouter(prefix="/datasets", tags=["Datasets"])
 
 UPLOAD_DIR = Path(settings.UPLOAD_DIR)
 
+# P1: 数据集创建支持的全部格式
+SUPPORTED_DATASET_EXTS = ['.xlsx', '.xls', '.csv', '.json', '.tsv', '.docx', '.pdf', '.md', '.txt']
+# P1: 图片类文件不可入表，仅用于报告附录展示
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp'}
+
+
+def _find_uploaded_file(file_id: str):
+    """在上传目录中按 file_id 定位文件，返回 (Path, ext)；找不到返回 (None, None)"""
+    for ext in SUPPORTED_DATASET_EXTS:
+        path = UPLOAD_DIR / f"{file_id}{ext}"
+        if path.exists():
+            return path, ext
+    # 兼容图片类（不入库，此处仍可定位用于报错提示）
+    for ext in IMAGE_EXTS:
+        path = UPLOAD_DIR / f"{file_id}{ext}"
+        if path.exists():
+            return path, ext
+    return None, None
+
 
 class DatasetCreateRequest(BaseModel):
     file_id: str
@@ -30,33 +49,38 @@ class DatasetCreateRequest(BaseModel):
 @router.post("", response_model=dict)
 async def create_dataset(request: DatasetCreateRequest, db: AsyncSession = Depends(get_db)):
     """
-    创建数据集（文件入库DuckDB）
-    
+    创建数据集（P1 多格式）
+
     流程：
-    1. 根据file_id找到上传的文件
-    2. 解析文件（Excel/CSV）
-    3. 创建DuckDB表 ds_{dataset_id}
+    1. 根据file_id找到上传的文件（13种格式）
+    2. 解析文件
+    3. 按类型分流：
+       - 表格类(xlsx/xls/csv/json/tsv) → 创建DuckDB表 ds_{dataset_id}
+       - 文档类(docx/pdf/md/txt) → 文本入 profile_json，不建表（供报告摘要/数据说明使用）
+       - 图片类(png/jpg/jpeg/webp) → 拒绝（仅用于报告附录展示，不可入表）
     4. 返回dataset信息
     """
     file_id = request.file_id
-    
+
     # 查找文件
-    file_path = None
-    file_ext = None
-    
-    for ext in ['.xlsx', '.xls', '.csv']:
-        path = UPLOAD_DIR / f"{file_id}{ext}"
-        if path.exists():
-            file_path = path
-            file_ext = ext
-            break
-    
+    file_path, file_ext = _find_uploaded_file(file_id)
+
     if not file_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "FILE_NOT_FOUND", "message": "文件不存在"}
         )
-    
+
+    # 图片类：不可创建数据集
+    if file_ext in IMAGE_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail={
+                "code": "IMAGE_NOT_TABLEABLE",
+                "message": "图片文件仅用于报告附录展示，无法创建数据集。请上传表格或文档类文件。"
+            }
+        )
+
     try:
         # 解析文件
         parse_result = FileParser.parse_file(
@@ -65,26 +89,78 @@ async def create_dataset(request: DatasetCreateRequest, db: AsyncSession = Depen
             sheet_name=request.sheet_name,
             encoding=request.encoding
         )
-        
+
         if "dataframe" not in parse_result:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"code": "PARSE_ERROR", "message": "无法解析文件数据"}
             )
-        
-        df = parse_result["dataframe"]
-        
-        # 生成dataset_id
+
         import uuid
         dataset_id = str(uuid.uuid4())
-        
-        # 入库DuckDB
+
+        # ── 文档类：文本型数据集，不建DuckDB表 ─────────────────────
+        if parse_result.get("type") == "doc" or file_ext in ('.docx', '.pdf', '.md', '.txt'):
+            extracted_text = (parse_result.get("extracted_text") or "")
+            if not extracted_text.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "EMPTY_DOCUMENT",
+                        "message": "未能从文档中抽取到有效文本（可能缺少PyMuPDF/pdfplumber/python-docx依赖）"
+                    }
+                )
+
+            dataset_record = Dataset(
+                id=dataset_id,
+                name=request.name,
+                file_id=file_id,
+                duckdb_table=None,
+                row_count=0,
+                schema_json={
+                    "columns": [],
+                    "column_count": 0,
+                    "source_type": "document",
+                    "file_ext": file_ext,
+                },
+                profile_json={
+                    "source_type": "document",
+                    "file_ext": file_ext,
+                    "char_count": len(extracted_text),
+                    "extracted_text": extracted_text,
+                },
+                status="ready"
+            )
+            db.add(dataset_record)
+            await db.flush()
+
+            return {
+                "dataset_id": dataset_id,
+                "name": request.name,
+                "table_name": None,
+                "source_type": "document",
+                "file_id": file_id,
+                "row_count": 0,
+                "column_count": 0,
+                "char_count": len(extracted_text),
+                "preview": parse_result.get("preview"),
+                "status": "created",
+                "message": "文档型数据集创建成功（文本用于报告摘要与数据说明，不建DuckDB表）"
+            }
+
+        # ── 表格类：建DuckDB表 ──────────────────────────────────────
+        df = parse_result["dataframe"]
+
+        if df is None or len(df) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "EMPTY_TABLE", "message": f"文件{file_ext}中无可入库的表格数据"}
+            )
+
         duckdb = get_duckdb()
         table_name = duckdb.create_dataset_table(dataset_id, df)
-        
-        # 获取表信息
         table_info = duckdb.get_table_info(table_name)
-        
+
         # 保存到数据库 datasets表
         dataset_record = Dataset(
             id=dataset_id,
@@ -94,18 +170,22 @@ async def create_dataset(request: DatasetCreateRequest, db: AsyncSession = Depen
             row_count=table_info["row_count"],
             schema_json={
                 "columns": table_info["columns"],
-                "column_count": len(table_info["columns"])
+                "column_count": len(table_info["columns"]),
+                "source_type": "table",
+                "file_ext": file_ext,
+                "used_encoding": parse_result.get("used_encoding"),
+                "sheets": parse_result.get("sheets"),
             },
             status="ready"
         )
-        sql_db = db  # 保持语义清晰：db是SQLAlchemy session
-        sql_db.add(dataset_record)
-        await sql_db.flush()
-        
+        db.add(dataset_record)
+        await db.flush()
+
         return {
             "dataset_id": dataset_id,
             "name": request.name,
             "table_name": table_name,
+            "source_type": "table",
             "file_id": file_id,
             "sheet_name": request.sheet_name,
             "encoding": request.encoding,
@@ -116,7 +196,7 @@ async def create_dataset(request: DatasetCreateRequest, db: AsyncSession = Depen
             "status": "created",
             "message": "数据集创建成功"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:

@@ -154,11 +154,12 @@ const DashboardListPage: React.FC = () => {
       { type: 'divider' as const },
       { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
     ],
-    onClick: ({ key }: { key: string }) => {
-      if (key === 'view') navigate(`/dashboard?id=${dashboard.id}`)
-      else if (key === 'edit') navigate(`/dashboard?id=${dashboard.id}&edit=true`)
-      else if (key === 'detail') openDetail(dashboard)
-      else if (key === 'delete') openDeleteModal(dashboard)
+    onClick: (info: any) => {
+      if (info.domEvent) info.domEvent.stopPropagation();
+      if (info.key === 'view') navigate(`/dashboard?id=${dashboard.id}`)
+      else if (info.key === 'edit') navigate(`/dashboard?id=${dashboard.id}&edit=true`)
+      else if (info.key === 'detail') openDetail(dashboard)
+      else if (info.key === 'delete') openDeleteModal(dashboard)
     },
   })
 

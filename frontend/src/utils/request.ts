@@ -55,6 +55,8 @@ export const http = {
   },
   post: <T = any>(path: string, body?: any) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
+  put: <T = any>(path: string, body?: any) =>
+    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
   delete: <T = any>(path: string, params?: Record<string, any>) => {
     const query = params
       ? '?' +

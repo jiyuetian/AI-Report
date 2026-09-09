@@ -383,7 +383,7 @@ const LineagePage: React.FC = () => {
               type={chatPanelVisible ? 'primary' : 'default'}
               onClick={() => setChatPanelVisible(!chatPanelVisible)}
             >
-              血缘问答
+              AI对话
             </Button>
           </Col>
         </Row>
@@ -489,7 +489,7 @@ const LineagePage: React.FC = () => {
         {/* 血缘问答右侧面板 — 复用统一 AI 助手样式（同一套标准） */}
         {chatPanelVisible && (
           <div className="lineage-chat-panel">
-            <ChatPanel />
+            <ChatPanel onCollapse={() => setChatPanelVisible(false)} />
           </div>
         )}
       </div>

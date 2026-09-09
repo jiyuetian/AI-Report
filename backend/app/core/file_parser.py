@@ -288,27 +288,33 @@ class FileParser:
         disable_masking: bool = False  # M1-11: 强制为False，不可关闭
     ) -> Dict[str, Any]:
         """
-        通用文件解析入口（M1-11增强版）
+        通用文件解析入口（M1-11增强版 + P1多格式扩展）
+        
+        支持格式：
+        - 表格类: .xlsx, .xls, .csv, .json, .tsv
+        - 文档类: .docx, .pdf, .md, .txt（抽取文本注入执行摘要/数据说明）
+        - 图片类: .png, .jpg, .jpeg, .webp（附录展示）
         
         Args:
             disable_masking: 必须保持False，敏感字段永远脱敏
         
         Returns:
             {
-                "type": "excel" | "csv",
+                "type": "excel" | "csv" | "json" | "tsv" | "doc" | "image",
                 "sheets": [...],
                 "detected_encoding": "utf-8",
                 "preview": {...},
-                "dataframe": pd.DataFrame,  # 已脱敏
-                "sensitive_columns": [...],  # 敏感字段列表
-                "masking_applied": True  # 始终为True
+                "dataframe": pd.DataFrame,  # 表格类返回，文档/图片类返回空df
+                "sensitive_columns": [...],
+                "masking_applied": True,
+                "extracted_text": str,  # 文档类抽取的文本
             }
         """
         result = {
             "type": "unknown",
             "file_path": str(file_path),
             "file_ext": file_ext,
-            "masking_applied": True  # M1-11: 强制脱敏
+            "masking_applied": True,  # M1-11: 强制脱敏
         }
         
         if file_ext in ['.xlsx', '.xls']:
@@ -351,7 +357,123 @@ class FileParser:
             result["preview"] = cls.preview_data(df)
             result["dataframe"] = df
         
+        elif file_ext == '.json':
+            # P1: JSON文件解析
+            result["type"] = "json"
+            df = cls._parse_json(file_path, encoding)
+            df = cls._process_sensitive_data(df)
+            result["preview"] = cls.preview_data(df)
+            result["dataframe"] = df
+            
+        elif file_ext == '.tsv':
+            # P1: TSV文件解析
+            result["type"] = "tsv"
+            use_encoding = encoding or 'utf-8'
+            try:
+                df = pd.read_csv(file_path, sep='\t', encoding=use_encoding)
+            except UnicodeDecodeError:
+                detected_encoding, _ = cls.detect_encoding(file_path)
+                df = pd.read_csv(file_path, sep='\t', encoding=detected_encoding)
+            df = cls._process_sensitive_data(df)
+            result["preview"] = cls.preview_data(df)
+            result["dataframe"] = df
+            
+        elif file_ext in ('.docx', '.pdf', '.md', '.txt'):
+            # P1: 文档类解析 — 抽取文本
+            result["type"] = "doc"
+            extracted_text = cls._extract_document_text(file_path, file_ext, encoding)
+            result["extracted_text"] = extracted_text
+            result["preview"] = {
+                "columns": ["文本内容"],
+                "rows": [[extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text]],
+                "total_rows": 1,
+                "total_cols": 1,
+                "preview_rows": 1,
+            }
+            result["dataframe"] = pd.DataFrame()
+            
+        elif file_ext in ('.png', '.jpg', '.jpeg', '.webp'):
+            # P1: 图片类 — 附录展示
+            result["type"] = "image"
+            result["preview"] = {
+                "columns": ["图片文件"],
+                "rows": [[file_path.name]],
+                "total_rows": 1,
+                "total_cols": 1,
+                "preview_rows": 1,
+            }
+            result["dataframe"] = pd.DataFrame()
+        
         return result
+
+    @staticmethod
+    def _parse_json(file_path: Path, encoding: Optional[str] = None) -> pd.DataFrame:
+        """解析JSON文件为DataFrame"""
+        enc = encoding or 'utf-8'
+        with open(file_path, 'r', encoding=enc) as f:
+            import json
+            data = json.load(f)
+        
+        # 如果是列表，直接转DataFrame
+        if isinstance(data, list):
+            return pd.DataFrame(data)
+        # 如果是字典且包含records/data/items键
+        elif isinstance(data, dict):
+            for key in ('records', 'data', 'items', 'results', 'rows'):
+                if key in data and isinstance(data[key], list):
+                    return pd.DataFrame(data[key])
+            # 纯字典，单行
+            return pd.DataFrame([data])
+        return pd.DataFrame()
+
+    @staticmethod
+    def _extract_document_text(file_path: Path, file_ext: str, encoding: Optional[str] = None) -> str:
+        """从文档中抽取文本内容"""
+        try:
+            if file_ext == '.txt':
+                enc = encoding or 'utf-8'
+                with open(file_path, 'r', encoding=enc) as f:
+                    return f.read()
+            
+            elif file_ext == '.md':
+                enc = encoding or 'utf-8'
+                with open(file_path, 'r', encoding=enc) as f:
+                    return f.read()
+            
+            elif file_ext == '.docx':
+                # python-docx 抽取文本
+                try:
+                    from docx import Document
+                    doc = Document(str(file_path))
+                    return '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+                except ImportError:
+                    return "[docx解析需安装python-docx库]"
+            
+            elif file_ext == '.pdf':
+                # PyMuPDF (fitz) 抽取文本
+                try:
+                    import fitz  # PyMuPDF
+                    text_parts = []
+                    with fitz.open(str(file_path)) as pdf:
+                        for page in pdf:
+                            text_parts.append(page.get_text())
+                    return '\n'.join(text_parts)
+                except ImportError:
+                    try:
+                        # 退回pdfplumber
+                        import pdfplumber
+                        text_parts = []
+                        with pdfplumber.open(str(file_path)) as pdf:
+                            for page in pdf.pages:
+                                text_parts.append(page.extract_text() or '')
+                        return '\n'.join(text_parts)
+                    except ImportError:
+                        return "[pdf解析需安装PyMuPDF或pdfplumber库]"
+            
+        except Exception as e:
+            return f"[文档解析失败: {str(e)}]"
+        
+        return ""
     
     @classmethod
     def _process_sensitive_data(cls, df: pd.DataFrame) -> pd.DataFrame:

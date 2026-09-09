@@ -12,7 +12,7 @@ echo.
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
-set "PYTHON=C:\Users\Asus009\AppData\Roaming\TRAE SOLO CN\ModularData\ai-agent\vm\tools\python\python.exe"
+set "PYTHON=%~dp0vm\tools\python\python.exe"
 
 :: ---------- 1. 释放端口 ----------
 echo [1/4] 释放端口...

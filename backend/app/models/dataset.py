@@ -15,8 +15,8 @@ class Dataset(Base):
     # 关联文件
     file_id: Mapped[str] = mapped_column(ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
     
-    # DuckDB表名
-    duckdb_table: Mapped[str] = mapped_column(String(100), nullable=False)
+    # DuckDB表名（文档型数据集为空：不建表，文本存 profile_json.extracted_text）
+    duckdb_table: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     
     # 数据粒度: row（单笔）/ customer（客户级）/ month_agg（月度汇总）/ custom（自定义）
     grain: Mapped[str] = mapped_column(String(20), default="row")

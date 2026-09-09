@@ -46,6 +46,7 @@ import DashboardListPage from './views/dashboard/DashboardListPage'
 import LineagePage from './views/lineage/LineagePage'
 import SharePage from './views/share/SharePage'
 import AdminPage from './views/admin/AdminPage'
+import ReportPage from './views/report/ReportPage'
 import { Card, Button } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -105,6 +106,7 @@ function App() {
               <Route path="/dashboards" element={<DashboardListPage />} />
               <Route path="/lineage" element={<LineagePage />} />
               <Route path="/share" element={<SharePage />} />
+              <Route path="/report" element={<ReportPage />} />
               {/* 原型演示占位屏 */}
               <Route path="/demo/:key" element={<DemoPage />} />
               <Route path="/admin" element={

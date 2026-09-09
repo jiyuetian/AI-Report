@@ -3,7 +3,7 @@
 """
 from .s1_theme_detector import S1ThemeDetector, detect_theme, ThemeDetectionResult
 from .s2_goal_generator import S2GoalGenerator, generate_analysis_goals, AnalysisGoal
-from .s3_chart_engine import S3ChartEngine, recommend_charts, generate_dashboard
+from .s3_chart_engine_v2 import S3ChartEngine, recommend_charts, generate_dashboard
 from .s3_llm_enhancer import S3LLMEnhancer, generate_charts_with_llm, validate_chart_grain
 from .s4_orchestrator import S4Orchestrator, S5ScoreCard, orchestrate_and_score
 

@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.brain_modules.s3_chart_engine import S3ChartEngine
+from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
 
 router = APIRouter(prefix="/brain/s3", tags=["S3-图表推荐"])
 

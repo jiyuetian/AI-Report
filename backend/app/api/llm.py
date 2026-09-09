@@ -245,17 +245,17 @@ async def get_usage(user_id: str):
 async def get_llm_config():
     """
     获取LLM配置信息
-    
-    用于调试和配置检查
     """
-    import os
-    
+    from app.core.config import settings
+    from app.core.llm_gateway import MAX_RETRIES, TIMEOUT_SECONDS, CONCURRENCY_LIMIT
     return {
-        "base_url": os.getenv("LLM_BASE_URL", "http://localhost:8001/v1"),
-        "max_retries": 3,
-        "timeout_seconds": 30,
-        "concurrency_limit": 2,
-        "mock_mode": os.getenv("LLM_API_KEY", "mock") == "mock-key-for-dev"
+        "base_url": settings.LLM_BASE_URL,
+        "model": settings.LLM_MODEL or "glm-5.2",
+        "max_retries": MAX_RETRIES,
+        "timeout_seconds": TIMEOUT_SECONDS,
+        "concurrency_limit": CONCURRENCY_LIMIT,
+        "mock_mode": settings.LLM_API_KEY == "" or settings.LLM_API_KEY == "mock-key-for-dev",
+        "key_configured": bool(settings.LLM_API_KEY)
     }
 
 

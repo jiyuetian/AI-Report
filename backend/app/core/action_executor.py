@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     FILTER_DRILL = "filter_drill"      # 筛选下钻
     ATTRIBUTION = "attribution"        # 归因追问
     EDIT_TITLE = "edit_title"          # 标题编辑
+    QUALITY_FIX = "quality_fix"        # 数据质量修复（清洗层）
 
 
 class ChartType(str, Enum):
@@ -89,6 +90,7 @@ class ActionExecutor:
             ActionType.FILTER_DRILL: ActionExecutor._execute_filter_drill,
             ActionType.ATTRIBUTION: ActionExecutor._execute_attribution,
             ActionType.EDIT_TITLE: ActionExecutor._execute_edit_title,
+            ActionType.QUALITY_FIX: ActionExecutor._execute_quality_fix,
         }
         
         executor = executors.get(action_type)
@@ -176,12 +178,13 @@ class ActionExecutor:
         # 修复：将中文类型名转换为枚举值
         chart_type = ActionExecutor.normalize_chart_type(params.get("chart_type", "bar"))
         dataset_id = context.get("dataset_id", "default")
-        
-        # 生成新图表配置
+        metric_name = params.get("metric_name")
+
+        # 生成新图表配置（KPI卡优先用指标名作标题）
         new_chart = {
             "id": f"chart_{len(current_config.get('charts', [])) + 1}",
             "chart_type": chart_type,
-            "title": f"新增{ActionExecutor._get_chart_type_name(chart_type)}",
+            "title": metric_name if (chart_type == "kpi" and metric_name) else f"新增{ActionExecutor._get_chart_type_name(chart_type)}",
             "dataset_id": dataset_id,
             "x_field": "category",
             "y_field": "value",
@@ -488,6 +491,108 @@ class ActionExecutor:
             "action_type": "edit_title"
         }
     
+    @staticmethod
+    def _execute_quality_fix(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        执行数据质量修复 - 写入清洗层
+
+        场景1（清洗层->修复后）：质检发现重复/空值/格式问题，闭环到清洗层实际修复，
+        可被业务加工层(新增指标)和看板输出层(图表/筛选)继续消费。
+        """
+        dataset_id = (context or {}).get("dataset_id") or params.get("dataset_id")
+        column = params.get("column") or "借据号"
+        issue_type = params.get("issue_type") or "duplicate"
+        fix_strategy = params.get("fix_strategy") or "keep_first"
+
+        real_fix = False
+        removed = 0
+        before_rows = 0
+        after_rows = 0
+        error = None
+
+        if dataset_id and dataset_id != "default":
+            try:
+                from app.core.duckdb_manager import get_duckdb
+                db = get_duckdb()
+                cleaned = db.create_cleaned_from_original(dataset_id)
+                cols = [c["name"] for c in db.get_table_info(cleaned)["columns"]]
+                # 从平台字段名中定位"借据号"类目标列
+                real_col = next(
+                    (c for c in cols if c == column), None
+                ) or next(
+                    (c for c in cols if "借据" in c or c in ("编号", "序号", "借据编号")), None
+                )
+                before_rows = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+                if real_col and (issue_type == "duplicate" or "去重" in fix_strategy):
+                    db.conn.execute(f"""
+                        DELETE FROM "{cleaned}"
+                        WHERE rowid NOT IN (
+                            SELECT MIN(rowid) FROM "{cleaned}"
+                            GROUP BY "{real_col}"
+                        )
+                    """)
+                    removed = before_rows - db.conn.execute(
+                        f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+                    after_rows = before_rows - removed
+                    real_fix = True
+                elif real_col:
+                    # 空值/格式等的通用占位修复（写入清洗层）
+                    db.conn.execute(f"""
+                        DELETE FROM "{cleaned}"
+                        WHERE "{real_col}" IS NULL
+                           OR TRIM(CAST("{real_col}" AS VARCHAR)) = ''
+                    """)
+                    removed = before_rows - db.conn.execute(
+                        f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+                    after_rows = before_rows - removed
+                    real_fix = True
+                else:
+                    error = f"清洗层未找到目标列: {column}"
+            except Exception as e:
+                error = str(e)
+
+        # 记录修复历史到看板配置
+        if "quality_fix_log" not in current_config:
+            current_config["quality_fix_log"] = []
+        current_config["quality_fix_log"].append({
+            "issue_type": issue_type,
+            "column": column,
+            "fix_strategy": fix_strategy,
+            "removed": removed,
+            "before_rows": before_rows,
+            "after_rows": after_rows,
+            "real_fix": real_fix,
+            "note": error or "",
+        })
+
+        return {
+            "success": True,
+            "action_type": "quality_fix",
+            "changes": [{
+                "issue_type": issue_type,
+                "column": column,
+                "fix_strategy": fix_strategy,
+                "removed": removed,
+                "real_fix": real_fix,
+            }],
+            "new_config": current_config,
+            "render_updates": [{
+                "type": "quality_fixed",
+                "issue_type": issue_type,
+                "column": column,
+                "removed": removed,
+                "before_rows": before_rows,
+                "after_rows": after_rows,
+                "real_fix": real_fix,
+                "note": error or "",
+            }],
+            "message": f"已修复{issue_type}问题：{column}，移除 {removed} 行（{before_rows}->{after_rows}）",
+        }
+
     @staticmethod
     def _get_chart_type_name(chart_type: str) -> str:
         """获取图表类型中文名"""

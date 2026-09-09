@@ -5,14 +5,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Card, Input, Button, Badge, List, Typography, Space, Spin,
+  Input, Button, Badge, List, Typography, Space, Spin,
   Popover, Progress, Tag, Tooltip, Empty, Upload, message as antMessage
 } from 'antd';
 import {
   SendOutlined, HistoryOutlined, LoadingOutlined,
   BulbOutlined, BarChartOutlined, PieChartOutlined,
   RiseOutlined, FallOutlined, WarningOutlined,
-  PictureOutlined, ThunderboltFilled, RightOutlined
+  PictureOutlined, ThunderboltFilled, CloseOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import './ChatPanel.css';
@@ -335,7 +335,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   );
 
   return (
-    <Card className="chat-panel" bordered={false}>
+    <div className="chat-panel">
       {/* 头部 */}
       <div className="chat-header">
         <div className="chat-header-left">
@@ -371,11 +371,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           >
             <Tooltip title="对话历史"><button className="chip-btn"><HistoryOutlined /></button></Tooltip>
           </Popover>
-          {/* 折叠对话 → 看板全屏 */}
+          {/* 关闭对话面板 */}
           {onCollapse && (
-            <Tooltip title="折叠对话，全屏查看数据看板">
+            <Tooltip title="关闭对话面板">
               <button className="chip-btn chip-btn-collapse" onClick={onCollapse}>
-                <RightOutlined />
+                <CloseOutlined />
               </button>
             </Tooltip>
           )}
@@ -384,6 +384,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* 消息列表 */}
       <div className="chat-messages">
+        <div className="chat-messages-scroll">
         {messages.length === 0 && (
           <div className="chat-welcome">
             <div className="chat-welcome-icon"><ThunderboltFilled /></div>
@@ -486,6 +487,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         )}
 
         <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* 输入区域 — 参考样式：大圆角容器 + 底部工具栏 + 快捷指令 chips */}
@@ -577,7 +579,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           <Button type="link" size="small">申请加量</Button>
         </div>
       )}
-    </Card>
+    </div>
   );
 };
 

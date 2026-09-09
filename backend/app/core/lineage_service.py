@@ -101,6 +101,8 @@ class LineageService:
         
         # ===== Layer 1: Source (原始数据层) =====
         source_node = None
+        if not file_id and getattr(dataset, "file_id", None):
+            file_id = dataset.file_id
         if file_id:
             file_result = await db.execute(select(File).where(File.id == file_id))
             file = file_result.scalar_one_or_none()
@@ -109,7 +111,7 @@ class LineageService:
                     id=str(uuid.uuid4()),
                     node_type=LineageLevel.SOURCE.value,
                     ref_id=file_id,
-                    name=file.name,
+                    name=file.name or f"文件_{file_id[:8]}",
                     description=f"原始文件: {file.mime_type or file.extension}",
                     logic_json={"mime_type": file.mime_type, "size": file.size, "extension": file.extension}
                 )
@@ -149,6 +151,26 @@ class LineageService:
         clean_rules = clean_result.scalars().all()
         
         clean_nodes = []
+        # 清洗层：优先数据库清洗规则；无独立规则时抽象管道清洗节点，保证六层链路完整
+        if not clean_rules:
+            clean_node = LineageNodeData(
+                id=str(uuid.uuid4()),
+                node_type=LineageLevel.CLEAN.value,
+                ref_id=f"{dataset_id}_clean",
+                name="清洗/标准化",
+                description="数据清洗与字段标准化（自动管道）",
+                logic_json={"pipeline": "auto"}
+            )
+            nodes.append(clean_node)
+            layer_nodes[LineageLevel.CLEAN.value].append(clean_node)
+            clean_nodes.append(clean_node)
+            edges.append(LineageEdgeData(
+                id=str(uuid.uuid4()),
+                source_id=field_node.id,
+                target_id=clean_node.id,
+                transform_type="transform",
+                description="应用清洗管道"
+            ))
         for rule in clean_rules:
             rule_type_label = {
                 "fill_null": "空值填充",
@@ -223,50 +245,103 @@ class LineageService:
                             transform_type="transform",
                             description=f"定义业务口径: {col.get('name')}"
                         ))
-        
+        if not biz_nodes:
+            # 无独立业务口径字段时抽象加工层节点，保证六层链路完整
+            biz_node = LineageNodeData(
+                id=str(uuid.uuid4()),
+                node_type=LineageLevel.BUSINESS.value,
+                ref_id=f"{dataset_id}_biz",
+                name="业务口径(加工层)",
+                description="数据口径与业务规则定义",
+                logic_json={"pipeline": "business"}
+            )
+            nodes.append(biz_node)
+            layer_nodes[LineageLevel.BUSINESS.value].append(biz_node)
+            biz_nodes.append(biz_node)
+            for cn in clean_nodes:
+                edges.append(LineageEdgeData(
+                    id=str(uuid.uuid4()),
+                    source_id=cn.id,
+                    target_id=biz_node.id,
+                    transform_type="transform",
+                    description="清洗后定义业务口径"
+                ))
+            if not clean_nodes:
+                edges.append(LineageEdgeData(
+                    id=str(uuid.uuid4()),
+                    source_id=field_node.id,
+                    target_id=biz_node.id,
+                    transform_type="transform",
+                    description="定义业务口径"
+                ))
+
         # ===== Layer 5: Agg (聚合计算层) =====
         chart_result = await db.execute(
             select(Chart).where(Chart.dataset_id == dataset_id)
         )
-        charts = chart_result.scalars().all()
-        
+        chart_rows = chart_result.scalars().all()
+        # 图表来源：优先 charts 表；LLM 生成路径的图表存于 Dashboard.config，从看板兜底读取
+        chart_items = []
+        for chart in chart_rows:
+            chart_items.append({
+                "ref_id": chart.id,
+                "title": chart.title or f"图表_{str(chart.id)[:8]}",
+                "type": chart.type,
+                "config": chart.config_json or {}
+            })
+        if not chart_items:
+            dash_result = await db.execute(
+                select(Dashboard).where(Dashboard.primary_dataset_id == dataset_id)
+            )
+            for dash in dash_result.scalars().all():
+                cfg = dash.config or {}
+                for ch in (cfg.get("charts") or []):
+                    if not isinstance(ch, dict):
+                        continue
+                    chart_items.append({
+                        "ref_id": ch.get("id") or f"chart_{uuid.uuid4().hex[:6]}",
+                        "title": ch.get("title", "") or "图表",
+                        "type": ch.get("chart_type", "chart"),
+                        "config": ch
+                    })
+        chart_items = chart_items[:10]
+
         agg_nodes = []
-        for chart in charts:
-            # 从图表配置中提取聚合描述
-            config = chart.config_json or {}
+        for cit in chart_items:
+            config = cit["config"]
             agg_desc = "聚合计算"
             if config.get("aggregate"):
-                agg_desc = f"{config['aggregate']}({config.get('y', config.get('kpi', ''))})"
-            elif config.get("kpi"):
-                agg_desc = f"汇总({config['kpi']})"
+                agg_desc = f"{config['aggregate']}({config.get('y_field', config.get('value_field', ''))})"
+            elif config.get("y_field"):
+                agg_desc = f"聚合({config['y_field']})"
+            elif config.get("value_field"):
+                agg_desc = f"汇总({config['value_field']})"
             elif config.get("measure"):
                 agg_desc = f"聚合({config['measure']})"
-            
+
             agg_node = LineageNodeData(
                 id=str(uuid.uuid4()),
                 node_type=LineageLevel.AGG.value,
-                ref_id=f"{chart.id}_agg",
-                name=f"聚合: {chart.title}",
+                ref_id=f"{cit['ref_id']}_agg",
+                name=f"聚合: {cit['title']}",
                 description=agg_desc,
                 logic_json={
-                    "chart_ref": chart.id,
-                    "chart_type": chart.type,
+                    "chart_ref": cit["ref_id"],
+                    "chart_type": cit["type"],
                     "config": config
                 }
             )
             nodes.append(agg_node)
             layer_nodes[LineageLevel.AGG.value].append(agg_node)
-            agg_nodes.append((agg_node, chart, config))
-            
+            agg_nodes.append((agg_node, cit, config))
+
             # 连接: business → agg（匹配业务节点到聚合节点）
             referenced_fields = set()
             for val in config.values():
                 if isinstance(val, str):
                     referenced_fields.add(val)
-            
-            matched_biz = [b for b in biz_nodes
-                          if any(f in b.name for f in referenced_fields)]
-            
+            matched_biz = [b for b in biz_nodes if any(f in b.name for f in referenced_fields)]
+
             if matched_biz:
                 for bn in matched_biz:
                     edges.append(LineageEdgeData(
@@ -283,27 +358,27 @@ class LineageService:
                         source_id=bn.id,
                         target_id=agg_node.id,
                         transform_type="aggregate",
-                        description=f"聚合计算"
+                        description="聚合计算"
                     ))
             else:
                 edges.append(LineageEdgeData(
                     id=str(uuid.uuid4()),
-                    source_id=field_node.id,
+                    source_id=clean_nodes[0].id if clean_nodes else field_node.id,
                     target_id=agg_node.id,
                     transform_type="aggregate",
                     description=f"聚合计算: {agg_desc}"
                 ))
         
         # ===== Layer 6: Chart (看板输出层) =====
-        for agg_node, chart, config in agg_nodes:
+        for agg_node, cit, config in agg_nodes:
             chart_node = LineageNodeData(
                 id=str(uuid.uuid4()),
                 node_type=LineageLevel.CHART.value,
-                ref_id=chart.id,
-                name=chart.title or f"图表_{chart.id[:8]}",
-                description=f"{chart.type}图表",
+                ref_id=cit["ref_id"],
+                name=cit["title"] or f"图表_{str(cit['ref_id'])[:8]}",
+                description=f"{cit['type']}图表",
                 logic_json={
-                    "chart_type": chart.type,
+                    "chart_type": cit["type"],
                     "config": config
                 }
             )
@@ -316,7 +391,7 @@ class LineageService:
                 source_id=agg_node.id,
                 target_id=chart_node.id,
                 transform_type="direct",
-                description=f"聚合结果输出为{chart.type}图表"
+                description=f"聚合结果输出为{cit['type']}图表"
             ))
         
         return {

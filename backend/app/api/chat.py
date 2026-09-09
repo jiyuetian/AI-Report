@@ -18,8 +18,24 @@ from app.core.action_executor import ActionExecutor, ActionType
 from app.core.moderation import check_moderation, ContentModerator, BoundaryType
 from app.models.chat import ChatSession, ChatMessage, TokenQuota
 from app.models.dashboard import Dashboard
+from app.models.dataset import Dataset
 
 router = APIRouter(prefix="/chat", tags=["Chat-对话"])
+
+
+# ============== 看板配置并发写锁 ==============
+# 看板 config 是整段 JSON 覆盖写入，多路并发动作（如同时 add_chart）若各自"读-改-写"，
+# 后写者会把先写者新增的图表覆盖掉（丢失更新）。用每看板一把进程内 async 锁把
+# 同一看板的读-改-写事务串行化，保证每个动作都基于最新 config。
+_CONFIG_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _dashboard_lock(dashboard_id: str) -> asyncio.Lock:
+    lock = _CONFIG_LOCKS.get(dashboard_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CONFIG_LOCKS[dashboard_id] = lock
+    return lock
 
 
 # ============== 请求/响应模型 ==============
@@ -122,6 +138,14 @@ async def generate_intent_response(intent_type: IntentType, analysis: Dict, cont
             },
             "suggested_followups": ["调整字体", "添加副标题", "居中显示"]
         },
+        IntentType.QUALITY_FIX: {
+            "message": f"正在修复数据质量{analysis.get('extracted_params', {}).get('issue_type', '重复')}问题，将写入清洗层...",
+            "action": {
+                "type": "quality_fix",
+                "params": analysis.get("extracted_params", {})
+            },
+            "suggested_followups": ["查看修复结果", "重新质检", "继续加工指标"]
+        },
         IntentType.UNKNOWN: {
             "message": "我不太理解您的意思，您可以尝试：",
             "suggestions": [
@@ -138,6 +162,88 @@ async def generate_intent_response(intent_type: IntentType, analysis: Dict, cont
     }
     
     return responses.get(intent_type, responses[IntentType.UNKNOWN])
+
+
+# ============== LLM 自然语言回复生成 ==============
+
+async def generate_llm_natural_response(
+    user_message: str,
+    context: Dict[str, Any]
+) -> str:
+    """UNKNOWN 意图时调用 LLM 基于看板上下文生成自然语言回复"""
+    from app.core.llm_gateway import llm_chat
+    from app.core.prompt_loader import load_prompt
+
+    current_config = context.get("current_config", {})
+    dataset_info = context.get("dataset_info", {})
+    field_profiles = dataset_info.get("field_profiles", [])
+    grain = dataset_info.get("grain", "detail")
+
+    # 提取看板主题
+    theme = current_config.get("theme", "通用分析")
+
+    # 构建图表摘要
+    charts = current_config.get("charts", [])
+    charts_text = ""
+    for i, chart in enumerate(charts[:8], 1):
+        ct = chart.get("chart_type", "?")
+        title = chart.get("title", "未命名")
+        xf = chart.get("x_field") or chart.get("category_field") or ""
+        yf = chart.get("y_field") or chart.get("value_field") or ""
+        charts_text += f"  {i}. [{ct}] {title}  (x={xf}, y={yf or '-'})\n"
+
+    # 构建字段摘要
+    fields_text = ""
+    for fp in field_profiles[:20]:
+        fname = fp.get("name", fp.get("column", ""))
+        ftype = fp.get("type", "")
+        fields_text += f"  - {fname} ({ftype})\n"
+
+    default_prompt = (
+        "你是一位资深 BI 数据分析师助手，正在看板页面与用户对话。\n\n"
+        "## 当前看板信息\n"
+        f"- 主题: {theme}\n"
+        "- 数据粒度: " + ("宏观指标" if grain == "macro" else "汇总数据" if grain == "aggregate" else "明细数据") + "\n"
+        "- 图表列表:\n" + (charts_text if charts_text else "  （暂无图表）") + "\n"
+        "## 数据集字段\n" + (fields_text if fields_text else "  （无字段画像）") + "\n\n"
+        "## 回答要求\n"
+        "1. 直接回答用户的问题或需求，基于上面的看板与字段信息，不要泛泛而谈\n"
+        "2. 用户想分析数据时，给出具体分析建议（用哪个字段、看哪张图）\n"
+        "3. 用户想调整看板时，引导使用具体指令（如把饼图改成柱图、新增一个趋势图）\n"
+        "4. 回答简洁、专业、有用，中文回复，控制在200字内\n"
+        "5. 数据里没有的信息要坦诚说明，不要编造\n\n"
+        f"用户消息: {user_message}\n\n"
+        "请直接回复用户（纯文本，不要JSON）。"
+    )
+
+    system_prompt = load_prompt(
+        "ai_assistant_spec",
+        "你是一位资深 BI 数据分析师助手，正在帮助用户分析和优化数据看板。",
+        theme=theme
+    )
+    full_prompt = system_prompt + "\n\n" + default_prompt
+
+    try:
+        response = await llm_chat(
+            prompt=full_prompt,
+            json_mode=False,
+            user_id="chat_llm_response"
+        )
+        if response.success and response.content:
+            return response.content.strip()
+    except Exception as e:
+        print(f"[Chat] LLM 自然语言回复生成失败: {e}")
+
+    # 兜底：返回结构化引导
+    return (
+        f"我目前只支持以下操作，请尝试用更明确的指令：\n\n"
+        f"- 改图表：「把饼图改成柱图」「换成折线图」\n"
+        f"- 新增图表：「新增一个趋势图」「加一个 KPI 卡片」\n"
+        f"- 删除图表：「删除最后一个图表」\n"
+        f"- 筛选数据：「只看华东地区」「近30天数据」\n"
+        f"- 修改标题：「把标题改为月度销售」\n\n"
+        f"当前看板主题: {theme}，字段: {', '.join(f.get('name', f.get('column','')) for f in field_profiles[:5])}"
+    )
 
 
 # ============== API端点 ==============
@@ -312,6 +418,7 @@ async def send_message_stream(
     # ==== 阶段3: 流式生成器（使用独立db session）====
     async def generate_stream():
         """SSE流生成器 - 使用独立db session"""
+        from app.core.event_logger import log_user_action
         
         # 0. 内容审核结果已在流外完成
         if moderation_result["should_block"]:
@@ -324,7 +431,6 @@ async def send_message_stream(
             })
             yield "data: [DONE]\n\n"
             # 记录事件
-            from app.core.event_logger import log_user_action
             log_user_action(
                 "moderation_blocked",
                 current_user,
@@ -437,11 +543,24 @@ async def send_message_stream(
         
         # 5. 生成响应（纯内存操作，无DB）
         intent_type = IntentType(intent_result["intent_type"])
-        response_data = await generate_intent_response(
-            intent_type, 
-            intent_result["analysis"],
-            context
-        )
+        # UNKNOWN 意图或低置信度时，调用 LLM 生成自然语言回复，避免答非所问
+        if intent_type == IntentType.UNKNOWN or not intent_result.get("is_confident", True):
+            llm_msg = await generate_llm_natural_response(
+                user_message=request.message,
+                context=context
+            )
+            response_data = {
+                "message": llm_msg,
+                "action": None,
+                "suggested_followups": [],
+                "render_updates": []
+            }
+        else:
+            response_data = await generate_intent_response(
+                intent_type,
+                intent_result["analysis"],
+                context
+            )
         
         # 用户override时，在响应中提示已覆盖的约束
         overridden = feasibility.get("overridden_issues", [])
@@ -464,31 +583,45 @@ async def send_message_stream(
             # 获取当前看板配置
             action_exec_result = None
             try:
-                # 重新从db获取最新配置
-                async with async_session_factory() as stream_db:
-                    dash_result = await stream_db.execute(
-                        select(Dashboard).where(Dashboard.id == dashboard_id)
-                    )
-                    dashboard = dash_result.scalar_one_or_none()
-                    if dashboard:
-                        current_config = dashboard.config or {}
-                        # 执行动作
-                        from app.core.action_executor import execute_action
-                        action_result = execute_action(
-                            action["type"],
-                            action.get("params", {}),
-                            current_config,
-                            context
+                # 同一看板的读-改-写用 per-dashboard 锁串行化，避免并发覆盖丢更新
+                lock = _dashboard_lock(dashboard_id)
+                async with lock:
+                    # 重新从db获取最新配置
+                    async with async_session_factory() as stream_db:
+                        dash_result = await stream_db.execute(
+                            select(Dashboard).where(Dashboard.id == dashboard_id)
                         )
-                        if action_result["success"]:
-                            # 更新到数据库
-                            dashboard.config = action_result["new_config"]
-                            dashboard.updated_by = current_user
-                            dashboard.updated_at = datetime.utcnow()
-                            await stream_db.commit()
-                            action_exec_result = action_result
-                        else:
-                            print(f"[WARN] 动作执行失败: {action_result.get('error')}")
+                        dashboard = dash_result.scalar_one_or_none()
+                        if dashboard:
+                            current_config = dashboard.config or {}
+                            # 锁内基于最新config兜底：新增图表不超上限(与feasibility保持一致的10)
+                            if action["type"] == "add_chart" and len(current_config.get("charts", [])) >= 10:
+                                action_exec_result = {
+                                    "success": False,
+                                    "error": "看板已有10个图表，已达上限，无法继续新增"
+                                }
+                            else:
+                                # 执行动作
+                                from app.core.action_executor import execute_action
+                                action_result = execute_action(
+                                    action["type"],
+                                    action.get("params", {}),
+                                    current_config,
+                                    context
+                                )
+                                if action_result["success"]:
+                                    # 更新到数据库
+                                    dashboard.config = action_result["new_config"]
+                                    dashboard.updated_by = current_user
+                                    dashboard.updated_at = datetime.utcnow()
+                                    # JSON字段是原地mutate的同一对象，SQLAlchemy身份比较检测不到变更，
+                                    # 必须显式标记，否则不会生成UPDATE导致配置丢失
+                                    from sqlalchemy.orm.attributes import flag_modified
+                                    flag_modified(dashboard, "config")
+                                    await stream_db.commit()
+                                    action_exec_result = action_result
+                                else:
+                                    print(f"[WARN] 动作执行失败: {action_result.get('error')}")
             except Exception as e:
                 print(f"[ERROR] 动作执行失败: {e}")
             

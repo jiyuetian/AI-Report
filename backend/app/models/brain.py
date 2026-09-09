@@ -125,6 +125,11 @@ class BrainTraceSummary(Base):
     # 时间
     started_at = Column(DateTime, default=func.now())
     completed_at = Column(DateTime)
+
+    # 报告生成扩展字段（M3-01 报告呈现层）
+    version_id = Column(String(36), comment="报告版本ID（非null，用于版本追溯）")
+    status = Column(String(20), comment="状态: running/completed/failed")
+    result = Column(JSON, comment="报告完整结果（章节/HTML/统计等）")
     
     def to_dict(self):
         return {

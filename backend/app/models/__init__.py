@@ -12,7 +12,8 @@ from app.models.share import ShareLink
 from app.models.export import ExportTask
 from app.models.quota import QuotaUsage
 from app.models.audit import AuditLog
-from app.models.brain import BrainTrace, BrainConfig
+from app.models.brain import BrainTrace, BrainConfig, BrainTraceSummary
+from app.models.prompt import Prompt
 
 __all__ = [
     "Base",
@@ -28,5 +29,6 @@ __all__ = [
     "ExportTask",
     "QuotaUsage",
     "AuditLog",
-    "BrainTrace", "BrainConfig",
+    "BrainTrace", "BrainConfig", "BrainTraceSummary",
+    "Prompt",
 ]

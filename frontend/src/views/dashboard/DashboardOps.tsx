@@ -5,7 +5,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeftOutlined, EditOutlined, ShareAltOutlined, ExportOutlined, HistoryOutlined,
-  ApartmentOutlined, DeleteOutlined, MoreOutlined, CopyOutlined, DownloadOutlined, RollbackOutlined, CheckOutlined,
+  ApartmentOutlined, DeleteOutlined, MoreOutlined, CopyOutlined, DownloadOutlined, RollbackOutlined, CheckOutlined, FileTextOutlined,
 } from '@ant-design/icons'
 
 import './DashboardOps.css'
@@ -144,13 +144,13 @@ export default function DashboardOps({ id, title, onRename, onDelete }: Dashboar
     }
   }
 
-  // 导出 → 真实后端
+  // 导出 → 真实后端（JSON 真实内容；PDF/Excel/PNG 依赖后端返回的下载地址）
   const doExport = async () => {
     if (!id) {
       message.warning('当前看板无有效 ID，无法导出')
       return
     }
-    const formatMap: Record<string, string> = { pdf: 'pdf', excel: 'excel', png: 'png', json: 'excel' }
+    const formatMap: Record<string, string> = { pdf: 'pdf', excel: 'excel', png: 'png', json: 'json' }
     setExportLoading(true)
     try {
       const res = await http.post<any>('/exports/sync', {
@@ -158,11 +158,34 @@ export default function DashboardOps({ id, title, onRename, onDelete }: Dashboar
         format: formatMap[fmt] || 'pdf',
         include_watermark: true,
         include_logic: inclNote,
+        include_data: inclData,
       })
+
+      if (fmt === 'json' && res?.content) {
+        // JSON：真实触发浏览器下载
+        const blob = new Blob([JSON.stringify(res.content, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = res.filename || `${title}.dashboard.json`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        message.success('JSON 已导出下载')
+        setExportOpen(false)
+        return
+      }
+
       if (res?.mode === 'async') {
         message.success('导出任务已创建，将通知（演示）')
-      } else {
+      } else if (res?.download_url) {
         message.success('导出完成，文件已生成')
+        if (res.download_url.startsWith('/') || res.download_url.startsWith('http')) {
+          window.open(res.download_url, '_blank')
+        }
+      } else {
+        message.success('导出完成')
       }
     } catch (err: any) {
       message.error(`导出失败: ${err?.message || '网络错误'}`)
@@ -303,6 +326,7 @@ export default function DashboardOps({ id, title, onRename, onDelete }: Dashboar
         <Space>
           <Button icon={<ShareAltOutlined />} onClick={() => setShareOpen(true)}>分享</Button>
           <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>导出</Button>
+          <Button icon={<FileTextOutlined />} onClick={() => id && nav(`/report?report_id=&dashboard_id=${id}`)}>生成报告</Button>
           <Button icon={<HistoryOutlined />} onClick={() => setVersionOpen(true)}>版本</Button>
           <Dropdown menu={menuItems} trigger={['click']}>
             <Button icon={<MoreOutlined />}>操作</Button>

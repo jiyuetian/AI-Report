@@ -12,6 +12,12 @@ DUCKDB_MEMORY_LIMIT = getattr(settings, 'DUCKDB_MEMORY_LIMIT', '4GB')
 DUCKDB_MAX_ROWS_PROFILE = 100000  # profile计算的最大行数
 
 
+def quote_ident(ident: str) -> str:
+    """DuckDB/SQL 标识符安全引用。兼容中文、含全角括号(/)、空格等特殊字符列名，
+    避免被解析成标量函数调用（如 职业稳定性(连续工作年限) 会被当作函数名）。"""
+    return '"' + str(ident).replace('"', '""') + '"'
+
+
 class DuckDBManager:
     """DuckDB 数据库管理器 - 大数据优化"""
     
@@ -160,6 +166,11 @@ class DuckDBManager:
         """).fetchall()
         return [r[0] for r in result]
     
+    def query(self, sql: str) -> List[Dict]:
+        """执行SQL查询并返回字典列表"""
+        df = self.execute_query(sql)
+        return df.to_dict('records')
+
     def execute_query(self, query: str) -> pd.DataFrame:
         """执行SQL查询"""
         return self.conn.execute(query).fetchdf()
@@ -168,9 +179,11 @@ class DuckDBManager:
         """
         M1-07c优化：大数据时分层抽样计算profile
         """
-        # 总行数
+        # 总行数（所有标识符统一安全引用，兼容中文/含括号列名）
+        q_tbl = quote_ident(table_name)
+        q_col = quote_ident(column_name)
         total_rows = self.conn.execute(f"""
-            SELECT COUNT(*) FROM {table_name}
+            SELECT COUNT(*) FROM {q_tbl}
         """).fetchone()[0]
         
         # M1-07c: 大数据时使用近似计算
@@ -180,17 +193,17 @@ class DuckDBManager:
             # 近似计算：使用RESERVOIR抽样
             null_count = self.conn.execute(f"""
                 SELECT COUNT(*) FROM (
-                    SELECT {column_name} 
-                    FROM {table_name} 
+                    SELECT {q_col} 
+                    FROM {q_tbl} 
                     USING SAMPLE RESERVOIR ({DUCKDB_MAX_ROWS_PROFILE})
                 ) 
-                WHERE {column_name} IS NULL
+                WHERE {q_col} IS NULL
             """).fetchone()[0]
             
             # 对抽样数据计算基数
-            sample_table = f"(SELECT {column_name} FROM {table_name} USING SAMPLE RESERVOIR ({DUCKDB_MAX_ROWS_PROFILE}))"
+            sample_table = f"(SELECT {q_col} FROM {q_tbl} USING SAMPLE RESERVOIR ({DUCKDB_MAX_ROWS_PROFILE}))"
             cardinality = self.conn.execute(f"""
-                SELECT COUNT(DISTINCT {column_name}) FROM {sample_table}
+                SELECT COUNT(DISTINCT {q_col}) FROM {sample_table}
             """).fetchone()[0]
             
             # 估算真实基数（简单线性放大）
@@ -198,11 +211,11 @@ class DuckDBManager:
         else:
             # 精确计算
             null_count = self.conn.execute(f"""
-                SELECT COUNT(*) FROM {table_name} 
-                WHERE {column_name} IS NULL
+                SELECT COUNT(*) FROM {q_tbl} 
+                WHERE {q_col} IS NULL
             """).fetchone()[0]
             cardinality = self.conn.execute(f"""
-                SELECT COUNT(DISTINCT {column_name}) FROM {table_name}
+                SELECT COUNT(DISTINCT {q_col}) FROM {q_tbl}
             """).fetchone()[0]
             estimated_cardinality = cardinality
         
@@ -211,9 +224,9 @@ class DuckDBManager:
         
         # 类型推断（抽样）
         sample_values = self.conn.execute(f"""
-            SELECT {column_name} 
-            FROM {table_name} 
-            WHERE {column_name} IS NOT NULL 
+            SELECT {q_col} 
+            FROM {q_tbl} 
+            WHERE {q_col} IS NOT NULL 
             LIMIT 5
         """).fetchall()
         
