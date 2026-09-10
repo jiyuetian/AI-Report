@@ -83,6 +83,19 @@ PROMPT_GROUPS: list = [
         "category": "表达 · 对话交互",
         "description": "AI 对话助手的角色与回答规范：给办公用户输出简洁、可执行、可溯源的 BI 助理答案。",
     },
+    # ── 层4 表达 · 报告生成（接管期新增，对齐「AI 节点必须走受管 prompt」契约） ──
+    {
+        "key": "executive_summary",
+        "title": "执行摘要生成（结构化数据）",
+        "category": "表达 · 报告生成",
+        "description": "报告第2章执行摘要：基于数据集主题与统计信息（字段/类型/基数/空值率/极值/聚合值），生成 3–5 条带数值的结论，禁止臆造。",
+    },
+    {
+        "key": "executive_summary_doc",
+        "title": "执行摘要生成（文档/文本）",
+        "category": "表达 · 报告生成",
+        "description": "文档型报告第2章执行摘要：仅基于源文件文本节选生成摘要，不得编造或推断。",
+    },
 ]
 
 _ORDER = [g["key"] for g in PROMPT_GROUPS]

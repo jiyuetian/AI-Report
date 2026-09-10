@@ -101,13 +101,14 @@ class LLMResponse:
 @dataclass
 class LLMRequest:
     """LLM请求结构"""
-    prompt: str  # 最终渲染后的prompt
+    prompt: str = ""  # 最终渲染后的prompt（messages 优先时可留空）
     json_mode: bool = True  # 强制JSON输出
     max_tokens: int = 2000
     temperature: float = 0.7
     request_id: str = ""
     user_id: str = ""
     timeout: Optional[float] = None  # 单次调用超时（秒），为空则用全局默认
+    model: Optional[str] = None  # 模型覆盖（默认用 settings.LLM_MODEL）
 
 
 class LLMConfigManager:
@@ -294,7 +295,8 @@ class LLMGateway:
     async def chat_complete(
         self,
         request: LLMRequest,
-        fallback_response: Optional[Dict] = None
+        fallback_response: Optional[Dict] = None,
+        messages: Optional[List[Dict]] = None
     ) -> LLMResponse:
         """
         基础聊天完成
@@ -310,14 +312,20 @@ class LLMGateway:
         await rate_limiter.acquire(request_id)
         
         try:
-            # 2. 构建请求体
-            messages = [
-                {"role": "system", "content": "你是一个专业的数据分析助手，必须以JSON格式返回结果。"},
-                {"role": "user", "content": request.prompt}
-            ]
+            # 2. 构建消息：优先使用调用方传入的 messages；否则按 json_mode 决定系统提示
+            if messages is None:
+                system_content = (
+                    "你是一个专业的数据分析助手，必须以JSON格式返回结果。"
+                    if request.json_mode else
+                    "你是一个专业的数据分析助手，请用自然流畅的中文回答，不要返回JSON。"
+                )
+                messages = [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": request.prompt}
+                ]
             
             request_body = {
-                "model": LLM_MODEL,  # 从环境变量读取模型名称
+                "model": request.model or LLM_MODEL,  # 模型覆盖优先，否则用 settings.LLM_MODEL
                 "messages": messages,
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
@@ -578,13 +586,23 @@ def get_llm_gateway() -> LLMGateway:
 # ============== 便捷函数 ==============
 
 async def llm_chat(
-    prompt: str,
+    prompt: str = "",
+    messages: Optional[List[Dict]] = None,
     json_mode: bool = True,
+    model: Optional[str] = None,
     fallback: Optional[Dict] = None,
     user_id: str = ""
 ) -> LLMResponse:
     """
     便捷调用函数
+    
+    Args:
+        prompt: 渲染后的提示词（messages 优先时可留空）
+        messages: 完整的 messages 列表（[system, user, ...]），传入时直接下发，覆盖自动构建
+        json_mode: 是否强制 JSON 输出（False 时走自然语言，系统提示不强制 JSON）
+        model: 模型覆盖（默认用 settings.LLM_MODEL）
+        fallback: 调用全部失败时返回的降级字典
+        user_id: 用于配额统计
     
     Example:
         response = await llm_chat(
@@ -597,6 +615,7 @@ async def llm_chat(
     request = LLMRequest(
         prompt=prompt,
         json_mode=json_mode,
+        model=model,
         user_id=user_id
     )
-    return await gateway.chat_complete(request, fallback)
+    return await gateway.chat_complete(request, fallback, messages=messages)

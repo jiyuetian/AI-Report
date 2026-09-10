@@ -189,7 +189,7 @@ class ReportGenerator:
         stats = await self._get_key_stats()
         stats_json = json.dumps(stats, ensure_ascii=False, default=str)
 
-        prompt = load_prompt("executive_summary", self._default_executive_summary(stats))
+        prompt = load_prompt("executive_summary", "你是资深数据分析报告撰写助手，仅基于提供的统计信息撰写执行摘要，不得编造数字。")
 
         try:
             from app.core.config import settings
@@ -199,11 +199,11 @@ class ReportGenerator:
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": f"数据集：{self.theme}，统计信息：{stats_json}"},
                     ],
-                    model="glm-5.2",
+                    json_mode=False,
                 )
-                if result and result.get("success"):
+                if result and result.success:
                     self.llm_available = True
-                    summary_text = result.get("content", "")
+                    summary_text = result.content or ""
                     # 截取前300字
                     summary_text = summary_text[:300] + ("…" if len(summary_text) > 300 else "")
                     return ReportChapter(2, "执行摘要", summary_text)
@@ -322,6 +322,10 @@ class ReportGenerator:
             # 获取真实聚合数据
             # x_field=维度(饼图=category_field)，y_field=数值(饼图=value_field)，z_field=备用数值字段
             chart_data = await self._get_chart_data(ctype, cat_field, val_field, x_field, agg)
+
+            # 无真实数据则不生成空壳图（避免标题+「该图表暂无数据」的占位段）
+            if not chart_data:
+                continue
 
             # 生成交互式图表HTML（ECharts）
             chart_html = self._render_echarts(ctype, title, chart_data)
@@ -606,14 +610,14 @@ class ReportGenerator:
             if settings.LLM_API_KEY and settings.LLM_BASE_URL and text:
                 result = await llm_chat(
                     messages=[
-                        {"role": "system", "content": load_prompt("executive_summary", "你是数据分析报告撰写助手。仅基于给定文本内容生成摘要，不得编造。")},
+                        {"role": "system", "content": load_prompt("executive_summary_doc", "你是数据分析报告撰写助手。仅基于给定文本内容生成摘要，不得编造。")},
                         {"role": "user", "content": f"源文件类型：{self.file_ext}\n文本内容（节选）：\n{text[:2500]}"},
                     ],
-                    model="glm-5.2",
+                    json_mode=False,
                 )
-                if result and result.get("success"):
+                if result and result.success:
                     self.llm_available = True
-                    summary_text = result.get("content", "")
+                    summary_text = result.content or ""
                     summary_text = summary_text[:500] + ("…" if len(summary_text) > 500 else "")
                     lines = [summary_text, "", "### 文本统计", ""]
                     for k, v in stats.items():
@@ -769,14 +773,64 @@ class ReportGenerator:
         return ReportChapter(7, "附录", content)
 
     # ── HTML渲染 ──────────────────────────────────────────────────
+    @staticmethod
+    def _md_to_html(text: str) -> str:
+        """轻量 Markdown -> HTML（仅覆盖报告实际语法；原始 HTML 由调用方透传，不在此处理）。
+        用于文档型报告的执行摘要等含 markdown 的内容，避免 **/#/> 等标记残留。
+        """
+        if not text:
+            return ""
+        import re as _re
+        lines = text.split("\n")
+        out: List[str] = []
+        in_list = False
+
+        def close_list():
+            nonlocal in_list
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+
+        for line in lines:
+            s = line.rstrip()
+            m = _re.match(r"^(#{1,6})\s+(.*)$", s)
+            if m:
+                close_list()
+                lvl = len(m.group(1))
+                out.append(f"<h{lvl}>{m.group(2)}</h{lvl}>")
+                continue
+            if s.startswith("> "):
+                close_list()
+                out.append(f"<blockquote>{_re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', s[2:])}</blockquote>")
+                continue
+            if _re.match(r"^[-*]\s+", s):
+                if not in_list:
+                    out.append("<ul>")
+                    in_list = True
+                item = _re.sub(r"^[-*]\s+", "", s)
+                item = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item)
+                item = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", item)
+                out.append(f"<li>{item}</li>")
+                continue
+            close_list()
+            if s.strip() == "":
+                continue
+            s2 = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+            s2 = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", s2)
+            out.append(f"<p>{s2}</p>")
+        close_list()
+        return "\n".join(out)
+
     def _render_html(self, chapters: List[ReportChapter]) -> str:
         chapters_html = ""
         for ch in chapters:
             # 图表已内联在 ch.content 中（ECharts），不再渲染重复占位符
+            # 纯文本/markdown 内容（不含 '<' 标签）转 HTML；HTML 章节原样透传
+            content_html = self._md_to_html(ch.content) if "<" not in ch.content else ch.content
             chapters_html += f"""
 <section class="chapter" id="ch{ch.number}">
   <h2 class="chapter-title">第{ch.number}章 {ch.title}</h2>
-  <div class="chapter-content">{ch.content}</div>
+  <div class="chapter-content">{content_html}</div>
 </section>
 """
 

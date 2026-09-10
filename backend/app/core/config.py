@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
 
+    # 模型能力标记（移植 B 的能力探测思想：
+    #   L3 = 支持 OpenAI 风格函数调用 -> 可一次性下发 tools/整块改写
+    #   L2 = 不支持（如讯飞星火 pro-128k）-> 必须走「先定位章节 → 再逐块喂原文」两步降级，
+    #        否则整篇喂入会被模型缩写（B 实测 20k 字符只回 99 token）
+    LLM_FUNCTION_CALLING: bool = True
+    LLM_JSON_MODE: bool = True
+
     # 文件上传
     MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB
     UPLOAD_DIR: str = "./data/uploads"
