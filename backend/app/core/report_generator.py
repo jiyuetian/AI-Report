@@ -108,20 +108,20 @@ class ReportGenerator:
                 chapters.append(self._ch7_appendix())
 
             # 组装HTML
-            html = self._render_html(chapters)
+            report_html = self._render_html(chapters)
 
             # chart_count 按真实渲染数统计（ECharts图表 + KPI卡片）
             chart_count = (
-                html.count('class="echarts-chart"')
-                + html.count('class="kpi-card"')
-                + html.count('class="kpi-display"')
+                report_html.count('class="echarts-chart"')
+                + report_html.count('class="kpi-card"')
+                + report_html.count('class="kpi-display"')
             )
 
             return {
                 "title": self.theme,
                 "generated_at": datetime.now().isoformat(),
                 "chapters": [c.to_dict() for c in chapters],
-                "html": html,
+                "html": report_html,
                 "llm_used": self.llm_available,
                 "chart_count": chart_count,
                 "source_type": self.source_type,
