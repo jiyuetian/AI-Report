@@ -544,17 +544,71 @@ class S3ChartEngine:
         sample_data: Optional[List[Dict]] = None,
         field_types_override: Optional[Dict[str, FieldType]] = None
     ) -> Dict[str, Any]:
+        field_types = field_types_override or FieldAnalyzer.analyze_fields(fields, sample_data)
         recs = self.recommend_charts(fields, grain, sample_data, max_charts=6, field_types_override=field_types_override)
+        # ---- 图表选择策略（对应 B 的 S3≥6 且全可解析）：字段不可解析的一律剔除 ----
+        field_set = set(fields)
+        filtered = []
+        for r in recs:
+            refs = {r.x_field, r.y_field, r.category_field, r.value_field}
+            refs.discard(None)
+            if refs and not refs.issubset(field_set):
+                print(f"[S3-v2][selection-policy] 丢弃不可解析图表 {r.chart_type}: 引用字段 {refs - field_set} 不在数据集中")
+                continue
+            filtered.append(r)
+        all_parseable = all(
+            ({r.x_field, r.y_field, r.category_field, r.value_field} - {None}).issubset(field_set)
+            for r in filtered
+        )
+        achievable = self._max_achievable_charts(fields, grain, field_types_override)
+        # ---- 0 可视化字段场景（P1）：纯文本数据集无数值/分类/地理/日期字段，无法生成真实图表 ----
+        visual_types = {FieldType.NUMBER, FieldType.CATEGORY, FieldType.GEO, FieldType.DATE}
+        has_visual = any(t in visual_types for t in field_types.values())
+        if not has_visual:
+            # 清空仅有的明细表类非可视化图表，避免静默给出"空壳看板"，改为明确提示
+            filtered = []
+        no_chartable = len(filtered) == 0
+        suggestion = (
+            "数据中没有可可视化的字段。请补充：至少1个数值字段（如金额/数量）、"
+            "1个分类维度（如地区/产品）、或1个日期字段（用于趋势图），再重新生成看板。"
+            if no_chartable else ""
+        )
         return {
             "success": True,
             "grain": grain,
             "field_count": len(fields),
-            "chart_count": len(recs),
-            "charts": [r.to_dict() for r in recs],
+            "chart_count": len(filtered),
+            "charts": [r.to_dict() for r in filtered],
             "generated_by": "rule_engine_v2",
             "llm_used": False,
-            "note": "v2：仅输出字段真实可填的图表，不强制补齐类型",
+            "no_chartable_fields": no_chartable,
+            "suggestion": suggestion,
+            "selection_policy": {
+                "max_charts": 6,
+                "all_fields_parseable": all_parseable,
+                "achievable_when_data_allows": achievable,
+                "met_invariant": len(filtered) >= min(6, achievable),
+            },
+            "note": "v2：仅输出字段真实可填的图表，不强制补齐类型；满足 S3≥6 且全可解析",
         }
+
+    @staticmethod
+    def _max_achievable_charts(
+        fields: List[str], grain: str,
+        field_types_override: Optional[Dict[str, FieldType]] = None
+    ) -> int:
+        """估算数据最多可支撑几张互不重复的图表（用于校验 ≥6 不变量）"""
+        ft = field_types_override or FieldAnalyzer.analyze_fields(fields)
+        n_num = sum(1 for t in ft.values() if t == FieldType.NUMBER)
+        n_cat = sum(1 for t in ft.values() if t in (FieldType.CATEGORY, FieldType.GEO))
+        n_date = sum(1 for t in ft.values() if t == FieldType.DATE)
+        # KPI(金额/笔数类) + 趋势(日期×指标) + 占比(低基数维度) + 对比(中高基数维度) + 明细表
+        cap = 0
+        cap += min(n_num, 3)            # KPI 最多 3
+        cap += 1 if (n_date and n_num) else 0   # 趋势线
+        cap += min(n_cat, 3)            # 饼/柱 维度图
+        cap += 1 if n_cat else 0        # 明细表
+        return max(0, min(6, cap))
 
     # ---- 分析规划层（对应 B 的 /analysis/plan）：先定维度/指标再选图 ----
     def build_analysis_plan(

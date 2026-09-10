@@ -74,57 +74,70 @@ class ReportGenerator:
 
     async def generate(self) -> Dict[str, Any]:
         """生成完整7章节报告（表格型或文档型）"""
-        chapters = []
+        try:
+            chapters = []
 
-        # Ch1: 封面（确定性）
-        chapters.append(self._ch1_cover())
+            # Ch1: 封面（确定性）
+            chapters.append(self._ch1_cover())
 
-        # P1: 文档型数据集走文本分支（无DuckDB表，全部确定性统计，禁止编造）
-        if self.source_type == "document":
-            chapters.append(await self._doc_ch2_executive_summary())
-            chapters.append(self._doc_ch3_data_methodology())
-            chapters.append(self._doc_ch4_overview())
-            chapters.append(self._doc_ch5_analysis())
-            chapters.append(self._ch6_risks_anomalies())
-            chapters.append(self._doc_ch7_appendix())
-        else:
-            # Ch2: 执行摘要（LLM优先，确定性兜底）
-            chapters.append(await self._ch2_executive_summary())
+            # P1: 文档型数据集走文本分支（无DuckDB表，全部确定性统计，禁止编造）
+            if self.source_type == "document":
+                chapters.append(await self._doc_ch2_executive_summary())
+                chapters.append(self._doc_ch3_data_methodology())
+                chapters.append(self._doc_ch4_overview())
+                chapters.append(self._doc_ch5_analysis())
+                chapters.append(self._ch6_risks_anomalies())
+                chapters.append(self._doc_ch7_appendix())
+            else:
+                # Ch2: 执行摘要（LLM优先，确定性兜底）
+                chapters.append(await self._ch2_executive_summary())
 
-            # Ch3: 数据说明（确定性）
-            chapters.append(self._ch3_data_methodology())
+                # Ch3: 数据说明（确定性）
+                chapters.append(self._ch3_data_methodology())
 
-            # Ch4: 业务概览（确定性聚合）
-            chapters.append(await self._ch4_business_overview())
+                # Ch4: 业务概览（确定性聚合）
+                chapters.append(await self._ch4_business_overview())
 
-            # Ch5: 维度分析（基于图表配置）
-            chapters.append(await self._ch5_dimension_analysis())
+                # Ch5: 维度分析（基于图表配置）
+                chapters.append(await self._ch5_dimension_analysis())
 
-            # Ch6: 风险与异常
-            chapters.append(self._ch6_risks_anomalies())
+                # Ch6: 风险与异常
+                chapters.append(self._ch6_risks_anomalies())
 
-            # Ch7: 附录
-            chapters.append(self._ch7_appendix())
+                # Ch7: 附录
+                chapters.append(self._ch7_appendix())
 
-        # 组装HTML
-        html = self._render_html(chapters)
+            # 组装HTML
+            html = self._render_html(chapters)
 
-        # chart_count 按真实渲染数统计（ECharts图表 + KPI卡片）
-        chart_count = (
-            html.count('class="echarts-chart"')
-            + html.count('class="kpi-card"')
-            + html.count('class="kpi-display"')
-        )
+            # chart_count 按真实渲染数统计（ECharts图表 + KPI卡片）
+            chart_count = (
+                html.count('class="echarts-chart"')
+                + html.count('class="kpi-card"')
+                + html.count('class="kpi-display"')
+            )
 
-        return {
-            "title": self.theme,
-            "generated_at": datetime.now().isoformat(),
-            "chapters": [c.to_dict() for c in chapters],
-            "html": html,
-            "llm_used": self.llm_available,
-            "chart_count": chart_count,
-            "source_type": self.source_type,
-        }
+            return {
+                "title": self.theme,
+                "generated_at": datetime.now().isoformat(),
+                "chapters": [c.to_dict() for c in chapters],
+                "html": html,
+                "llm_used": self.llm_available,
+                "chart_count": chart_count,
+                "source_type": self.source_type,
+            }
+        except Exception as e:
+            print(f"[Report] 报告生成失败(已降级): {e}")
+            return {
+                "title": self.theme,
+                "generated_at": datetime.now().isoformat(),
+                "chapters": [],
+                "html": f"<div class='report-error'>报告生成中断：{html.escape(str(e)[:160])}。请重试，或检查数据集后重新生成。</div>",
+                "llm_used": self.llm_available,
+                "chart_count": 0,
+                "source_type": self.source_type,
+                "error": str(e)
+            }
 
     # ── Ch1 封面 ──────────────────────────────────────────────────
     # ── 文本类统计（文档型数据集，确定性） ─────────────────────────
@@ -304,6 +317,15 @@ class ReportGenerator:
     # ── Ch5 维度分析 ──────────────────────────────────────────────
     async def _ch5_dimension_analysis(self) -> ReportChapter:
         charts_cfg = self.dashboard_config.get("charts", [])
+        # P1: 0 可视化字段场景 —— 明确告知原因，而非静默空段
+        if not charts_cfg:
+            content = (
+                "<p>暂无维度分析图表。</p>"
+                "<p class='hint'>原因：当前数据集没有可可视化的字段（需至少 1 个数值字段如金额/数量、"
+                "1 个分类维度如地区/产品、或 1 个日期字段用于趋势图）。请补充相关字段后重新生成看板，"
+                "报告将自动包含图表分析。</p>"
+            )
+            return ReportChapter(5, "维度分析", content)
         # 过滤掉 kpi/table，保留分析图表（兼容 chart_type 和 type）
         analysis_charts = [c for c in charts_cfg if c.get("chart_type") not in ("kpi", "table") and c.get("type") not in ("kpi", "table")]
 

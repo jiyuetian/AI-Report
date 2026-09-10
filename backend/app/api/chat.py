@@ -672,8 +672,24 @@ async def send_message_stream(
         # 7. 发送结束标记
         yield "data: [DONE]\n\n"
     
+    async def safe_stream():
+        """包装 generate_stream：捕获任意未预期异常，避免前端永远卡在'生成中'。"""
+        try:
+            async for ev in generate_stream():
+                yield ev
+        except Exception as e:
+            import traceback
+            print(f"[Chat] 流生成异常(已兜底): {e}\n{traceback.format_exc()}")
+            try:
+                yield await sse_event("error", {
+                    "message": f"对话生成中断：{str(e)[:160]}。请稍后重试，或换一种问法。"
+                })
+            except Exception:
+                pass
+            yield "data: [DONE]\n\n"
+
     return StreamingResponse(
-        generate_stream(),
+        safe_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

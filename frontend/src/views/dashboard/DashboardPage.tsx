@@ -584,10 +584,11 @@ const DashboardPage: React.FC = () => {
         return {
           title: { text: `${title}（按${dim}）`, left: 'center', textStyle: { fontSize: 14 } },
           tooltip: { trigger: 'item', formatter: '{b}: {c} 笔 ({d}%)' },
-          legend: { orient: 'vertical' as const, left: 'left', top: 'center' },
+          legend: { type: 'scroll' as const, orient: 'horizontal' as const, bottom: '2%', left: 'center', textStyle: { fontSize: 12 } },
           series: [{
             type: 'pie',
-            radius: ['40%', '70%'],
+            radius: ['38%', '58%'],
+            center: ['50%', '44%'],
             data: seriesData,
             emphasis: {
               itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0, 0.5)' }

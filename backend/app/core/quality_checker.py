@@ -1,5 +1,7 @@
-"""六类质检引擎 - M1-08a 空值与格式（必拦）"""
+"""八类质检引擎 - 完整性/唯一性/有效性/准确性/一致性/及时性/分布/业务规则
+移植 B 的「数据契约驱动 + 全维度质检」理念，补全原六类为八类（新增及时性、分布）。"""
 import re
+from datetime import date, datetime
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -12,13 +14,15 @@ class IssueSeverity(Enum):
 
 
 class IssueType(Enum):
-    """六类质检类型"""
-    NULL = "null"              # 空值
-    FORMAT = "format"          # 格式
-    UNIQUE = "unique"          # 唯一
-    RANGE = "range"            # 范围
-    LOGIC = "logic"            # 逻辑
-    CODE = "code"              # 码值
+    """八类质检类型"""
+    NULL = "null"              # 空值（完整性）
+    FORMAT = "format"          # 格式（有效性）
+    UNIQUE = "unique"          # 唯一（重复）
+    RANGE = "range"            # 范围（准确性-域）
+    LOGIC = "logic"            # 逻辑（业务规则）
+    CODE = "code"             # 码值（准确性-编码）
+    TIMELINESS = "timeliness"  # 及时性（日期时效：未来/过早）
+    DISTRIBUTION = "distribution"  # 分布（统计异常值/IQR）
 
 
 @dataclass
@@ -37,14 +41,16 @@ class QualityIssue:
 class QualityChecker:
     """六类质检引擎"""
     
-    # 检测顺序（唯一→空值→范围→逻辑→码值→格式）
+    # 检测顺序（唯一→空值→范围→逻辑→码值→格式→及时性→分布）
     DETECTION_ORDER = [
         IssueType.UNIQUE,
         IssueType.NULL,
         IssueType.RANGE,
         IssueType.LOGIC,
         IssueType.CODE,
-        IssueType.FORMAT
+        IssueType.FORMAT,
+        IssueType.TIMELINESS,
+        IssueType.DISTRIBUTION,
     ]
     
     def __init__(self, db_manager, brain_config: Optional[Dict] = None):
@@ -100,6 +106,10 @@ class QualityChecker:
                 issues.extend(self._check_logic(table_name, columns))
             elif issue_type == IssueType.CODE:
                 issues.extend(self._check_code(table_name, columns))
+            elif issue_type == IssueType.TIMELINESS:
+                issues.extend(self._check_timeliness(table_name, columns))
+            elif issue_type == IssueType.DISTRIBUTION:
+                issues.extend(self._check_distribution(table_name, columns))
         
         # 汇总
         blocking_count = sum(1 for i in issues if i.severity == IssueSeverity.BLOCKING)
@@ -181,6 +191,17 @@ class QualityChecker:
                 {"strategy": "map_closest", "label": "映射到最接近的标准码值", "description": "自动匹配并映射到标准码值"},
                 {"strategy": "mark_anomaly", "label": "标记为异常码值", "description": "标记为非标准码值，后续处理"},
                 {"strategy": "drop", "label": "删除异常码值行", "description": "删除包含非标准码值的行"},
+            ],
+            IssueType.TIMELINESS: [
+                {"strategy": "set_today", "label": "未来日期置为今天", "description": "将未来日期修正为当前日期"},
+                {"strategy": "mark_anomaly", "label": "标记为时效异常", "description": "标记为时效异常，后续分析时跳过"},
+                {"strategy": "drop", "label": "删除异常日期行", "description": "删除未来/过早日期的数据行"},
+            ],
+            IssueType.DISTRIBUTION: [
+                {"strategy": "fill_median", "label": "用中位数替换离群值", "description": "使用中位数替换统计离群值"},
+                {"strategy": "winsorize", "label": "缩尾处理", "description": "将离群值裁剪到上下界（IQR×3）"},
+                {"strategy": "mark_anomaly", "label": "标记为离群值", "description": "标记为统计离群，后续分析时跳过"},
+                {"strategy": "drop", "label": "删除离群行", "description": "删除统计离群的数据行"},
             ],
         }
         # 警告（非阻断）时不提供破坏性修复，只建议确认/忽略，防止误删干净数据
@@ -660,6 +681,111 @@ class QualityChecker:
                         repair_options=self._get_repair_options(IssueType.CODE, col_name)
                     ))
         
+        return issues
+
+    # ==================== 新增：及时性（TIMELINESS） ====================
+
+    def _check_timeliness(self, table_name: str, columns: List[Dict]) -> List[QualityIssue]:
+        """及时性检测 - 提示项：日期列中存在未来日期或过早(>10年)日期"""
+        issues = []
+        today = date.today()
+        old_threshold_days = 3650  # 10 年
+        for col in columns:
+            col_name = col["name"]
+            ctype = (col.get("type") or "").upper()
+            if not any(k in ctype for k in ("DATE", "TIME", "DATETIME", "TIMESTAMP")):
+                # 列名含时间语义也纳入（如 create_time / 更新日期）
+                if not any(k in col_name.lower() for k in ("date", "time", "日期", "时间", "日期", "年份", "月")):
+                    continue
+            try:
+                rows = self.db.conn.execute(f"""
+                    SELECT rowid, TRY_CAST("{col_name}" AS DATE)
+                    FROM {table_name}
+                    WHERE "{col_name}" IS NOT NULL
+                """).fetchall()
+            except Exception:
+                continue
+            future, too_old = [], []
+            for rid, d in rows:
+                if d is None:
+                    continue
+                if isinstance(d, datetime):
+                    d = d.date()
+                if d > today:
+                    future.append(rid)
+                elif (today - d).days > old_threshold_days:
+                    too_old.append(rid)
+            if future:
+                issues.append(QualityIssue(
+                    issue_type=IssueType.TIMELINESS,
+                    severity=IssueSeverity.WARNING,
+                    column=col_name,
+                    row_indices=future[:10],
+                    message=f"检测到 {len(future)} 行日期为未来日期（>{today}）",
+                    sample_values=[str(today)],
+                    rule_name="未来日期检测",
+                    repair_options=self._get_repair_options(IssueType.TIMELINESS, col_name)
+                ))
+            if too_old:
+                issues.append(QualityIssue(
+                    issue_type=IssueType.TIMELINESS,
+                    severity=IssueSeverity.WARNING,
+                    column=col_name,
+                    row_indices=too_old[:10],
+                    message=f"检测到 {len(too_old)} 行日期过早（早于 {today.year - 10} 年）",
+                    sample_values=[str(today)],
+                    rule_name="过早日期检测",
+                    repair_options=self._get_repair_options(IssueType.TIMELINESS, col_name)
+                ))
+        return issues
+
+    # ==================== 新增：分布（DISTRIBUTION，统计异常值） ====================
+
+    def _check_distribution(self, table_name: str, columns: List[Dict]) -> List[QualityIssue]:
+        """分布检测 - 提示项：数值列经 IQR(3×) 判定统计异常值（离群点）"""
+        issues = []
+        for col in columns:
+            col_name = col["name"]
+            ctype = (col.get("type") or "").upper()
+            if not any(t in ctype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL")):
+                continue
+            try:
+                res = self.db.conn.execute(f"""
+                    SELECT rowid, CAST("{col_name}" AS DOUBLE) AS v
+                    FROM {table_name}
+                    WHERE "{col_name}" IS NOT NULL
+                """).fetchall()
+            except Exception:
+                continue
+            xs = [r[1] for r in res if r[1] is not None]
+            if len(xs) < 10:
+                continue  # 样本不足不判定
+            try:
+                q1 = self.db.conn.execute(
+                    f'SELECT quantile_cont(CAST("{col_name}" AS DOUBLE), 0.25) FROM {table_name} WHERE "{col_name}" IS NOT NULL'
+                ).fetchone()[0]
+                q3 = self.db.conn.execute(
+                    f'SELECT quantile_cont(CAST("{col_name}" AS DOUBLE), 0.75) FROM {table_name} WHERE "{col_name}" IS NOT NULL'
+                ).fetchone()[0]
+            except Exception:
+                continue
+            iqr = (q3 - q1) or 0.0
+            if iqr == 0.0:
+                continue  # 无离散度不判定
+            low, high = q1 - 3 * iqr, q3 + 3 * iqr
+            outliers = [r[0] for r in res if r[1] is not None and (r[1] < low or r[1] > high)]
+            if outliers:
+                sample_vals = [r[1] for r in res if r[0] in outliers[:5]]
+                issues.append(QualityIssue(
+                    issue_type=IssueType.DISTRIBUTION,
+                    severity=IssueSeverity.WARNING,
+                    column=col_name,
+                    row_indices=outliers[:10],
+                    message=f"数值列 {col_name} 检出 {len(outliers)} 个统计离群值（IQR×3，区间[{low:.2f},{high:.2f}]）",
+                    sample_values=sample_vals,
+                    rule_name="分布离群检测",
+                    repair_options=self._get_repair_options(IssueType.DISTRIBUTION, col_name)
+                ))
         return issues
 
 

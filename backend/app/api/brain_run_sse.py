@@ -52,6 +52,17 @@ async def _safe_trace(db, coro, label: str):
         return None
 
 
+def _short_err(e) -> str:
+    """把异常压缩成一行可读原因（去嵌套堆栈，最多160字）"""
+    raw = str(e) if e else "未知异常"
+    return raw.strip().splitlines()[0][:160] if raw.strip() else "未知异常"
+
+
+def _record_stage_error(run_id: str, stage: str, msg: str) -> None:
+    """记录某阶段用户可读的失败消息，供 /status 回传，避免用户只看到笼统报错"""
+    _RUN_STATUS.setdefault(run_id, {}).setdefault("stage_errors", {})[stage] = msg
+
+
 async def _run_worker(run_id: str, dataset_id: str, user_id: str) -> None:
     """
     在后台运行 brain 管道并持续刷新状态快照。
@@ -210,12 +221,38 @@ async def brain_run_pipeline(
             dataset_info = await get_dataset_info(db, dataset_id)
 
             # 数据六层落表（L1 norm / L2 cleaned / L4 agg 物化，best-effort 不阻断主流程）
+            duck_inst = None
             try:
                 duck_inst = get_duckdb()
                 layers = duck_inst.materialize_layers(dataset_id)
                 print(f"[Brain] 六层落表: {layers}")
             except Exception as e:
                 print(f"[Brain] 六层落表失败(不阻断): {e}")
+
+            # 八类数据质量探查（L2 清洗层，best-effort 不阻断）
+            try:
+                if duck_inst is not None:
+                    from app.core.quality_checker import QualityChecker
+                    cleaned_tbl = duck_inst.get_layer_table_name(dataset_id, "cleaned")
+                    if not duck_inst.table_exists(cleaned_tbl):
+                        cleaned_tbl = duck_inst.get_layer_table_name(dataset_id, "raw")
+                    qcols = duck_inst.get_table_info(cleaned_tbl).get("columns", [])
+                    qc = QualityChecker(duck_inst, None)
+                    quality = qc.check_table(cleaned_tbl, qcols)
+                    _RUN_STATUS.setdefault(run_id, {})["quality_summary"] = quality["summary"]
+                    print(f"[Brain] 八类质量: {quality['summary']['by_type']}")
+            except Exception as e:
+                print(f"[Brain] 质量探查失败(不阻断): {e}")
+
+            # 六层血缘自动构建（best-effort 不阻断）—— 数字可溯源
+            try:
+                from app.core.lineage_service import LineageService
+                lineage = await LineageService.build_lineage_for_dataset(db, dataset_id)
+                await LineageService.save_lineage_to_db(db, dataset_id, lineage)
+                _RUN_STATUS.setdefault(run_id, {})["lineage_built"] = True
+                print("[Brain] 血缘已构建并落库")
+            except Exception as e:
+                print(f"[Brain] 血缘构建失败(不阻断): {e}")
             fields = dataset_info["fields"]
             grain = dataset_info["grain"]
             sample_data = dataset_info["sample_data"]
@@ -230,23 +267,31 @@ async def brain_run_pipeline(
             progress.message = "正在分析数据主题..."
             yield progress.to_event()
             
-            s1_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S1", {"fields": fields}), "S1")
-            s1_result = await detect_theme(
-                db=db,
-                fields=fields,
-                sample_data=sample_data,
-                dataset_name=dataset_name
-            )
-            await _safe_trace(db, BrainTraceManager.complete_stage(db, s1_trace_id, {"result": s1_result}), "S1")
-            
-            theme_tag = s1_result.get("theme_tag", "通用分析")
-            progress.stage_status = "completed"
-            progress.progress = 20
-            progress.message = f"主题识别完成: {theme_tag}"
-            progress.detail = s1_result
-            yield progress.to_event()
-            
-            print(f"[Brain] S1完成: {theme_tag}")
+            s1_trace_id = None
+            theme_tag = "通用分析"  # 失败降级默认值
+            try:
+                s1_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S1", {"fields": fields}), "S1")
+                s1_result = await detect_theme(
+                    db=db,
+                    fields=fields,
+                    sample_data=sample_data,
+                    dataset_name=dataset_name
+                )
+                await _safe_trace(db, BrainTraceManager.complete_stage(db, s1_trace_id, {"result": s1_result}), "S1")
+                theme_tag = s1_result.get("theme_tag", "通用分析")
+                progress.stage_status = "completed"
+                progress.progress = 20
+                progress.message = f"主题识别完成: {theme_tag}"
+                progress.detail = s1_result
+                yield progress.to_event()
+                print(f"[Brain] S1完成: {theme_tag}")
+            except Exception as e:
+                msg = f"第1步 主题识别失败：{_short_err(e)}。已使用默认主题继续后续分析，你可稍后重试或在对话中指定主题。"
+                progress.stage_status = "failed"
+                progress.message = msg
+                _record_stage_error(run_id, "S1", msg)
+                yield progress.to_event()
+                print(f"[Brain] S1失败(降级继续): {e}")
             
             # ========== S2: 目标生成 ==========
             progress.current_stage = "S2"
@@ -255,26 +300,34 @@ async def brain_run_pipeline(
             progress.message = "正在生成分析目标..."
             yield progress.to_event()
             
-            s2_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S2", {
-                "theme": theme_tag, "fields": fields
-            }), "S2")
-            goals = await generate_analysis_goals(
-                db=db,
-                theme=theme_tag,
-                fields=fields,
-                grain=grain,
-                use_llm=settings.BRAIN_S2_USE_LLM  # PRD 4.8：默认规则引擎降本，可开 LLM
-            )
-            await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals}), "S2")
-            
-            goals_count = len(goals)
-            progress.stage_status = "completed"
-            progress.progress = 40
-            progress.message = f"生成{goals_count}个分析目标"
-            progress.detail = {"goals": goals, "count": goals_count}
-            yield progress.to_event()
-            
-            print(f"[Brain] S2完成: {goals_count}个目标")
+            s2_trace_id = None
+            goals = []  # 失败降级默认
+            try:
+                s2_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S2", {
+                    "theme": theme_tag, "fields": fields
+                }), "S2")
+                goals = await generate_analysis_goals(
+                    db=db,
+                    theme=theme_tag,
+                    fields=fields,
+                    grain=grain,
+                    use_llm=settings.BRAIN_S2_USE_LLM  # PRD 4.8：默认规则引擎降本，可开 LLM
+                )
+                await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals}), "S2")
+                goals_count = len(goals)
+                progress.stage_status = "completed"
+                progress.progress = 40
+                progress.message = f"生成{goals_count}个分析目标"
+                progress.detail = {"goals": goals, "count": goals_count}
+                yield progress.to_event()
+                print(f"[Brain] S2完成: {goals_count}个目标")
+            except Exception as e:
+                msg = f"第2步 分析目标生成失败：{_short_err(e)}。已跳过目标生成，图表推荐将基于默认策略继续。"
+                progress.stage_status = "failed"
+                progress.message = msg
+                _record_stage_error(run_id, "S2", msg)
+                yield progress.to_event()
+                print(f"[Brain] S2失败(降级继续): {e}")
             
             # ========== S3: 图表推荐（LLM + Schema自愈） ==========
             progress.current_stage = "S3"
@@ -283,23 +336,33 @@ async def brain_run_pipeline(
             progress.message = "正在推荐图表..."
             yield progress.to_event()
             
-            s3_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S3", {
-                "theme": theme_tag, "fields": fields, "goals": goals
-            }), "S3")
-            s3_result = await generate_charts_with_llm(
-                db=db,
-                theme=theme_tag,
-                fields=fields,
-                goals=goals,
-                grain=grain
-            )
-            await _safe_trace(db, BrainTraceManager.complete_stage(db, s3_trace_id, {"result": s3_result}), "S3")
-            
-            charts = s3_result.get("charts", [])
-            generated_by = s3_result.get("generated_by", "rule_engine")
-            # 容错：若LLM限流导致图表为空，回退到引擎默认配置，保证看板仍能生成
+            s3_trace_id = None
+            charts = []  # 失败降级默认
+            generated_by = "rule_engine"
+            s3_result = {"charts": [], "generated_by": "rule_engine"}
+            try:
+                s3_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S3", {
+                    "theme": theme_tag, "fields": fields, "goals": goals
+                }), "S3")
+                s3_result = await generate_charts_with_llm(
+                    db=db,
+                    theme=theme_tag,
+                    fields=fields,
+                    goals=goals,
+                    grain=grain
+                )
+                await _safe_trace(db, BrainTraceManager.complete_stage(db, s3_trace_id, {"result": s3_result}), "S3")
+                charts = s3_result.get("charts", [])
+                generated_by = s3_result.get("generated_by", "rule_engine")
+            except Exception as e:
+                msg = f"第3步 图表推荐失败：{_short_err(e)}。将回退到内置规则引擎重新生成图表。"
+                progress.stage_status = "failed"
+                progress.message = msg
+                _record_stage_error(run_id, "S3", msg)
+                print(f"[Brain] S3失败(尝试规则引擎回退): {e}")
+            # 容错：若LLM限流/异常导致图表为空，回退到引擎默认配置，保证看板仍能生成
             if not charts:
-                print("[Brain] S3图表为空（可能LLM限流），回退到引擎默认图表")
+                print("[Brain] S3图表为空（可能LLM限流/异常），回退到引擎默认图表")
                 try:
                     from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
                     engine = S3ChartEngine()
@@ -308,11 +371,14 @@ async def brain_run_pipeline(
                     generated_by = "rule_engine_fallback"
                     s3_result["charts"] = charts
                     s3_result["generated_by"] = generated_by
+                    if charts:
+                        progress.stage_status = "completed"
                 except Exception as fe:
                     print(f"[Brain] S3兜底也失败: {fe}")
-            progress.stage_status = "completed"
+            if progress.stage_status != "completed":
+                progress.stage_status = "completed" if charts else "failed"
             progress.progress = 60
-            progress.message = f"推荐{len(charts)}个图表 ({generated_by})"
+            progress.message = f"推荐{len(charts)}个图表 ({generated_by})" + ("" if charts else "（无可用图表，请检查数据字段）")
             progress.detail = s3_result
             yield progress.to_event()
             
@@ -325,35 +391,53 @@ async def brain_run_pipeline(
             progress.message = "正在编排优化看板..."
             yield progress.to_event()
             
-            s4_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S4", {
-                "charts": charts
-            }), "S4")
-            
-            s4_s5_result = await orchestrate_and_score(
-                db=db,
-                charts=charts,
-                dataset_id=dataset_id
-            )
-            
-            await _safe_trace(db, BrainTraceManager.complete_stage(db, s4_trace_id, {"result": s4_s5_result}), "S4")
-            
+            s4_trace_id = None
+            s5_trace_id = None
+            s4_s5_result = {"charts": charts, "overall_score": 0, "passed": False}
+            try:
+                s4_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S4", {
+                    "charts": charts
+                }), "S4")
+                s4_s5_result = await orchestrate_and_score(
+                    db=db,
+                    charts=charts,
+                    dataset_id=dataset_id
+                )
+                await _safe_trace(db, BrainTraceManager.complete_stage(db, s4_trace_id, {"result": s4_s5_result}), "S4")
+            except Exception as e:
+                msg = f"第4步 看板编排优化失败：{_short_err(e)}。已使用原始图表配置继续。"
+                progress.current_stage = "S4"
+                progress.stage_status = "failed"
+                progress.message = msg
+                _record_stage_error(run_id, "S4", msg)
+                yield progress.to_event()
+                print(f"[Brain] S4失败(降级继续): {e}")
+
             final_charts = s4_s5_result.get("charts", charts)
             overall_score = s4_s5_result.get("overall_score", 0)
             passed = s4_s5_result.get("passed", False)
-            
+
             progress.current_stage = "S5"
             progress.stage_status = "running"
             progress.progress = 85
             progress.message = f"评分中: {overall_score}分"
             progress.detail = s4_s5_result
             yield progress.to_event()
-            
-            s5_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S5", {
-                "score": s4_s5_result.get("overall_score", 0),
-                "passed": s4_s5_result.get("passed", False),
-                "chart_count": len(charts)
-            }), "S5")
-            await _safe_trace(db, BrainTraceManager.complete_stage(db, s5_trace_id, {"result": s4_s5_result}), "S5")
+
+            try:
+                s5_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S5", {
+                    "score": overall_score,
+                    "passed": passed,
+                    "chart_count": len(charts)
+                }), "S5")
+                await _safe_trace(db, BrainTraceManager.complete_stage(db, s5_trace_id, {"result": s4_s5_result}), "S5")
+            except Exception as e:
+                msg = f"第5步 评分验证失败：{_short_err(e)}。已跳过评分，看板照常生成。"
+                progress.stage_status = "failed"
+                progress.message = msg
+                _record_stage_error(run_id, "S5", msg)
+                yield progress.to_event()
+                print(f"[Brain] S5失败(降级继续): {e}")
 
             # ========== S5 多模态视觉 5% 抽检 ==========
             try:
@@ -501,13 +585,20 @@ async def brain_run_pipeline(
             import traceback
             error_detail = traceback.format_exc()
             print(f"[Brain] 管道失败: {e}\n{error_detail}")
-            
+
             progress.stage_status = "failed"
             # 精简为可读单行，避免把LLM超时等嵌套异常直接堆给用户
             raw = str(e) if e else "未知异常"
             reason = raw.strip().splitlines()[0][:200] if raw.strip() else "未知异常"
-            progress.message = f"处理失败: {reason}"
-            progress.detail = {"error": raw}
+            stage_errors = _RUN_STATUS.get(run_id, {}).get("stage_errors", {})
+            if stage_errors:
+                failed_steps = "；".join(f"{k}步（{v.split('。')[0]}）" for k, v in stage_errors.items())
+                msg = f"分析管道已完成，但存在失败步骤：{failed_steps}。可重试运行，或在对话中调整数据/字段后重新生成。"
+            else:
+                msg = f"分析管道执行失败：{reason}。请稍后重试；若持续失败，请检查数据集或联系管理员。"
+            progress.message = msg
+            progress.detail = {"error": raw, "stage_errors": stage_errors}
+            _RUN_STATUS.setdefault(run_id, {})["stage_errors"] = stage_errors
             yield progress.to_event()
 
 
@@ -601,6 +692,9 @@ async def get_run_status(run_id: str):
             "message": cache.get("message", ""),
             "detail": cache.get("detail") or {},
             "multimodal_sampling": cache.get("multimodal_sampling"),
+            "quality_summary": cache.get("quality_summary"),
+            "lineage_built": cache.get("lineage_built", False),
+            "stage_errors": cache.get("stage_errors") or {},
             "finished": cache.get("finished", False)
         }
     # 兜底：从DB读取（服务重启后查询已持久化的运行痕迹）

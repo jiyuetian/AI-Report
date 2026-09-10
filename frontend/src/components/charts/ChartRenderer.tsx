@@ -128,10 +128,11 @@ const PieChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) 
   const option = {
     title: { text: config.title, left: 'center', textStyle: { fontSize: 14 } },
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { orient: 'vertical', left: 'left', top: 'center' },
+    legend: { type: 'scroll', orient: 'horizontal', bottom: '2%', left: 'center', textStyle: { fontSize: 12 } },
     series: [{
       type: 'pie',
-      radius: config.config?.donut ? ['40%', '70%'] : '70%',
+      radius: config.config?.donut ? ['38%', '58%'] : '60%',
+      center: ['50%', '44%'],
       data: processedData,
       emphasis: {
         itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' }
