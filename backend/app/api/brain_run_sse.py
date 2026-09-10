@@ -533,7 +533,10 @@ async def brain_run_pipeline(
                     "passed": passed,
                     "dimensions": s4_s5_result.get("dimension_scores", {})
                 },
-                "analysis_text": analysis_text
+                "analysis_text": analysis_text,
+                # #7 修复：0 可视化字段时把 PRD 引导建议一并落库，前端空看板可展示
+                "no_chartable_fields": s3_result.get("no_chartable_fields", False),
+                "suggestion": s3_result.get("suggestion", "")
             }
             
             # 保存Dashboard记录
@@ -575,7 +578,9 @@ async def brain_run_pipeline(
                 "chart_count": len(final_charts),
                 "final_score": overall_score,
                 "passed": passed,
-                "theme": theme_tag
+                "theme": theme_tag,
+                "no_chartable_fields": s3_result.get("no_chartable_fields", False),
+                "suggestion": s3_result.get("suggestion", "")
             }
             yield progress.to_event()
             

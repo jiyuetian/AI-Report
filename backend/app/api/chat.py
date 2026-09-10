@@ -77,6 +77,23 @@ async def sse_event(event_type: str, data: Dict[str, Any]) -> str:
 
 # ============== 意图识别与响应生成 ==============
 
+def _surface_action_error(action_result: Dict[str, Any], response_data: Dict[str, Any]) -> Dict[str, Any]:
+    """#5 修复：动作执行失败时把错误显式写入响应，前端不再静默误判为成功。
+
+    - action_result['success'] 为 True 时原样返回（不动 response_data）
+    - 为 False 时写入 response_data['action_error']，并在 message 末尾追加醒目提示
+    返回就地修改后的 response_data（同一对象）。
+    """
+    if action_result.get("success"):
+        return response_data
+    err = action_result.get("error") or "动作执行失败"
+    response_data["action_error"] = err
+    base = response_data.get("message") or ""
+    if err not in base:
+        response_data["message"] = base + f"\n\n> ⚠️ 动作执行未成功：{err}（看板未变更）"
+    return response_data
+
+
 async def generate_intent_response(intent_type: IntentType, analysis: Dict, context: Dict) -> Dict:
     """根据意图生成响应"""
     
@@ -600,6 +617,8 @@ async def send_message_stream(
                                     "success": False,
                                     "error": "看板已有10个图表，已达上限，无法继续新增"
                                 }
+                                # #5 修复：超上限也显式回传错误
+                                response_data = _surface_action_error(action_exec_result, response_data)
                             else:
                                 # 执行动作
                                 from app.core.action_executor import execute_action
@@ -621,24 +640,30 @@ async def send_message_stream(
                                     await stream_db.commit()
                                     action_exec_result = action_result
                                 else:
-                                    print(f"[WARN] 动作执行失败: {action_result.get('error')}")
+                                    # #5 修复：失败必须显式回传错误，前端不再“以为成功”
+                                    action_exec_result = action_result
+                                    response_data = _surface_action_error(action_result, response_data)
             except Exception as e:
-                print(f"[ERROR] 动作执行失败: {e}")
-            
-            # 更新响应
+                # #5 修复：异常也要回传错误，避免前端静默卡在“已执行”
+                action_exec_result = {"success": False, "error": f"动作执行异常：{str(e)[:160]}"}
+                response_data = _surface_action_error(action_exec_result, response_data)
+
+            # 更新响应（仅成功时下发渲染指令；失败时 action_error 已写入 response_data）
             if action_exec_result:
-                response_data["render_updates"] = action_exec_result.get("render_updates", [])
-                response_data["new_config"] = action_exec_result.get("new_config", {})
+                if action_exec_result.get("success"):
+                    response_data["render_updates"] = action_exec_result.get("render_updates", [])
+                    response_data["new_config"] = action_exec_result.get("new_config", {})
         
         # 7. 发送最终响应
-        full_response = {
-            "message": response_data["message"],
-            "intent": intent_result,
-            "action": response_data.get("action"),
-            "render_updates": response_data.get("render_updates", []),
-            "suggested_followups": response_data.get("suggested_followups", []),
-            "session_id": session_id
-        }
+                    full_response = {
+                        "message": response_data["message"],
+                        "intent": intent_result,
+                        "action": response_data.get("action"),
+                        "action_error": response_data.get("action_error"),
+                        "render_updates": response_data.get("render_updates", []),
+                        "suggested_followups": response_data.get("suggested_followups", []),
+                        "session_id": session_id
+                    }
         
         yield await sse_event("complete", full_response)
         

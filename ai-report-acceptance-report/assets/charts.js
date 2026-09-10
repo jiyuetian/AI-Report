@@ -14,7 +14,7 @@
     animation: false,
     color: [accent, accent2],
     tooltip: { trigger: 'axis', appendToBody: true, axisPointer: { type: 'shadow' } },
-    grid: { left: 40, right: 20, top: 30, bottom: 40 },
+    grid: { left: 40, right: 20, top: 30, bottom: 40, containLabel: true },
     xAxis: {
       type: 'value', name: '用例数', nameTextStyle: { color: muted },
       axisLine: { lineStyle: { color: rule } }, axisLabel: { color: muted },
@@ -61,7 +61,7 @@
     color: [accent, accent2],
     tooltip: { trigger: 'axis', appendToBody: true },
     legend: { bottom: 0, textStyle: { color: muted } },
-    grid: { left: 40, right: 20, top: 20, bottom: 30 },
+    grid: { left: 40, right: 20, top: 20, bottom: 30, containLabel: true },
     xAxis: {
       type: 'category',
       data: ['质量达标率(≥80%)', '主题匹配率(≥80%)', '用例通过', '断言通过'],

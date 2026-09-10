@@ -552,6 +552,8 @@ class ReportGenerator:
             option = json.dumps({
                 "title": {"text": title},
                 "tooltip": {"trigger": "axis"},
+                "legend": {"type": "scroll", "bottom": 0, "textStyle": {"fontSize": 11}},
+                "grid": {"left": "3%", "right": "4%", "bottom": "14%", "top": "18%", "containLabel": True},
                 "xAxis": {"type": "category", "data": dims},
                 "yAxis": {"type": "value"},
                 "series": [{"data": vals, "type": chart_type, "smooth": chart_type == "line"}]
@@ -564,7 +566,9 @@ class ReportGenerator:
             option = json.dumps({
                 "title": {"text": title},
                 "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
-                "series": [{"type": "pie", "radius": "55%",
+                "legend": {"type": "scroll", "orient": "horizontal", "bottom": "2%", "left": "center",
+                           "textStyle": {"fontSize": 12}},
+                "series": [{"type": "pie", "radius": "58%", "center": ["50%", "45%"],
                             "data": [{"name": n, "value": v} for n, v in zip(cats, vals)]}]
             }, ensure_ascii=False)
             return f'<div class="echarts-chart" data-option="{html.escape(option, quote=True)}"></div>'
