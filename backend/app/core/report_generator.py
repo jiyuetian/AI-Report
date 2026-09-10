@@ -214,20 +214,24 @@ class ReportGenerator:
         return ReportChapter(2, "执行摘要", self._default_executive_summary(stats))
 
     def _default_executive_summary(self, stats: Dict) -> str:
-        """确定性执行摘要（无LLM时的兜底）"""
-        lines = []
-        lines.append(f"本报告基于 **{self.row_count:,}** 条记录生成，涵盖 **{len(self.fields)}** 个数据字段。")
-        lines.append("")
-        lines.append("### 关键发现")
-        lines.append("")
-        for key, val in list(stats.items())[:5]:
-            if isinstance(val, (int, float)):
-                lines.append(f"- **{key}**：{val:,.2f}" if isinstance(val, float) else f"- **{key}**：{val:,}")
+        """确定性执行摘要（无LLM时的兜底），输出原生HTML"""
+        _skip_keywords = ("期限月", "序号", "编号", "ID", "id")
+        filtered = {k: v for k, v in stats.items() if not any(kw in k for kw in _skip_keywords)}
+        items = list(filtered.items())[:6]
+
+        parts = [f"<p>本报告基于 <strong>{self.row_count:,}</strong> 条记录，涵盖 <strong>{len(self.fields)}</strong> 个数据字段。</p>"]
+        parts.append("<h3>关键发现</h3>")
+        parts.append("<ul>")
+        for key, val in items:
+            if isinstance(val, float):
+                parts.append(f"  <li><strong>{key}</strong>：{val:,.2f}</li>")
+            elif isinstance(val, int):
+                parts.append(f"  <li><strong>{key}</strong>：{val:,}</li>")
             elif isinstance(val, str):
-                lines.append(f"- **{key}**：{val}")
-        lines.append("")
-        lines.append("> ⚠️ AI解读不可用，以下为确定性摘要（基于真实数据聚合，非LLM生成）")
-        return "\n".join(lines)
+                parts.append(f"  <li><strong>{key}</strong>：{val}</li>")
+        parts.append("</ul>")
+        parts.append("<p style='color:#999;font-size:0.9em;'><em>⚠️ AI解读不可用，以下为确定性摘要（基于真实数据聚合，非LLM生成）</em></p>")
+        return "\n".join(parts)
 
     # ── Ch3 数据说明 ──────────────────────────────────────────────
     def _ch3_data_methodology(self) -> ReportChapter:
@@ -251,6 +255,14 @@ class ReportGenerator:
 
 <h3>字段清单</h3>
 {fields_html}
+
+<h3>分析方法说明</h3>
+<ul>
+  <li>图表生成：规则引擎（s3_chart_engine_v2）+ LLM增强（如可用）</li>
+  <li>字段类型推断：基于样本值 + 关键词匹配（优先级：样本值 > 关键词）</li>
+  <li>图表推荐：基于字段配对 + 基数约束（分类≤20优先）</li>
+  <li>统计计算：DuckDB直接聚合，无抽样</li>
+</ul>
 """
         return ReportChapter(3, "数据说明与方法论", content)
 
@@ -330,16 +342,83 @@ class ReportGenerator:
 
     # ── Ch6 风险与异常 ────────────────────────────────────────────
     def _ch6_risks_anomalies(self) -> ReportChapter:
-        if not self.quality_issues:
-            content = "<p>本次数据质量良好，未发现显著异常。</p>"
+        findings = []
+
+        # 1) 主动检测：空值率
+        for f in self.fields:
+            nm = f.get("name", "")
+            if not nm:
+                continue
+            try:
+                sql = f"SELECT COUNT(*) AS _total, COUNT({quote_ident(nm)}) AS _non_null FROM {quote_ident(self.table_name)}"
+                r = self.db.query(sql)
+                if r and r[0].get("_total", 0) > 0:
+                    total = r[0]["_total"]
+                    non_null = r[0]["_non_null"]
+                    null_rate = (total - non_null) / total
+                    if null_rate > 0.1:
+                        findings.append(("空值率偏高", nm, "warning", f"{null_rate:.1%} 为空（{total - non_null}/{total}）"))
+                    elif null_rate > 0:
+                        findings.append(("存在空值", nm, "info", f"{null_rate:.1%} 为空"))
+            except Exception:
+                pass
+
+        # 2) 主动检测：数值字段极值 & 离群点
+        _num_types = {"NUMBER"}
+        for f in self.fields:
+            if f.get("type") not in _num_types:
+                continue
+            nm = f.get("name", "")
+            if not nm:
+                continue
+            try:
+                sql = f"SELECT MIN({quote_ident(nm)}) AS _min, MAX({quote_ident(nm)}) AS _max, AVG({quote_ident(nm)}) AS _avg, STDDEV({quote_ident(nm)}) AS _std FROM {quote_ident(self.table_name)}"
+                r = self.db.query(sql)
+                if r:
+                    mn, mx, avg, std = r[0].get("_min"), r[0].get("_max"), r[0].get("_avg"), r[0].get("_std")
+                    if mn is not None and mx is not None and mn == mx:
+                        findings.append(("字段值恒定", nm, "info", f"所有记录值均为 {mn}"))
+                    if std and avg and abs(avg) > 0 and std / abs(avg) > 3:
+                        findings.append(("离散度极高", nm, "warning", f"变异系数 {std/abs(avg):.1f}，数据波动剧烈"))
+            except Exception:
+                pass
+
+        # 3) 主动检测：完全重复行
+        try:
+            sql_total = f"SELECT COUNT(*) AS _total FROM {quote_ident(self.table_name)}"
+            sql_uniq = f"SELECT COUNT(*) AS _uniq FROM (SELECT DISTINCT * FROM {quote_ident(self.table_name)})"
+            r_total = self.db.query(sql_total)
+            r_uniq = self.db.query(sql_uniq)
+            if r_total and r_uniq:
+                total = r_total[0].get("_total", 0)
+                uniq = r_uniq[0].get("_uniq", total)
+                dup = total - uniq
+                if dup > 0:
+                    findings.append(("重复行", "全表", "warning", f"{dup} 行完全重复（共 {total} 行）"))
+        except Exception:
+            pass
+
+        # 4) 合并已有的 quality_issues
+        for issue in (self.quality_issues or [])[:10]:
+            findings.append((
+                issue.get("issue_type", "质量问题是"),
+                issue.get("column", "?"),
+                issue.get("severity", "info"),
+                issue.get("message", ""),
+            ))
+
+        if not findings:
+            content = "<p>本次数据质量良好，经检测未发现空值异常、极值离群、重复行等问题。</p>"
         else:
+            severity_color = {"critical": "#e74c3c", "warning": "#f39c12", "info": "#3498db"}
             rows = []
-            for issue in self.quality_issues[:10]:
-                rows.append(f"<tr><td>{issue.get('issue_type','?')}</td><td>{issue.get('column','?')}</td><td>{issue.get('severity','?')}</td><td>{issue.get('message','')}</td></tr>")
+            for typ, col, sev, msg in findings:
+                color = severity_color.get(sev, "#999")
+                rows.append(f"<tr><td>{typ}</td><td>{col}</td><td style='color:{color};font-weight:600;'>{sev}</td><td>{msg}</td></tr>")
             content = f"""
-<h3>数据质量问题</h3>
+<h3>检测到的数据质量问题是（共 {len(findings)} 项）</h3>
 <table class='data-table'>
-  <thead><tr><th>类型</th><th>字段</th><th>严重度</th><th>描述</th></tr></thead>
+  <thead><tr><th>问题是类型</th><th>涉及字段</th><th>严重度</th><th>详情</th></tr></thead>
   <tbody>{''.join(rows)}</tbody>
 </table>
 """
@@ -366,14 +445,6 @@ class ReportGenerator:
         content = f"""
 <h3>数据样本（前50行）</h3>
 {data_html}
-
-<h3>分析方法说明</h3>
-<ul>
-  <li>图表生成：规则引擎（s3_chart_engine_v2）+ LLM增强（如可用）</li>
-  <li>字段类型推断：基于样本值 + 关键词匹配（优先级：样本值 > 关键词）</li>
-  <li>图表推荐：基于字段配对 + 基数约束（分类≤20优先）</li>
-  <li>统计计算：DuckDB直接聚合，无抽样</li>
-</ul>
 """
         return ReportChapter(7, "附录", content)
 

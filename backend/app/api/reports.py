@@ -15,7 +15,7 @@ from app.core.database import get_db
 from app.models.dataset import Dataset
 from app.models.dashboard import Dashboard
 from app.models.quality import QualityIssue
-from app.core.duckdb_manager import DuckDBManager, get_duckdb
+from app.core.duckdb_manager import DuckDBManager, get_duckdb, quote_ident
 from app.core.report_generator import ReportGenerator
 from app.core.llm_gateway import llm_chat
 from app.core.config import settings, _PROJECT_ROOT
@@ -83,6 +83,8 @@ async def generate_report(
     profile = dataset.profile_json or {}
     _num_types = {"INTEGER", "BIGINT", "SMALLINT", "TINYINT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "HUGEINT", "REAL"}
     _date_types = {"DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"}
+    duckdb_mgr = get_duckdb()
+    table_name = dataset.duckdb_table or f"ds_{primary_dataset_id.replace('-', '_')}"
     field_profiles = []
     for c in raw_cols:
         nm = c.get("name", "")
@@ -93,7 +95,15 @@ async def generate_report(
             ftype = "DATE"
         else:
             ftype = "CATEGORY"
-        field_profiles.append({"name": nm, "type": ftype, "cardinality": 0, "missing_rate": 0})
+        cardinality = 0
+        if ftype == "CATEGORY" and dataset.duckdb_table:
+            try:
+                sql = f"SELECT COUNT(DISTINCT {quote_ident(nm)}) AS _v FROM {quote_ident(table_name)}"
+                result = duckdb_mgr.query(sql)
+                cardinality = result[0].get("_v", 0) if result else 0
+            except Exception:
+                cardinality = 0
+        field_profiles.append({"name": nm, "type": ftype, "cardinality": cardinality, "missing_rate": 0})
 
     # P1: 文档型数据集（docx/pdf/md/txt）无 DuckDB 表，走文本分支
     if not dataset.duckdb_table:
@@ -111,8 +121,6 @@ async def generate_report(
             "extracted_text": extracted_text,
         }
     else:
-        # DuckDB 表名规则: ds_{dataset_id.replace('-', '_')}
-        table_name = dataset.duckdb_table or f"ds_{primary_dataset_id.replace('-', '_')}"
         dataset_info = {
             "source_type": "table",
             "table_name": table_name,
@@ -145,9 +153,6 @@ async def generate_report(
         }
         for qi in q_result.scalars().all()
     ]
-
-    # 获取DuckDB连接
-    duckdb_mgr = get_duckdb()
 
     # 生成报告
     generator = ReportGenerator(
