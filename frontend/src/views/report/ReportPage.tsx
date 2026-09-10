@@ -1,10 +1,10 @@
-"""
-报告查看页 - 7章节图文报告展示
-"""
+/**
+ * 报告查看页 - 7章节图文报告展示 + 历史版本回看
+ */
 import { useEffect, useState } from 'react'
-import { Spin, Alert, Button } from 'antd'
-import { ArrowLeftOutlined, DownloadOutlined, ReloadOutlined }
-import { useNavigate, useSearchParams }
+import { Spin, Alert, Button, Drawer, Tag, Tooltip, Empty } from 'antd'
+import { ArrowLeftOutlined, DownloadOutlined, ReloadOutlined, HistoryOutlined } from '@ant-design/icons'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import axios from 'axios'
 import './ReportPage.css'
 
@@ -21,6 +21,15 @@ interface ReportData {
   }>
 }
 
+interface ReportVersion {
+  report_id: string
+  version_id: string
+  title: string
+  llm_used: boolean
+  chart_count: number
+  generated_at: string
+}
+
 export default function ReportPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -31,6 +40,9 @@ export default function ReportPage() {
   const [reportData, setReportData] = useState<ReportData | null>(null)
   const [htmlContent, setHtmlContent] = useState<string>('')
   const [error, setError] = useState<string>('')
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [versions, setVersions] = useState<ReportVersion[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   // 生成报告
   const handleGenerate = async () => {
@@ -53,7 +65,11 @@ export default function ReportPage() {
 
   // 加载报告
   useEffect(() => {
-    if (!reportId) return
+    if (!reportId) {
+      // 无 report_id（如从看板"生成报告"入口进入）：直接展示空态，避免永远 loading
+      setLoading(false)
+      return
+    }
     ;(async () => {
       try {
         const [jsonResp, htmlResp] = await Promise.all([
@@ -69,6 +85,35 @@ export default function ReportPage() {
       }
     })()
   }, [reportId])
+
+  // 加载历史版本列表
+  const loadVersions = async () => {
+    if (!dashboardId) return
+    setHistoryLoading(true)
+    try {
+      const resp = await axios.get('/api/v1/reports', {
+        params: { dashboard_id: dashboardId, limit: 50 },
+      })
+      setVersions(resp.data.items || [])
+    } catch {
+      setVersions([])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const openHistory = () => {
+    setHistoryOpen(true)
+    loadVersions()
+  }
+
+  // 查看历史版本
+  const viewVersion = (rid: string) => {
+    setHistoryOpen(false)
+    if (rid === reportId) return
+    setLoading(true)
+    navigate(`/report?report_id=${rid}&dashboard_id=${dashboardId}`)
+  }
 
   // 下载HTML
   const handleDownload = () => {
@@ -100,6 +145,13 @@ export default function ReportPage() {
           {reportData?.title || '分析报告'}
         </h1>
         <div style={{ display: 'flex', gap: 8 }}>
+          {dashboardId && (
+            <Tooltip title="回看该看板的历史报告版本">
+              <Button icon={<HistoryOutlined />} onClick={openHistory}>
+                历史版本
+              </Button>
+            </Tooltip>
+          )}
           <Button icon={<ReloadOutlined />} onClick={handleGenerate} loading={loading}>
             重新生成
           </Button>
@@ -144,6 +196,47 @@ export default function ReportPage() {
           )}
         </div>
       )}
+
+      {/* 历史版本抽屉 */}
+      <Drawer
+        title="历史版本"
+        placement="right"
+        width={380}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      >
+        {historyLoading ? (
+          <div style={{ textAlign: 'center', padding: 60 }}>
+            <Spin />
+            <p style={{ color: '#999', marginTop: 12 }}>加载历史版本...</p>
+          </div>
+        ) : versions.length === 0 ? (
+          <Empty description="暂无历史版本" />
+        ) : (
+          <div className="version-list">
+            {versions.map((v) => (
+              <div
+                key={v.report_id}
+                className={`version-item ${v.report_id === reportId ? 'version-item-active' : ''}`}
+                onClick={() => viewVersion(v.report_id)}
+              >
+                <div className="version-item-title">
+                  {v.title || '未命名报告'}
+                  {v.report_id === reportId && <Tag color="blue" style={{ marginLeft: 8 }}>当前</Tag>}
+                </div>
+                <div className="version-item-meta">
+                  <Tooltip title={v.version_id}>
+                    <span>版本 {v.version_id.slice(0, 8)}</span>
+                  </Tooltip>
+                  <span>图表 {v.chart_count}</span>
+                  <span>{v.llm_used ? 'AI解读' : '确定性摘要'}</span>
+                </div>
+                <div className="version-item-time">{v.generated_at}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Drawer>
     </div>
   )
 }

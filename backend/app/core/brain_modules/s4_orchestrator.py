@@ -235,18 +235,48 @@ class S4Orchestrator:
         
         # 4. 限制总数
         final_charts = all_charts[:max_charts]
-        
+
         # 5. 组织叙事层
         layers = self.organize_narrative(final_charts)
-        
+
+        # 6. 基于真实分层结果生成叙述流（非硬编码）
+        narrative_flow = self._build_narrative_flow(layers, final_charts)
+
         return {
             "success": True,
             "charts": final_charts,
             "chart_count": len(final_charts),
             "kpi_count": len(layers["L1_conclusion"]),
             "layers": layers,
-            "narrative_flow": "结论→佐证→明细"
+            "narrative_flow": narrative_flow,
         }
+
+    def _build_narrative_flow(self, layers: Dict[str, List[Dict]], charts: List[Dict]) -> str:
+        """基于三层真实编排结果生成叙述流描述。
+
+        只描述实际存在的层，每层标注图表数与类型；某层为空时如实跳过，
+        空看板返回"无可用图表"。
+        """
+        if not charts:
+            return "无可用图表（数据不足以生成叙事）"
+
+        layer_meta = [
+            ("L1_conclusion", "结论"),
+            ("L2_evidence", "佐证"),
+            ("L3_detail", "明细"),
+        ]
+        parts = []
+        for key, label in layer_meta:
+            layer_charts = layers.get(key, [])
+            if not layer_charts:
+                continue
+            type_counts: Dict[str, int] = {}
+            for c in layer_charts:
+                t = c.get("chart_type", "unknown")
+                type_counts[t] = type_counts.get(t, 0) + 1
+            type_desc = "、".join(f"{t}×{n}" for t, n in type_counts.items())
+            parts.append(f"{label}（{type_desc}）")
+        return "→".join(parts) if parts else "无可用图表（数据不足以生成叙事）"
 
 
 class S5ScoreCard:
@@ -559,7 +589,11 @@ async def orchestrate_and_score(
     score, final_charts = await scorer.score_with_retry(
         db, orchestrator, charts, backup_charts=[]
     )
-    
+
+    # 基于最终图表的真实分层生成叙述流
+    layers = orchestrator.organize_narrative(final_charts)
+    narrative_flow = orchestrator._build_narrative_flow(layers, final_charts)
+
     return {
         "success": True,
         "charts": final_charts,
@@ -569,5 +603,7 @@ async def orchestrate_and_score(
         "retry_count": score.retry_count,
         "dimension_scores": score.dimension_scores,
         "improvement_suggestions": score.improvement_suggestions,
+        "layers": layers,
+        "narrative_flow": narrative_flow,
         "score": score.to_dict()
     }

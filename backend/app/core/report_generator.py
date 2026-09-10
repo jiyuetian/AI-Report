@@ -256,9 +256,9 @@ class ReportGenerator:
 
     # ── Ch4 业务概览 ──────────────────────────────────────────────
     async def _ch4_business_overview(self) -> ReportChapter:
-        # 从dashboard_config获取KPI图表
+        # 从 dashboard_config 获取 KPI 图表（兼容 chart_type 和 type 两种字段名）
         charts_cfg = self.dashboard_config.get("charts", [])
-        kpi_charts = [c for c in charts_cfg if c.get("type") == "kpi"]
+        kpi_charts = [c for c in charts_cfg if c.get("chart_type") == "kpi" or c.get("type") == "kpi"]
 
         # 对KPI图表执行真实聚合并渲染为内联卡片
         kpi_cards_html = ""
@@ -292,12 +292,12 @@ class ReportGenerator:
     # ── Ch5 维度分析 ──────────────────────────────────────────────
     async def _ch5_dimension_analysis(self) -> ReportChapter:
         charts_cfg = self.dashboard_config.get("charts", [])
-        # 过滤掉kpi/table，保留分析图表
-        analysis_charts = [c for c in charts_cfg if c.get("type") not in ("kpi", "table")]
+        # 过滤掉 kpi/table，保留分析图表（兼容 chart_type 和 type）
+        analysis_charts = [c for c in charts_cfg if c.get("chart_type") not in ("kpi", "table") and c.get("type") not in ("kpi", "table")]
 
         contents = []
-        for chart in analysis_charts[:6]:  # 最多6个图表
-            ctype = chart.get("type", "bar")
+        for chart in analysis_charts[:6]:  # 最多 6 个图表
+            ctype = chart.get("chart_type") or chart.get("type", "bar")
             title = chart.get("title", "分析图表")
             x_field = chart.get("x_field", "")
             y_field = chart.get("y_field", "")

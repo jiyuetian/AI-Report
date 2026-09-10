@@ -433,7 +433,7 @@ async def brain_run_pipeline(
                 dataset_ids=[dataset_id],
                 primary_dataset_id=dataset_id,
                 config=dashboard_config,
-                layout={"narrative": "结论→佐证→明细", "chart_count": len(final_charts)},
+                layout={"narrative": s4_s5_result.get("narrative_flow", ""), "chart_count": len(final_charts)},
                 created_by=user_id,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()

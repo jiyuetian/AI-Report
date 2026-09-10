@@ -441,11 +441,12 @@ class FileParser:
                     return f.read()
             
             elif file_ext == '.docx':
-                # python-docx 抽取文本
+                # python-docx 抽取文本。段落间用空行分隔，保留段落边界，
+                # 否则下游按空行分段统计时段落数会塌缩为 1。
                 try:
                     from docx import Document
                     doc = Document(str(file_path))
-                    return '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+                    return '\n\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
                 except ImportError:
                     return "[docx解析需安装python-docx库]"
             

@@ -31,11 +31,22 @@ class ReportRequest(BaseModel):
 class ReportResponse(BaseModel):
     success: bool
     report_id: str
+    version_id: str = Field(..., description="版本ID，非null，用于历史版本回看")
     title: str
     llm_used: bool
     chart_count: int
     generated_at: str
     html_url: Optional[str] = None
+
+
+class ReportListItem(BaseModel):
+    """历史报告列表项"""
+    report_id: str
+    version_id: str
+    title: str
+    llm_used: bool
+    chart_count: int
+    generated_at: str
 
 
 @router.post("")
@@ -177,12 +188,49 @@ async def generate_report(
     return ReportResponse(
         success=True,
         report_id=report_id,
+        version_id=version_id,
         title=report_data["title"],
         llm_used=report_data["llm_used"],
         chart_count=report_data["chart_count"],
         generated_at=report_data["generated_at"],
         html_url=f"/api/v1/reports/{report_id}/html",
     )
+
+
+@router.get("")
+async def list_reports(
+    dashboard_id: str = Query(..., description="看板ID，查该看板的历史报告版本"),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    回看历史版本：列出指定看板的全部报告版本（按生成时间倒序）
+    """
+    from app.models.brain import BrainTraceSummary
+    result = await db.execute(
+        select(BrainTraceSummary)
+        .where(
+            BrainTraceSummary.dashboard_id == dashboard_id,
+            BrainTraceSummary.version_id.isnot(None),
+        )
+        .order_by(BrainTraceSummary.completed_at.desc())
+        .limit(limit)
+    )
+    rows = result.scalars().all()
+    items = []
+    for s in rows:
+        r = s.result or {}
+        items.append(
+            ReportListItem(
+                report_id=s.run_id,
+                version_id=s.version_id,
+                title=r.get("title", ""),
+                llm_used=bool(r.get("llm_used", False)),
+                chart_count=int(r.get("chart_count", 0)),
+                generated_at=str(r.get("generated_at", "") or (s.completed_at or "")),
+            )
+        )
+    return {"success": True, "total": len(items), "items": items}
 
 
 @router.get("/{report_id}/html")
