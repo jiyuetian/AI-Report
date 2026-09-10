@@ -170,4 +170,4 @@ AI在对话时加载以下上下文：
 | Token配额 | ✅ 已实现 | `TokenQuota`模型 |
 | **可行性检查（数据粒度/字段/数量）** | ✅ **已实现** | `feasibility_checker.py` |
 | **保存修改到后端（PATCH /dashboards/{id}）** | ✅ **已实现** | `chat.py` + `dashboards.py` |
-| 多模态视觉评估（LLM看图） | ❌ 待实现 | 当前仅规则评估，属于扩展功能 |
+| 多模态视觉评估（5%抽检） | ✅ 已实现（规则兜底） | `multimodal_sampler.py` + `visual_evaluator.py`；预留 LLM 视觉扩展点（settings.LLM_VISION_MODEL） |

@@ -16,6 +16,7 @@ from datetime import datetime
 from app.core.database import async_session_factory
 from app.core.brain_config_manager import BrainTraceManager
 from app.core.duckdb_manager import get_duckdb
+from app.core.config import settings
 from app.core.brain_modules import (
     detect_theme, generate_analysis_goals, generate_charts_with_llm,
     orchestrate_and_score
@@ -207,6 +208,14 @@ async def brain_run_pipeline(
 
             # 获取数据集信息
             dataset_info = await get_dataset_info(db, dataset_id)
+
+            # 数据六层落表（L1 norm / L2 cleaned / L4 agg 物化，best-effort 不阻断主流程）
+            try:
+                duck_inst = get_duckdb()
+                layers = duck_inst.materialize_layers(dataset_id)
+                print(f"[Brain] 六层落表: {layers}")
+            except Exception as e:
+                print(f"[Brain] 六层落表失败(不阻断): {e}")
             fields = dataset_info["fields"]
             grain = dataset_info["grain"]
             sample_data = dataset_info["sample_data"]
@@ -254,7 +263,7 @@ async def brain_run_pipeline(
                 theme=theme_tag,
                 fields=fields,
                 grain=grain,
-                use_llm=True
+                use_llm=settings.BRAIN_S2_USE_LLM  # PRD 4.8：默认规则引擎降本，可开 LLM
             )
             await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals}), "S2")
             
@@ -345,7 +354,28 @@ async def brain_run_pipeline(
                 "chart_count": len(charts)
             }), "S5")
             await _safe_trace(db, BrainTraceManager.complete_stage(db, s5_trace_id, {"result": s4_s5_result}), "S5")
-            
+
+            # ========== S5 多模态视觉 5% 抽检 ==========
+            try:
+                from app.core.multimodal_sampler import MultimodalSampler
+                duck_inst = get_duckdb()
+                mm_charts = MultimodalSampler.sample_charts(final_charts)
+                image_cols = MultimodalSampler.detect_image_columns(fields)
+                mm_rows = MultimodalSampler.sample_rows_for_images(dataset_id, duck_inst, image_cols)
+                s4_s5_result["multimodal_sampling"] = {
+                    "charts": mm_charts,
+                    "image_rows": mm_rows,
+                }
+                progress.detail = {
+                    **(progress.detail or {}),
+                    "multimodal_sampling": s4_s5_result["multimodal_sampling"],
+                }
+                # 写入状态缓存，供 /status 接口回传（与 detail 解耦，避免覆盖 DB 兜底中的 dashboard_id）
+                _RUN_STATUS.setdefault(run_id, {})["multimodal_sampling"] = s4_s5_result["multimodal_sampling"]
+                print(f"[Brain] S5多模态抽检(图): {mm_charts.get('report')} | (行): {mm_rows.get('report')}")
+            except Exception as e:
+                print(f"[Brain] S5多模态抽检失败(不阻断): {e}")
+
             progress.stage_status = "completed"
             progress.progress = 90
             progress.message = f"评分{'通过' if passed else '未通过'}: {overall_score}分"
@@ -570,6 +600,7 @@ async def get_run_status(run_id: str):
             "progress": cache.get("progress", 0),
             "message": cache.get("message", ""),
             "detail": cache.get("detail") or {},
+            "multimodal_sampling": cache.get("multimodal_sampling"),
             "finished": cache.get("finished", False)
         }
     # 兜底：从DB读取（服务重启后查询已持久化的运行痕迹）

@@ -437,6 +437,79 @@ class DuckDBManager:
         """)
         return norm_table
     
+    def create_agg_from_cleaned(self, dataset_id: str) -> Optional[str]:
+        """
+        M1-07d: 创建聚合计算层（L4）从清洗层。
+        自动推断「维度列(低基数文本)」与「指标列(数值)」，best-effort 预聚合。
+        物化到规范的 L4 表名 ds_{id}_agg。无合适列或失败时返回 None，绝不阻断主流程。
+        """
+        cleaned = self.get_layer_table_name(dataset_id, 'cleaned')
+        if not self.table_exists(cleaned):
+            cleaned = self.get_layer_table_name(dataset_id, 'raw')
+            if not self.table_exists(cleaned):
+                return None
+        agg_table = self.get_layer_table_name(dataset_id, 'agg')
+        if self.table_exists(agg_table):
+            return agg_table
+        try:
+            info = self.get_table_info(cleaned)
+            cols = info.get("columns", [])
+            row_count = info.get("row_count", 0) or 0
+            dim_cols, measure_cols = [], []
+            for c in cols:
+                name = c["name"]
+                ctype = (c.get("type") or "").upper()
+                if any(t in ctype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL")):
+                    measure_cols.append(name)
+                elif any(t in ctype for t in ("VARCHAR", "STRING", "TEXT", "CHAR")):
+                    try:
+                        distinct = self.conn.execute(
+                            f"SELECT COUNT(DISTINCT {quote_ident(name)}) FROM {quote_ident(cleaned)}"
+                        ).fetchone()[0] or 0
+                        if 0 < distinct <= max(20, int(row_count * 0.5)):
+                            dim_cols.append(name)
+                    except Exception:
+                        pass
+            if not dim_cols or not measure_cols:
+                return None
+            dim = dim_cols[0]
+            measure = measure_cols[0]
+            select_parts = [quote_ident(dim), f"SUM({quote_ident(measure)}) AS {measure}_sum"]
+            sql = (
+                f"CREATE OR REPLACE TABLE {quote_ident(agg_table)} AS "
+                f"SELECT {', '.join(select_parts)} FROM {quote_ident(cleaned)} "
+                f"GROUP BY {quote_ident(dim)}"
+            )
+            self.conn.execute(sql)
+            return agg_table
+        except Exception as e:
+            print(f"[DuckDB] L4聚合层创建失败(跳过): {e}")
+            return None
+    
+    def materialize_layers(self, dataset_id: str) -> Dict[str, Optional[str]]:
+        """
+        确保六层架构中 L1/L2/L4 物理落表。
+        - L0 raw：建表时已有
+        - L1 norm：字段标准化副本
+        - L2 cleaned：质量修复入口
+        - L3 processed：业务加工，灰色预留（按需，不强制）
+        - L4 agg：聚合缓存（best-effort）
+        - L5 output：生成看板时落 Dashboard.config
+        """
+        result: Dict[str, Optional[str]] = {}
+        try:
+            result["norm"] = self.create_norm_from_raw(dataset_id)      # L1
+        except Exception as e:
+            print(f"[DuckDB] L1创建失败: {e}")
+            result["norm"] = None
+        try:
+            result["cleaned"] = self.create_cleaned_from_original(dataset_id)  # L2
+        except Exception as e:
+            print(f"[DuckDB] L2创建失败: {e}")
+            result["cleaned"] = None
+        result["agg"] = self.create_agg_from_cleaned(dataset_id)        # L4
+        return result
+    
     def drop_table(self, table_name: str):
         """删除表"""
         self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")

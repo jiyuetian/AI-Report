@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     LLM_FUNCTION_CALLING: bool = True
     LLM_JSON_MODE: bool = True
 
+    # 大脑阶段开关（PRD 4.8：S2 目标生成默认规则引擎降本，可开 LLM 增强）
+    BRAIN_S2_USE_LLM: bool = False
+
     # 文件上传
     MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB
     UPLOAD_DIR: str = "./data/uploads"
