@@ -1,0 +1,94 @@
+/*
+管理后台样式 - M4-07
+概览/用户/角色/配额/审计/设置
+*/
+
+.admin-page {
+  padding: 16px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+
+.page-title {
+  margin-bottom: 16px;
+  font-size: 20px;
+  font-weight: 500;
+  color: #262626;
+}
+
+.page-title .anticon {
+  margin-right: 8px;
+  color: #1890ff;
+}
+
+/* Tab样式 */
+.admin-tabs > .ant-tabs-nav {
+  background: #fff;
+  padding: 0 16px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+}
+
+/* 概览页 */
+.overview-tab {
+  padding: 8px 0;
+}
+
+.health-metrics {
+  margin-top: 16px;
+  display: flex;
+  gap: 16px;
+}
+
+.health-metrics span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #52c41a;
+}
+
+/* 工具栏 */
+.tab-toolbar {
+  margin-bottom: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+/* 列表样式 */
+.admin-page .ant-list-item {
+  padding: 16px 24px;
+}
+
+.admin-page .ant-card {
+  border-radius: 8px;
+}
+
+/* 统计卡片 */
+.admin-page .ant-statistic-title {
+  color: #666;
+  font-size: 12px;
+}
+
+.admin-page .ant-statistic-content {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .admin-page {
+    padding: 8px;
+  }
+
+  .admin-tabs > .ant-tabs-nav {
+    padding: 0 8px;
+  }
+
+  .overview-tab .ant-col {
+    margin-bottom: 8px;
+  }
+
+  .health-metrics {
+    flex-wrap: wrap;
+  }
+}

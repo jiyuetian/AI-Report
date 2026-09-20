@@ -1,0 +1,162 @@
+/* Loading页样式（2026-09-18 对齐原型）：星形图标 + 五步链路卡 + 进度条 + 预计时间 */
+.loading-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  padding: 24px 8px 40px;
+  background: transparent;
+}
+
+/* 顶部 Hero */
+.lp-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.lp-hero-icon {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, #4f7cff 0%, #7a4fff 100%);
+  box-shadow: 0 12px 32px rgba(79, 124, 255, 0.35);
+}
+
+.lp-hero-icon.error {
+  background: linear-gradient(135deg, #ff7875 0%, #ff4d4f 100%);
+  box-shadow: 0 12px 32px rgba(255, 77, 79, 0.3);
+}
+
+/* 步骤卡 */
+.lp-card {
+  width: 100%;
+  max-width: 680px;
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
+  padding: 8px 28px 20px;
+}
+
+.lp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 20px;
+}
+
+.lp-step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lp-step-dot {
+  width: 18px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.lp-dot-pending {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #d9d9d9;
+  display: inline-block;
+}
+
+.lp-step-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--app-text, rgba(0, 0, 0, 0.88));
+}
+
+.lp-step.active .lp-step-name {
+  color: #1677ff;
+}
+
+.lp-step.pending .lp-step-name {
+  color: rgba(0, 0, 0, 0.4);
+  font-weight: 400;
+}
+
+.lp-step-desc {
+  margin: 2px 0 8px 28px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.lp-step.pending .lp-step-desc {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+/* 进度条下方 meta 行 */
+.lp-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+}
+
+/* 操作按钮 */
+.lp-actions {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+/* 底部异常兜底说明 */
+.lp-foot-hint {
+  margin-top: 20px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  text-align: center;
+  max-width: 640px;
+  line-height: 1.8;
+}
+
+/* ── 暗色主题适配 ── */
+[data-theme="dark"] .lp-card {
+  background: #1f1f1f;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .lp-step-name {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme="dark"] .lp-step.pending .lp-step-name {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+[data-theme="dark"] .lp-step-desc {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+[data-theme="dark"] .lp-step.pending .lp-step-desc {
+  color: rgba(255, 255, 255, 0.32);
+}
+
+[data-theme="dark"] .lp-dot-pending {
+  border-color: #525252;
+}
+
+[data-theme="dark"] .lp-foot-hint {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+@media (max-width: 768px) {
+  .loading-page {
+    padding: 16px;
+  }
+  .lp-card {
+    padding: 8px 16px 16px;
+  }
+}

@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-bi-postgres
+    environment:
+      POSTGRES_USER: aibi
+      POSTGRES_PASSWORD: aibi_password
+      POSTGRES_DB: ai_bi_report
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aibi -d ai_bi_report"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-bi-network
+
+  # Redis（登录锁定/会话缓存）
+  redis:
+    image: redis:7-alpine
+    container_name: ai-bi-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - ai-bi-network
+    restart: unless-stopped
+
+  # 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-bi-backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://aibi:aibi_password@postgres:5432/ai_bi_report
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - SECRET_KEY=your-secret-key-here
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - ai-bi-network
+    restart: unless-stopped
+
+  # 前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai-bi-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - ai-bi-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  uploads:
+
+networks:
+  ai-bi-network:
+    driver: bridge

@@ -1,0 +1,469 @@
+/*
+血缘中心样式 - M4-02
+层级图/超3层折叠/搜索高亮/详情面板4tab/影响范围高亮/一键验证动画/血缘问答
+*/
+
+.lineage-page {
+  padding: 16px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+
+.lineage-page-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 60vh;
+}
+
+/* 工具栏 */
+.lineage-toolbar {
+  margin-bottom: 16px;
+}
+
+.lineage-toolbar .ant-card-body {
+  padding: 12px 16px;
+}
+
+.layer-filters {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.layer-tag {
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.3s;
+}
+
+.layer-tag:hover {
+  opacity: 0.8;
+}
+
+/* 验证结果卡片 */
+.verify-result-card {
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, #f6ffed 0%, #fff 100%);
+  border-color: #b7eb8f;
+}
+
+.verify-result-card .ant-statistic-title {
+  color: #666;
+  font-size: 12px;
+}
+
+.verify-result-card .ant-statistic-content {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* 主内容区 - 左右布局 */
+.lineage-main {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.lineage-main.has-chat-panel .lineage-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.lineage-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.lineage-graph-card,
+.lineage-tree-card {
+  min-height: 600px;
+}
+
+.lineage-graph-card .ant-card-body,
+.lineage-tree-card .ant-card-body {
+  padding: 0;
+  height: 600px;
+}
+
+/* 2026-09-18 修复：链路视图复用 lineage-graph-card，但六列内容高度不固定，
+   固定 600px 会导致列内容溢出卡片、压到底部的"一键回溯验证"条（重叠 bug） */
+.chain-card .ant-card-body {
+  height: auto;
+  max-height: none;
+  padding: 16px;
+}
+
+/* 2026-09-18 修复：层级视图（树形）同样内容高度不定，固定 600px 会溢出卡片；
+   改为自适应 + 超高时卡片内部滚动 */
+.lineage-tree-card .ant-card-body {
+  height: auto;
+  max-height: 640px;
+  overflow: auto;
+  padding: 12px;
+}
+
+/* 详情抽屉 */
+.node-detail-drawer .ant-drawer-header {
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.node-detail-drawer .ant-drawer-title {
+  font-weight: 600;
+}
+
+/* 影响分析 */
+.impact-summary {
+  padding: 16px;
+  background: #f6ffed;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.impact-label {
+  padding: 0 16px;
+  font-size: 14px;
+  color: #666;
+}
+
+/* 血缘问答 - 右侧面板 */
+.chat-panel {
+  width: 380px;
+  min-width: 320px;
+  position: sticky;
+  top: 80px;
+  max-height: calc(100vh - 100px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.06);
+}
+
+.chat-panel .ant-card-head {
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.chat-panel .ant-card-body {
+  padding: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-panel .lineage-chat {
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chat-panel .chat-messages {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  background: #f5f5f5;
+  overflow-y: auto;
+}
+
+.chat-panel .chat-input {
+  padding: 12px 16px;
+  border-top: 1px solid #f0f0f0;
+  background: #fff;
+}
+
+[data-theme="dark"] .chat-panel {
+  background: #141414;
+  border-color: #303030;
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .chat-panel .chat-messages {
+  background: #1f1f1f;
+}
+
+[data-theme="dark"] .chat-panel .chat-input {
+  background: #141414;
+  border-top-color: #303030;
+}
+
+[data-theme="dark"] .chat-panel .ant-card-head {
+  border-bottom-color: #303030;
+}
+
+/* 血缘问答 */
+.lineage-chat {
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-messages {
+  flex: 1;
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.chat-message {
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.chat-message.assistant {
+  background: #e6f7ff;
+  border-left: 3px solid #1890ff;
+}
+
+.chat-message ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.chat-message li {
+  margin: 4px 0;
+}
+
+.chat-input {
+  margin-top: auto;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .lineage-page {
+    padding: 8px;
+  }
+  
+  .layer-filters {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .lineage-toolbar .ant-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .node-detail-drawer {
+    width: 100% !important;
+  }
+  
+  .lineage-main.has-chat-panel {
+    flex-direction: column;
+  }
+  
+  .chat-panel {
+    width: 100% !important;
+    min-width: 0;
+    position: static;
+    max-height: none;
+  }
+}
+
+/* 动画效果 */
+@keyframes verify-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(82, 196, 26, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0);
+  }
+}
+
+.verify-result-card {
+  animation: verify-pulse 2s ease-out;
+}
+
+/* 搜索高亮 */
+.ant-badge-count {
+  background: #ff4d4f;
+}
+
+/* 树形视图 */
+.lineage-tree-card .ant-tree {
+  padding: 16px;
+}
+
+.lineage-tree-card .ant-tree-treenode {
+  padding: 4px 0;
+}
+
+/* 空状态 */
+.ant-empty {
+  padding: 32px 0;
+}
+
+/* Tab 样式优化 */
+.node-detail-drawer .ant-tabs-nav {
+  margin-bottom: 16px;
+}
+
+.node-detail-drawer .ant-list-item {
+  padding: 12px 0;
+}
+
+.node-detail-drawer .ant-list-item-meta-title {
+  color: #666;
+  font-size: 12px;
+}
+
+.node-detail-drawer .ant-list-item-meta-description {
+  color: #333;
+  font-size: 14px;
+}
+
+/* ============ 血缘问答右侧面板：复用统一 AI 助手（ChatPanel）============ */
+.lineage-chat-panel {
+  width: 380px;
+  min-width: 320px;
+  position: sticky;
+  top: 80px;
+  height: calc(100vh - 100px);
+  display: flex;
+  flex-direction: column;
+}
+
+.lineage-chat-panel > .chat-panel {
+  height: 100%;
+  min-height: 0;
+  border-radius: 8px;
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.06);
+}
+
+.lineage-main.has-chat-panel .lineage-chat-panel {
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .lineage-chat-panel {
+    width: 100% !important;
+    min-width: 0;
+    position: static;
+    height: 520px;
+  }
+}
+
+/* ============ 2026-09-18 按原型重写：横向六列链路 + 右侧详情 + 底部验证 ============ */
+
+/* 页头 */
+.lineage-page-head { margin-bottom: 12px; }
+.lineage-page-head .lph-title-row { display: flex; align-items: center; gap: 8px; }
+.lineage-page-head .lph-title { margin: 0; font-size: 20px; font-weight: 700; }
+.lineage-page-head .lph-desc { color: #8c8c8c; font-size: 13px; margin-top: 2px; margin-left: 44px; }
+
+/* 工具条 */
+.lineage-page .toolbar-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lineage-page .tb-label { font-size: 13px; color: #595959; white-space: nowrap; }
+.lineage-page .tb-spacer { flex: 1; }
+.metric-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.metric-chip {
+  display: inline-block; padding: 3px 12px; font-size: 13px; border-radius: 16px;
+  background: #f5f5f5; color: #595959; cursor: pointer; user-select: none;
+  border: 1px solid transparent; transition: all .2s; white-space: nowrap;
+}
+.metric-chip:hover { background: #e6f4ff; color: #1677ff; }
+.metric-chip.active { background: #e6f4ff; color: #1677ff; border-color: #91caff; font-weight: 600; }
+
+/* 链路视图布局：左图 + 右详情 */
+.chain-layout { display: flex; gap: 12px; align-items: flex-start; }
+.chain-layout .chain-left { flex: 1; min-width: 0; }
+.chain-card .ant-card-body { padding: 16px; }
+.chain-scroll {
+  display: flex; gap: 10px; align-items: flex-start;
+  overflow-x: auto; padding-bottom: 8px;
+}
+.chain-arrow { align-self: center; color: #bfbfbf; font-size: 16px; flex-shrink: 0; }
+.lineage-layer { min-width: 168px; max-width: 220px; flex-shrink: 0; }
+.chain-col-title { font-size: 12px; color: #8c8c8c; margin-bottom: 8px; white-space: nowrap; }
+
+/* 节点卡（对齐原型 .lnode）*/
+.lnode {
+  background: #fff; border: 1px solid #e8e8e8; border-radius: 8px;
+  padding: 8px 10px; margin-bottom: 8px; cursor: pointer;
+  transition: all .2s; position: relative;
+}
+.lnode:hover { border-color: #91caff; box-shadow: 0 2px 8px rgba(22,119,255,.12); }
+.lnode.selected { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22,119,255,.15); background: #f0f8ff; }
+.lnode.highlighted { border-color: #ff4d4f; box-shadow: 0 0 0 2px rgba(255,77,79,.18); }
+.lnode-folded { border-style: dashed; text-align: center; color: #595959; }
+.lnode-empty {
+  border-style: dashed; color: #bfbfbf; cursor: default; text-align: center; font-size: 12px;
+  background: #fafafa;
+}
+.lnode-empty:hover { border-color: #e8e8e8; box-shadow: none; }
+.ln-name { font-size: 13px; font-weight: 600; color: #262626; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ln-sub { font-size: 12px; color: #8c8c8c; margin-top: 3px; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ln-flag { margin-top: 4px; }
+.chain-tip { font-size: 12px; color: #8c8c8c; margin-top: 8px; }
+
+/* 右侧详情面板（对齐原型 330px）*/
+.lineage-detail-panel { width: 330px; flex-shrink: 0; }
+.detail-panel-card { position: sticky; top: 16px; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.detail-title { font-size: 14px; }
+.detail-table { width: 100%; margin-top: 10px; border-collapse: collapse; }
+.detail-table td { padding: 6px 4px; vertical-align: top; font-size: 13px; border-bottom: 1px solid #f5f5f5; }
+.detail-table .dt-key { width: 78px; color: #8c8c8c; white-space: nowrap; }
+.fw600 { font-weight: 600; }
+.fs12 { font-size: 12px; }
+
+/* 血缘问答 */
+.qa-alert {
+  margin-top: 12px; padding: 8px 10px; font-size: 12px; color: #1677ff;
+  background: #e6f4ff; border-radius: 6px; line-height: 1.5;
+}
+.qa-row { display: flex; gap: 6px; margin-top: 8px; }
+.qa-row .ant-input { flex: 1; }
+
+/* 底部一键回溯验证 */
+.verify-card { margin-top: 16px; }
+.verify-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.verify-title { font-size: 14px; font-weight: 600; }
+.verify-steps { display: flex; gap: 10px; align-items: stretch; }
+.verify-step {
+  flex: 1; min-width: 0; background: #fafafa; border: 1px solid #f0f0f0;
+  border-radius: 8px; padding: 10px 12px;
+}
+.vs-title { font-size: 12px; color: #8c8c8c; }
+.vs-main { font-size: 13px; font-weight: 600; color: #262626; margin-top: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vs-sub { font-size: 12px; color: #8c8c8c; margin-top: 6px; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.verify-outcome {
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+}
+.verify-outcome.ok { background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d; }
+.verify-outcome.warn { background: #fffbe6; border: 1px solid #ffe58f; color: #d48806; }
+
+/* 暗色主题适配 */
+[data-theme="dark"] .lnode { background: #1f1f1f; border-color: #303030; }
+[data-theme="dark"] .lnode.selected { background: #111a2c; border-color: #1677ff; }
+[data-theme="dark"] .lnode-empty { background: #141414; }
+[data-theme="dark"] .ln-name { color: #e6e6e6; }
+[data-theme="dark"] .metric-chip { background: #1f1f1f; color: #a6a6a6; }
+[data-theme="dark"] .verify-step { background: #1f1f1f; border-color: #303030; }
+[data-theme="dark"] .vs-main { color: #e6e6e6; }
+
+@media (max-width: 1100px) {
+  .chain-layout { flex-direction: column; }
+  .lineage-detail-panel { width: 100%; }
+  .detail-panel-card { position: static; }
+}

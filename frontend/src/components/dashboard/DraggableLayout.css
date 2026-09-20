@@ -1,0 +1,91 @@
+/*
+拖拽布局样式 - M4-08 打磨包
+*/
+
+.draggable-layout {
+  padding: 16px;
+}
+
+.layout-toolbar {
+  margin-bottom: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+/* 布局项 */
+.layout-item {
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.layout-item.draggable {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  cursor: move;
+}
+
+.layout-item.draggable:hover {
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+/* 小部件头部 */
+.widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drag-handle {
+  color: #999;
+  cursor: move;
+}
+
+.widget-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 图表卡标题允许换行完整展示，避免长标题被截断 */
+.widget-card .ant-card-head-title {
+  white-space: normal;
+  word-break: break-all;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+}
+
+.widget-card .ant-card-body {
+  flex: 1;
+  overflow: auto;
+}
+
+.widget-content {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* react-grid-layout 样式覆盖 */
+.react-grid-layout {
+  background: #f5f5f5;
+}
+
+.react-grid-item {
+  transition: transform 0.2s ease-out;
+}
+
+.react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+
+.react-grid-item.react-grid-placeholder {
+  background: #e6f7ff !important;
+  border: 2px dashed #1890ff !important;
+  opacity: 0.5;
+}
+
+.react-resizable-handle {
+  z-index: 100;
+}

@@ -1,0 +1,98 @@
+/*
+分享中心样式 - M4-04
+生成分享链接/二维码/权限设置/有效期/撤销
+*/
+
+.share-page {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+
+.page-title {
+  margin-bottom: 24px;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.page-title .anticon {
+  margin-right: 8px;
+  color: #1890ff;
+}
+
+/* 内容布局 */
+.share-content {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 24px;
+}
+
+/* 创建分享卡片 */
+.create-card {
+  height: fit-content;
+}
+
+.create-card .ant-form-item {
+  margin-bottom: 16px;
+}
+
+/* 分享结果 */
+.share-result {
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.share-result h4 {
+  color: #52c41a;
+  margin-bottom: 12px;
+}
+
+.share-link-box {
+  margin-bottom: 16px;
+}
+
+.qr-preview {
+  text-align: center;
+  padding: 16px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.qr-preview p {
+  margin-top: 8px;
+  color: #666;
+}
+
+/* 列表卡片 */
+.list-card {
+  min-height: 500px;
+}
+
+/* 二维码弹窗 */
+.qr-modal-content {
+  padding: 24px;
+}
+
+/* 响应式 */
+@media (max-width: 992px) {
+  .share-content {
+    grid-template-columns: 1fr;
+  }
+  
+  .create-card {
+    order: 1;
+  }
+  
+  .list-card {
+    order: 2;
+  }
+}
+
+@media (max-width: 768px) {
+  .share-page {
+    padding: 16px;
+  }
+}

@@ -1,0 +1,174 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 100%);
+  padding: 24px;
+}
+
+[data-theme="dark"] .login-page {
+  background: linear-gradient(135deg, #141414 0%, #1f1f1f 100%);
+}
+
+.login-container {
+  width: 100%;
+  max-width: 420px;
+}
+
+.login-card {
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"] .login-card {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo-icon {
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(135deg, #1677ff, #722ed1);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 24px;
+  font-weight: bold;
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.35);
+}
+
+.logo-text {
+  text-align: center;
+}
+
+.logo-text h4 {
+  margin: 0 0 4px 0;
+}
+
+.login-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.login-footer {
+  text-align: center;
+  margin-top: 24px;
+}
+
+/* 找回密码样式 */
+.forgot-password {
+  padding: 8px 0;
+}
+
+.forgot-steps {
+  margin-bottom: 32px;
+}
+
+.verify-code-hint {
+  text-align: center;
+  color: #666;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+[data-theme="dark"] .verify-code-hint {
+  background: #2a2a2a;
+  color: #999;
+}
+
+.verify-code-input {
+  display: flex;
+  gap: 12px;
+}
+
+.verify-code-input .ant-input {
+  flex: 1;
+}
+
+.password-strength {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.strength-bar {
+  flex: 1;
+  height: 4px;
+  background: #e8e8e8;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+[data-theme="dark"] .strength-bar {
+  background: #3a3a3a;
+}
+
+.strength-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: all 0.3s;
+}
+
+.strength-fill.weak {
+  width: 33%;
+  background: #ff4d4f;
+}
+
+.strength-fill.medium {
+  width: 66%;
+  background: #faad14;
+}
+
+.strength-fill.strong {
+  width: 100%;
+  background: #52c41a;
+}
+
+.strength-text {
+  font-size: 12px;
+  color: #999;
+}
+
+.reset-success {
+  text-align: center;
+  padding: 32px 0;
+}
+
+.success-icon {
+  width: 64px;
+  height: 64px;
+  background: #52c41a;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 32px;
+  margin: 0 auto 16px;
+}
+
+.reset-success h4 {
+  margin-bottom: 8px;
+}
+
+.reset-success .ant-btn {
+  margin-top: 24px;
+}

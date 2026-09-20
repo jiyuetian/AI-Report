@@ -1,0 +1,29 @@
+.prompt-center { padding: 4px 0; }
+.pc-banner { margin-bottom: 18px; border-radius: 8px; }
+.pc-empty { display: flex; justify-content: center; padding: 60px 0; }
+.pc-cat { margin-bottom: 22px; }
+.pc-cat-title {
+  font-size: 15px; font-weight: 600; color: #1a1d24; margin: 0 0 12px;
+  display: flex; align-items: center; gap: 6px;
+}
+.pc-cat-title span { font-size: 12px; color: #5b6472; background: #eef1fb; border-radius: 6px; padding: 0 8px; }
+.pc-card { border-radius: 10px; height: 100%; }
+.pc-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pc-title { font-weight: 600; font-size: 14px; color: #1a1d24; margin-right: auto; }
+.pc-desc { font-size: 12.5px; color: #5b6472; min-height: 38px; margin: 8px 0 6px; line-height: 1.5; }
+.pc-meta { display: flex; gap: 12px; align-items: center; font-size: 12px; color: #5b6472; margin-bottom: 10px; }
+.pc-remark {
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #c9802a; cursor: help;
+}
+.pc-card-foot { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #eef0f5; padding-top: 10px; }
+.pc-enable { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #5b6472; }
+.pc-form { padding: 4px 0 0; }
+.pc-form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: #1a1d24; }
+.pc-monaco {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace !important;
+  font-size: 12.5px !important; line-height: 1.55 !important;
+  background: #0f1420 !important; color: #e6edf7 !important;
+  border-radius: 8px !important; padding: 12px !important;
+}
+.pc-monaco:focus { border-color: #2f6fed !important; box-shadow: 0 0 0 2px rgba(47,111,237,0.15) !important; }

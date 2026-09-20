@@ -1,0 +1,74 @@
+# 依赖
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# 环境
+.env
+.venv/
+venv/
+ENV/
+
+# 构建输出
+dist/
+build/
+*.egg-info/
+
+# 数据文件
+data/uploads/*
+data/exports/*
+data/backups/*
+!data/uploads/.gitkeep
+!data/exports/.gitkeep
+!data/backups/.gitkeep
+
+# 日志
+*.log
+*.err
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 测试
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Alembic
+alembic.ini.bak
+
+# 运行时数据（SQLite 库 / 上传文件，勿入库）
+backend/data/
+
+# 临时调试脚本（勿入库）
+_dbg*.py
+_probe*.py
+_perf*.py
+backend/app/_scan.py
+backend/scripts/smoke_test_async_quality.py
+scripts/smoke_test_async_quality.py
+scripts/_repro_s3_out.txt
+
+# 一次性诊断/冒烟脚本已归档（保留在仓库但不再作为入口，避免误跑）
+backend/scripts/_archive/
+scripts/_archive/
+
+# 自测脚本运行产物（可复现，无需入库）
+tests/_reports/
+tests/_*.png
+
+# 浏览器截图调试产物（勿入库）
+dashboard_*.png

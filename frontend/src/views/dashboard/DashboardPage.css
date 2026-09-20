@@ -1,0 +1,375 @@
+/* M2-10 看板页面样式 (修复：添加对话面板布局) */
+
+/* 修复：左右分栏布局。
+   关键：不要靠 height/margin 层层扣减，层外只要有 1px padding 偏差就会留缝。
+   做法：把聊天面板 fixed 定位到屏幕右侧底部，顶到头部下沿 (top:64px) 并贴到可视区底部 (bottom:0)，
+   面板宽度定值。main 区只需预留右侧同等宽度即可。
+   这样无论外层 .main-content 有多少 padding，面板和输入框都精确触到可视区最底部。 */
+.dashboard-with-chat {
+  position: relative;
+  display: block;
+  min-height: calc(100vh - 64px);
+  background: var(--bg-color, #f5f7fa);
+}
+
+/* A03-02-01 图表卡可点击查看详情 */
+.chart-card-clickable {
+  cursor: pointer;
+}
+.chart-card-clickable .ant-card-extra a {
+  color: #1677ff;
+}
+
+.dashboard-main {
+  /* 给聊天面板预留右侧宽度，避免内容被遮挡 */
+  padding-right: calc(420px + 16px);
+  min-height: calc(100vh - 64px);
+}
+
+.dashboard-chat-sidebar {
+  position: fixed;
+  top: 64px;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  border-left: 1px solid var(--line, #ececf1);
+  background: transparent;
+  overflow: hidden;
+  z-index: 5;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+[data-theme="dark"] .dashboard-chat-sidebar {
+  border-left-color: #2c2c34;
+}
+
+/* 折叠对话面板 → 看板全屏 */
+.dashboard-with-chat.chat-collapsed .dashboard-chat-sidebar {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dashboard-with-chat.chat-collapsed .dashboard-main {
+  padding-right: 24px;
+}
+
+/* 折叠后悬浮的"展开对话"按钮（吸附右侧） */
+.chat-reopen-zone {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.chat-reopen-btn {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #ececf0;
+  border-right: 0;
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  color: #4c6ef5;
+  transition: all 0.2s;
+}
+
+.chat-reopen-btn:hover {
+  background: #4c6ef5;
+  color: #fff;
+}
+
+.reopen-icon {
+  font-size: 16px;
+}
+
+.reopen-text {
+  font-size: 12px;
+  font-weight: 500;
+  writing-mode: horizontal-tb;
+  white-space: nowrap;
+}
+
+.dashboard-chat-sidebar > .chat-panel,
+.dashboard-chat-sidebar .chat-panel {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: auto !important;
+  max-height: none !important;
+  min-width: 0 !important;
+  flex: none !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+}
+
+/* 旧样式兼容 */
+.dashboard-page {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+
+/* 头部 */
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.dashboard-title {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.dashboard-score {
+  font-size: 16px;
+}
+
+.score-pass {
+  color: #52c41a;
+  font-weight: bold;
+}
+
+.score-fail {
+  color: #ff4d4f;
+  font-weight: bold;
+}
+
+/* KPI卡片 */
+.kpi-layer {
+  margin-bottom: 24px;
+}
+
+.kpi-card {
+  position: relative;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: all 0.3s;
+}
+
+.kpi-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
+}
+
+.kpi-card-warning {
+  border: 1px solid #ff4d4f;
+}
+
+.warning-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+}
+
+.kpi-content {
+  padding: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.kpi-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kpi-title {
+  color: #666;
+  font-size: 14px;
+  /* 标题允许换行完整展示，避免长标题被截断看不到最后几个字 */
+  white-space: normal;
+  word-break: break-all;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+}
+
+.kpi-value {
+  margin-bottom: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.kpi-value .ant-statistic-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kpi-change {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.kpi-change.positive {
+  color: #52c41a;
+}
+
+.kpi-change.negative {
+  color: #ff4d4f;
+}
+
+.warning-text {
+  font-size: 12px;
+  color: #ff4d4f;
+  margin-bottom: 8px;
+}
+
+.mini-chart {
+  height: 40px;
+  margin-top: 8px;
+}
+
+/* 图层标题 */
+.layer-title {
+  font-size: 16px;
+  font-weight: 500;
+  margin-bottom: 16px;
+  padding-left: 8px;
+  border-left: 3px solid #1890ff;
+}
+
+/* 分析说明层 */
+.analysis-text-layer {
+  margin-bottom: 20px;
+}
+
+.analysis-text-card {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f0f4ff 0%, #f6f8ff 100%);
+  border: 1px solid #d6e0ff;
+}
+
+[data-theme="dark"] .analysis-text-card {
+  background: linear-gradient(135deg, #1e2235 0%, #1a1e2e 100%);
+  border-color: #2a3050;
+}
+
+.analysis-text-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #4c6ef5, #7b5cff);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.analysis-text-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.analysis-text-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4c6ef5;
+  margin-bottom: 6px;
+}
+
+.analysis-text-body {
+  font-size: 14.5px;
+  line-height: 1.85;
+  color: #1f1f1f;
+  white-space: normal;
+}
+.analysis-text-body p {
+  margin: 0;
+}
+.analysis-text-body p + p {
+  margin-top: 10px;
+}
+
+[data-theme="dark"] .analysis-text-body {
+  color: #c8cdd8;
+}
+
+/* 佐证层 */
+.evidence-layer {
+  margin-bottom: 24px;
+}
+
+/* 明细层 */
+.detail-layer {
+  margin-bottom: 24px;
+}
+
+/* 图表卡片 */
+.chart-card {
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* 加载状态 */
+.dashboard-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 400px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .dashboard-page {
+    padding: 16px;
+  }
+
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .kpi-card {
+    margin-bottom: 12px;
+  }
+
+  /* 窄屏：聊天侧栏变成底部抽屉,全宽贴底,不参与 main 布局 */
+  .dashboard-main {
+    padding-right: 0 !important;
+    padding-bottom: 60vh; /* 给底部抽屉留出空间,避免看板底部被遮 */
+  }
+
+  .dashboard-chat-sidebar {
+    top: auto !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 60vh !important;
+    border-left: none !important;
+    border-top: 1px solid var(--line, #ececf1) !important;
+    border-top-left-radius: 16px !important;
+    border-top-right-radius: 16px !important;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08) !important;
+  }
+}

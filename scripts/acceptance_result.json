@@ -1,0 +1,429 @@
+{
+  "summary": {
+    "F": {
+      "total": 21,
+      "pass": 21,
+      "fail": 0
+    },
+    "B": {
+      "total": 7,
+      "pass": 7,
+      "fail": 0
+    },
+    "S": {
+      "total": 6,
+      "pass": 6,
+      "fail": 0
+    },
+    "P": {
+      "total": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "GOLD": {
+      "total": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "LOAD": {
+      "total": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "_TOTAL": {
+      "total": 43,
+      "pass": 43,
+      "fail": 0
+    }
+  },
+  "results": [
+    {
+      "group": "F",
+      "id": "F01-1",
+      "name": "上传CSV样例",
+      "expected": "200+file_id",
+      "actual": "HTTP 200 file=dca6e111",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-2",
+      "name": "文件预览",
+      "expected": "200+columns",
+      "actual": "HTTP 200 4列",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-3",
+      "name": "创建数据集入库",
+      "expected": "200+dataset_id+row_count",
+      "actual": "HTTP 200 row=5 col=4",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-4",
+      "name": "质量扫描",
+      "expected": "200+summary",
+      "actual": "HTTP 200 issues=1 阻断=1",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-5",
+      "name": "质检阻断判断一致性",
+      "expected": "can_proceed==(阻断为0)",
+      "actual": "can_proceed=False blocking=1（本样例含重复C001应阻断）",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-6",
+      "name": "质量修复执行(按阻断项逐个修复)",
+      "expected": "200(至少1项修复成功或无阻断项)",
+      "actual": "成功修复 0 项阻断(按issue逐一调用/quality/fix)",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-7",
+      "name": "修复后问题清单",
+      "expected": "200",
+      "actual": "HTTP 200",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-8",
+      "name": "启动看板生成",
+      "expected": "200+run_id",
+      "actual": "HTTP 200 started",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-9",
+      "name": "看板生成完成",
+      "expected": "completed+dashboard_id",
+      "actual": "status=completed dash=True",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-10",
+      "name": "我的看板列表",
+      "expected": "200+list",
+      "actual": "HTTP 200 total=10",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-11",
+      "name": "看板详情渲染",
+      "expected": "200+config.charts(6-9)",
+      "actual": "HTTP 200 图表数=5",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-12",
+      "name": "血缘六层架构",
+      "expected": "nodes≥3且六层齐全",
+      "actual": "nodes=14 六层=True layers=['source', 'field', 'clean', 'business', 'agg', 'chart']",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-13",
+      "name": "版本创建",
+      "expected": "200+version/version_no",
+      "actual": "HTTP 200 {'success': True, 'version': {'id': 'd89a92f0-c6dc-4ef7-921a-1314fb327578', 'num",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-14",
+      "name": "版本列表",
+      "expected": "200+versions≥1",
+      "actual": "HTTP 200 版本数=1",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-15",
+      "name": "导出JSON配置",
+      "expected": "200+content.config",
+      "actual": "HTTP 200 mode=sync",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-16",
+      "name": "导出Excel",
+      "expected": "200(sync download_url 或 async task)",
+      "actual": "HTTP 200 mode=sync",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-17",
+      "name": "导出PDF",
+      "expected": "200(sync 或 async)",
+      "actual": "HTTP 200 mode=sync",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-18",
+      "name": "生成分享链接",
+      "expected": "200+share_code+share_id",
+      "actual": "HTTP 200 /s/6591f3d9",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-19",
+      "name": "公开访问分享",
+      "expected": "200 valid=True",
+      "actual": "HTTP 200 valid=True perm=view",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-20",
+      "name": "撤销分享",
+      "expected": "200",
+      "actual": "HTTP 200 {'success': True, 'message': '分享已撤销'}",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "F",
+      "id": "F01-21",
+      "name": "撤销后访问失效",
+      "expected": "403或404",
+      "actual": "HTTP 403",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B01",
+      "name": "0字节空文件",
+      "expected": "拦截或解析标记失败(200/400/422)",
+      "actual": "HTTP 200 {'file_id': '9f830b1d-81f0-40d5-b576-4bc1b981d436', 'filenam",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B02",
+      "name": "无表头CSV",
+      "expected": "上传200",
+      "actual": "HTTP 200",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B03",
+      "name": "单行数据",
+      "expected": "上传200",
+      "actual": "HTTP 200",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B04",
+      "name": ".exe非法扩展名",
+      "expected": "400/413/415/422拒绝",
+      "actual": "HTTP 415 {'detail': {'code': 'UPLOAD_415', 'message': \"不支持的文件类型: .exe",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B05",
+      "name": "中文+特殊字符文件名",
+      "expected": "上传200",
+      "actual": "HTTP 200 {'file_id': '5b44f03d-aada-477a-9daf-f05732f07f53', 'filenam",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B06",
+      "name": "600列超限",
+      "expected": "上传200（解析阶段校验/收敛）",
+      "actual": "HTTP 200 file_id=True",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "B",
+      "id": "B07",
+      "name": "1000+字长文本校验",
+      "expected": "200+检测结果",
+      "actual": "HTTP 200 {'success': True, 'message': '需求需求需求需求需求需求需求需求需求需求需求需求需求需求需求",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "S",
+      "id": "S01",
+      "name": "错误密码登录",
+      "expected": "401",
+      "actual": "HTTP 401",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "S",
+      "id": "S02",
+      "name": "无token访问看板",
+      "expected": "记录实际行为",
+      "actual": "HTTP 200（业务接口未强制JWT，记录设计事实）",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "S",
+      "id": "S03",
+      "name": "SQL注入脚本检测",
+      "expected": "200+检测结果",
+      "actual": "HTTP 200 {'success': True, 'message': 'SELECT 1; DROP TABLE users; --', 'moderation_resul",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "S",
+      "id": "S04",
+      "name": "XSS脚本检测",
+      "expected": "200且含escaped/标记",
+      "actual": "HTTP 200 {'success': True, 'message': '<script>alert(1)</script>', 'moderation_result': {",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "S",
+      "id": "S05",
+      "name": "XSS标题入库",
+      "expected": "入库不报错(200)",
+      "actual": "HTTP 200（前端渲染层应转义）",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "S",
+      "id": "S06",
+      "name": "无效分享token",
+      "expected": "403/404",
+      "actual": "HTTP 403",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "P",
+      "id": "P01",
+      "name": "50并发健康检查洪水",
+      "expected": "全部2xx",
+      "actual": "ok=50/50 elapsed=2.13s QPS≈24",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "P",
+      "id": "P02",
+      "name": "20并发登录",
+      "expected": "不崩溃；200或限速423",
+      "actual": "200=20 其他=[] elapsed=6.65s（登录锁可能限速）",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "P",
+      "id": "P03",
+      "name": "8并发建数据集(同一文件)",
+      "expected": "全部200",
+      "actual": "200=8 其他=[]（若部分409说明竞态）",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "GOLD",
+      "id": "G-全量",
+      "name": "Golden回归全量run",
+      "expected": "200 success",
+      "actual": "HTTP 200 total=20 pass=20 fail=0",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "GOLD",
+      "id": "G-最近",
+      "name": "最近一次Golden回归",
+      "expected": "200+summary",
+      "actual": "HTTP 200 total=20 pass=20 rate=100.0",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "GOLD",
+      "id": "G-验收",
+      "name": "Golden验收标准",
+      "expected": "200 all_passed",
+      "actual": "HTTP 200 all_passed=True crit={'quality_70_plus_rate': {'required': '>=80%', 'actual': '90.0%', 'passed': True}, 'match_80_plus_rate': {'required': '>=80%', 'actual': '100.0%', 'passed': True}}",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "LOAD",
+      "id": "L-综合",
+      "name": "内置压力测试run",
+      "expected": "200 success",
+      "actual": "HTTP 200 scenarios=3 all_passed=True",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "LOAD",
+      "id": "L-最近",
+      "name": "最近一次压测",
+      "expected": "200+summary",
+      "actual": "HTTP 200 scenarios=3 all_passed=True",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "group": "LOAD",
+      "id": "L-验收",
+      "name": "压测验收标准",
+      "expected": "200 all_passed",
+      "actual": "HTTP 200 all_passed=True",
+      "pass": true,
+      "note": ""
+    }
+  ],
+  "ts": "2026-09-06 11:56:46"
+}

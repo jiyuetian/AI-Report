@@ -1,0 +1,343 @@
+/* 双主题（§4.2）
+   明亮主题为默认值，不在此覆盖，避免回归。
+   ─────────────────────────────────────────────────────────────
+   2026-09-18 暗色主题全局兼容（对齐原型暗色效果）：
+   之前只有 main-layout/局部面板变暗，各页面自定义 CSS 里硬编码的
+   浅色底(#f0f2f5/#fff)与深色字(#262626/#666)在暗色下不可读。
+   现在按页面统一收拢覆盖；自定义 CSS 一律使用暗色令牌：
+     页面底 #0e1016 · 面板 #1f1f1f · 次级面板 #141414 · 边框 #303030
+     主文字 rgba(255,255,255,.88) · 次级 .60 · 弱化 .45 */
+
+:root, [data-theme="light"] {
+  --app-border: #f0f0f0;
+  --app-text: rgba(0, 0, 0, 0.88);
+  /* 质检面板状态卡（QualityCheckPanel 内联样式引用） */
+  --qc-fail-bg: #fff2f0;
+  --qc-fail-border: #ff4d4f;
+  --qc-warn-bg: #fffbe6;
+  --qc-warn-border: #faad14;
+  --qc-pass-bg: #f6ffed;
+  --qc-pass-border: #d9d9d9;
+  --qc-sub-text: #666666;
+  --qc-hint-text: #8c8c8c;
+}
+
+[data-theme="dark"] {
+  --app-border: #303030;
+  --app-text: rgba(255, 255, 255, 0.85);
+  color-scheme: dark;
+  --qc-fail-bg: #2a1215;
+  --qc-fail-border: #a61d24;
+  --qc-warn-bg: #2b2111;
+  --qc-warn-border: #d48806;
+  --qc-pass-bg: #16261a;
+  --qc-pass-border: #2b4a33;
+  --qc-sub-text: rgba(255, 255, 255, 0.65);
+  --qc-hint-text: rgba(255, 255, 255, 0.45);
+}
+
+[data-theme="dark"] body {
+  background: #000000;
+}
+
+[data-theme="dark"] .main-layout {
+  background: #000000;
+}
+
+[data-theme="dark"] .main-header {
+  background: #141414;
+}
+
+[data-theme="dark"] .main-content {
+  background: #000000;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="dark"] .dashboard-with-chat,
+[data-theme="dark"] .dashboard-main {
+  background: #141414;
+}
+
+[data-theme="dark"] .logo-name,
+[data-theme="dark"] .logo-sub {
+  color: var(--app-text);
+}
+
+/* ── 全局兜底：弹层内的暗色文字 ── */
+[data-theme="dark"] .ant-typography {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* ═══════════ 管理后台 AdminPage ═══════════ */
+[data-theme="dark"] .admin-page {
+  background: #0e1016;
+}
+[data-theme="dark"] .admin-page .page-title {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .admin-tabs > .ant-tabs-nav {
+  background: #141414;
+}
+[data-theme="dark"] .admin-page .ant-statistic-title {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ═══════════ Prompt 中心 ═══════════ */
+[data-theme="dark"] .pc-cat-title,
+[data-theme="dark"] .pc-title,
+[data-theme="dark"] .pc-form-row {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .pc-cat-title span {
+  color: rgba(255, 255, 255, 0.65);
+  background: #1f2b3a;
+}
+[data-theme="dark"] .pc-desc,
+[data-theme="dark"] .pc-meta,
+[data-theme="dark"] .pc-enable {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ═══════════ 我的看板 DashboardListPage ═══════════ */
+[data-theme="dark"] .dashboard-list-page {
+  background: #0e1016;
+}
+[data-theme="dark"] .stat-card .ant-statistic-title,
+[data-theme="dark"] .filter-label,
+[data-theme="dark"] .item-desc p,
+[data-theme="dark"] .detail-desc,
+[data-theme="dark"] .detail-section label {
+  color: rgba(255, 255, 255, 0.6);
+}
+[data-theme="dark"] .stat-card.draft .ant-statistic-content {
+  color: rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .item-title .name {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .item-meta {
+  color: rgba(255, 255, 255, 0.45);
+}
+[data-theme="dark"] .detail-section h4 {
+  color: rgba(255, 255, 255, 0.88);
+  border-bottom-color: #303030;
+}
+[data-theme="dark"] .update-alert {
+  background: #2a1215;
+  border-color: #58181c;
+  color: #ffa39e;
+}
+
+/* ═══════════ 看板页 DashboardPage ═══════════ */
+[data-theme="dark"] .dashboard-page,
+[data-theme="dark"] .dash-bg {
+  background: #0e1016;
+}
+[data-theme="dark"] .kpi-card-note,
+[data-theme="dark"] .chart-extra,
+[data-theme="dark"] .detail-hint {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+[data-theme="dark"] .float-toolbar {
+  background: rgba(28, 30, 38, 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+[data-theme="dark"] .dash-section-gap {
+  background: #141414;
+}
+[data-theme="dark"] .appendix-anchor {
+  background: #141414;
+}
+
+/* ═══════════ 看板卡 DraggableLayout ═══════════ */
+[data-theme="dark"] .grid-item-card,
+[data-theme="dark"] .draggable-card {
+  background: #1f1f1f;
+}
+[data-theme="dark"] .drag-handle,
+[data-theme="dark"] .grid-empty-placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .grid-resize-placeholder {
+  background: #141414;
+}
+[data-theme="dark"] .grid-item-drop-active {
+  background: #111a2c !important;
+}
+
+/* ═══════════ 图表渲染 ChartRenderer ═══════════ */
+[data-theme="dark"] .chart-card-subtitle {
+  color: rgba(255, 255, 255, 0.6);
+}
+[data-theme="dark"] .chart-card-meta {
+  color: rgba(255, 255, 255, 0.4);
+}
+[data-theme="dark"] .chart-loading-mask {
+  background: rgba(20, 20, 20, 0.8);
+}
+
+/* ═══════════ 血缘 LineagePage（补局部遗漏） ═══════════ */
+[data-theme="dark"] .lineage-page {
+  background: #0e1016;
+}
+[data-theme="dark"] .lph-title {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .lineage-page-head .lph-desc,
+[data-theme="dark"] .chain-col-title,
+[data-theme="dark"] .chain-tip,
+[data-theme="dark"] .lineage-page .tb-label,
+[data-theme="dark"] .detail-table .dt-key,
+[data-theme="dark"] .vs-title,
+[data-theme="dark"] .vs-sub,
+[data-theme="dark"] .fs12 {
+  color: rgba(255, 255, 255, 0.45);
+}
+[data-theme="dark"] .chain-arrow {
+  color: #525252;
+}
+[data-theme="dark"] .lnode-folded {
+  color: rgba(255, 255, 255, 0.6);
+}
+[data-theme="dark"] .lnode-empty {
+  color: rgba(255, 255, 255, 0.3);
+}
+[data-theme="dark"] .lineage-detail-panel .detail-title {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .detail-panel-card,
+[data-theme="dark"] .verify-card,
+[data-theme="dark"] .lineage-toolbar,
+[data-theme="dark"] .lineage-graph-card,
+[data-theme="dark"] .lineage-tree-card {
+  background: #141414;
+}
+[data-theme="dark"] .qa-alert {
+  background: #111a2c;
+  color: #4096ff;
+}
+[data-theme="dark"] .qa-row .ant-input {
+  background: #1f1f1f;
+  border-color: #303030;
+  color: rgba(255, 255, 255, 0.85);
+}
+[data-theme="dark"] .metric-chip:hover,
+[data-theme="dark"] .metric-chip.active {
+  background: #111a2c;
+  color: #4096ff;
+}
+[data-theme="dark"] .verify-outcome.ok {
+  background: #16261a;
+  border-color: #2b4a33;
+  color: #95de64;
+}
+[data-theme="dark"] .verify-outcome.warn {
+  background: #2b2111;
+  border-color: #594a12;
+  color: #ffc53d;
+}
+[data-theme="dark"] .lnode-folded-line,
+[data-theme="dark"] .detail-table td {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* ═══════════ 质检 QualityPage ═══════════ */
+[data-theme="dark"] .quality-page {
+  background: #0e1016;
+}
+[data-theme="dark"] .quality-page .page-title,
+[data-theme="dark"] .qp-title {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .qp-subtitle {
+  color: rgba(255, 255, 255, 0.45);
+}
+[data-theme="dark"] .issue-row-blocking {
+  background: #2a1215;
+}
+[data-theme="dark"] .issue-row-warn {
+  background: #2b2111;
+}
+[data-theme="dark"] .blocking-count {
+  color: #ffa39e !important;
+}
+
+/* ═══════════ 报表 ReportPage ═══════════ */
+[data-theme="dark"] .report-page {
+  background: #0e1016;
+}
+[data-theme="dark"] .report-container,
+[data-theme="dark"] .report-section,
+[data-theme="dark"] .report-card {
+  background: #1f1f1f;
+}
+[data-theme="dark"] .report-title,
+[data-theme="dark"] .report-section-title {
+  color: rgba(255, 255, 255, 0.88);
+}
+[data-theme="dark"] .report-section-desc {
+  color: rgba(255, 255, 255, 0.6);
+}
+[data-theme="dark"] .report-meta {
+  color: rgba(255, 255, 255, 0.45);
+}
+[data-theme="dark"] .report-section.active,
+[data-theme="dark"] .report-nav-item.active {
+  background: #1a2033;
+}
+
+/* ═══════════ 分享 SharePage ═══════════ */
+[data-theme="dark"] .share-page {
+  background: #0e1016;
+}
+[data-theme="dark"] .share-card {
+  background: #1f1f1f;
+}
+[data-theme="dark"] .share-success-banner {
+  background: #16261a;
+}
+[data-theme="dark"] .share-desc,
+[data-theme="dark"] .share-card p {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* ═══════════ 布局 MainLayout 遗漏处 ═══════════ */
+[data-theme="dark"] .sider-console-card {
+  background: #1f1f1f;
+}
+[data-theme="dark"] .sider-section:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ═══════════ 登录页 ═══════════ */
+[data-theme="dark"] .login-page {
+  background: linear-gradient(135deg, #0e1016 0%, #141414 100%);
+}
+[data-theme="dark"] .login-footer,
+[data-theme="dark"] .login-hint {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Phase 5：SkillPanel 薄壳来源条（暗色继承，不重写业务面板） */
+.skill-panel__source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--app-border, #f0f0f0);
+}
+.skill-panel__source-label {
+  font-size: 12px;
+  color: var(--qc-sub-text, #666);
+}
+[data-theme="dark"] .skill-panel__source {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: #303030;
+}
+[data-theme="dark"] .skill-panel__source-label {
+  color: rgba(255, 255, 255, 0.6);
+}

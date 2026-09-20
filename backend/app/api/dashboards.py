@@ -1,0 +1,476 @@
+"""
+看板 API - M4-06 我的看板 + M2-09/M3-07
+列表/检索/筛选/详情抽屉/删除二次确认/数据源更新提醒/空状态
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc, func, and_, or_, delete
+from datetime import datetime, timedelta
+
+from app.core.database import get_db
+from app.models.dashboard import Dashboard, DashboardVersion
+from app.models.dataset import Dataset
+from app.models.chart import Chart
+from app.models.export import ExportTask
+from app.models.share import ShareLink
+from app.models.file import File
+from app.models.brain import BrainTrace
+from app.core.version_manager import VersionManager
+from app.core.security import get_current_user, get_optional_user
+from app.core.validators import sanitize_text
+
+router = APIRouter(prefix="/dashboards", tags=["Dashboards"])
+
+
+class CreateDashboardRequest(BaseModel):
+    """创建看板请求"""
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = ""
+    dataset_ids: List[str] = []
+
+
+class UpdateDashboardRequest(BaseModel):
+    """更新看板请求"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    layout: Optional[Dict[str, Any]] = None
+
+
+@router.get("/my")
+async def list_my_dashboards(
+    search: str = Query("", description="搜索关键词"),
+    status: str = Query("all", description="状态筛选: all/draft/published/archived"),
+    sort_by: str = Query("updated", description="排序: updated/created/name/score"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    我的看板列表（M4-06）。D2-6 修复：基于服务端登录身份过滤，禁止信任客户端 user_id 参数。
+    """
+    uid = current_user["user_id"]
+    # 兼容 pre-auth 演示数据（owner 为 'anonymous'/'current'）对任何已登录用户可见；
+    # 其余仅显示当前登录用户自己创建的看板。
+    _OWNERS = ("anonymous", "current", uid)
+    query = select(Dashboard).where(
+        or_(
+            Dashboard.created_by.in_(_OWNERS),
+            Dashboard.updated_by.in_(_OWNERS)
+        )
+    )
+    
+    # 状态筛选
+    if status != "all":
+        query = query.where(Dashboard.status == status)
+    
+    # 搜索筛选
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Dashboard.name.ilike(search_pattern),
+                Dashboard.description.ilike(search_pattern)
+            )
+        )
+    
+    # 排序
+    if sort_by == "updated":
+        query = query.order_by(desc(Dashboard.updated_at))
+    elif sort_by == "created":
+        query = query.order_by(desc(Dashboard.created_at))
+    elif sort_by == "name":
+        query = query.order_by(Dashboard.name)
+    elif sort_by == "score":
+        query = query.order_by(desc(Dashboard.score))
+    else:
+        query = query.order_by(desc(Dashboard.updated_at))
+    
+    # 分页
+    total_result = await db.execute(
+        select(func.count()).select_from(query.subquery())
+    )
+    total = total_result.scalar()
+    
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    dashboards = result.scalars().all()
+    
+    # 检查数据源更新提醒
+    dashboard_list = []
+    for dash in dashboards:
+        # 检查关联数据源是否有更新
+        update_reminder = await _check_dataset_updates(db, dash)
+        
+        dashboard_list.append({
+            "id": dash.id,
+            "name": dash.name,
+            "description": dash.description,
+            "status": dash.status,
+            "score": dash.score,
+            "passed": dash.passed,
+            "dataset_count": len(dash.dataset_ids) if dash.dataset_ids else 0,
+            "update_reminder": update_reminder,  # 数据源更新提醒
+            "created_at": dash.created_at.isoformat() if dash.created_at else None,
+            "updated_at": dash.updated_at.isoformat() if dash.updated_at else None
+        })
+    
+    return {
+        "list": dashboard_list,
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
+
+
+async def _check_dataset_updates(db: AsyncSession, dashboard: Dashboard) -> Dict[str, Any]:
+    """检查关联数据源是否有更新"""
+    if not dashboard.dataset_ids:
+        return {"has_update": False}
+    
+    result = await db.execute(
+        select(Dataset).where(Dataset.id.in_(dashboard.dataset_ids))
+    )
+    datasets = result.scalars().all()
+    
+    updated_count = 0
+    for ds in datasets:
+        # 检查数据集是否在24小时内更新过
+        if ds.updated_at and dashboard.updated_at:
+            if ds.updated_at > dashboard.updated_at:
+                updated_count += 1
+    
+    if updated_count > 0:
+        return {
+            "has_update": True,
+            "message": f"{updated_count}个数据源有更新",
+            "dataset_ids": [d.id for d in datasets if d.updated_at > dashboard.updated_at]
+        }
+    
+    return {"has_update": False}
+
+
+@router.get("/by-dataset/{dataset_id}")
+async def list_dashboards_by_dataset(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    按数据集查关联看板（轻量，2026-09-18）。
+
+    背景：上传页会话恢复需判断「数据集是否已生成过看板」。此前仅靠前端
+    localStorage 墓碑（onComplete 时写入），旧会话（修复上线前保存）或换浏览器
+    时墓碑缺失，已生成看板的文件会重新回到上传队列。此接口作为后端真源兜底。
+
+    dataset_ids 为 JSON 列，SQLite 下 SQLAlchemy .contains 不可靠，这里取近期
+    看板后 Python 侧过滤。
+    """
+    try:
+        result = await db.execute(
+            select(Dashboard)
+            .order_by(desc(Dashboard.updated_at))
+            .limit(200)
+        )
+        rows = result.scalars().all()
+        items = []
+        for d in rows:
+            if dataset_id not in (d.dataset_ids or []):
+                continue
+            items.append({
+                "id": d.id,
+                "name": d.name,
+                "status": d.status,
+                "primary_dataset_id": d.primary_dataset_id,
+                "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+            })
+        return {"items": items, "total": len(items)}
+    except Exception as e:
+        return {"items": [], "total": 0, "error": str(e)}
+
+
+@router.get("/{dashboard_id}/appendix")
+async def get_dashboard_appendix(
+    dashboard_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    看板附录（2026-09-18 对齐方案B）：
+    A. 字段字典 / B. 清洗日志 / C. 指标计算明细 / D. 数据血缘。
+    全部取自真实管线元数据（DuckDB 清洗层实测 + clean_rules + 图表SQL + 血缘埋点），
+    确定性拼装、可复跑复现，不依赖模型自述。
+    """
+    from app.core.appendix_service import build_appendix
+    try:
+        result = await build_appendix(db, dashboard_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"code": "APPENDIX_ERROR", "message": str(e)})
+    if result.get("error") == "dashboard_not_found":
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "看板不存在"})
+    return result
+
+
+@router.get("/{dashboard_id}")
+async def get_dashboard_detail(
+    dashboard_id: str,
+    share_code: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[Dict] = Depends(get_optional_user)
+):
+    """
+    看板详情（详情抽屉）。D2-4c 修复：未登录用户必须提供有效 share_code 才能访问，
+    否则返回 401，关闭"任意看板明细无鉴权直读"。
+    """
+    if current_user is None:
+        if share_code:
+            from app.core.share_service import ShareService
+            share = await ShareService.validate_share(db, share_code)
+            if not share.get("valid") or share.get("dashboard_id") != dashboard_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="分享链接无效或无权限访问该看板",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="未认证",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    result = await db.execute(
+        select(Dashboard).where(Dashboard.id == dashboard_id)
+    )
+    dashboard = result.scalar_one_or_none()
+    
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="看板不存在")
+    
+    # 获取关联数据源信息
+    datasets_info = []
+    if dashboard.dataset_ids:
+        ds_result = await db.execute(
+            select(Dataset).where(Dataset.id.in_(dashboard.dataset_ids))
+        )
+        datasets = ds_result.scalars().all()
+        for ds in datasets:
+            datasets_info.append({
+                "id": ds.id,
+                "name": ds.name,
+                "grain": ds.grain,
+                "row_count": ds.row_count
+            })
+    
+    return {
+        "id": dashboard.id,
+        "name": dashboard.name,
+        "description": dashboard.description,
+        "status": dashboard.status,
+        "score": dashboard.score,
+        "passed": dashboard.passed,
+        "datasets": datasets_info,
+        # 前端渲染图表数据依赖 primary_dataset_id / dataset_ids（此前遗漏导致 /datasets/undefined/chart-data）
+        "primary_dataset_id": dashboard.primary_dataset_id,
+        "dataset_ids": dashboard.dataset_ids or [],
+        "config": dashboard.config,
+        "layout": dashboard.layout,
+        "created_by": dashboard.created_by,
+        "created_at": dashboard.created_at.isoformat() if dashboard.created_at else None,
+        "updated_at": dashboard.updated_at.isoformat() if dashboard.updated_at else None
+    }
+
+
+@router.delete("/{dashboard_id}")
+async def delete_dashboard(
+    dashboard_id: str,
+    confirm_name: str = Query(..., description="确认名称（需输入看板名称）"),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    删除看板（M4-06 删除二次确认 - 需输入名称）
+    
+    安全机制：
+    - 需要输入看板名称二次确认
+    - 只有创建者或管理员可删除
+    - 已发布的看板不能删除
+    """
+    result = await db.execute(
+        select(Dashboard).where(Dashboard.id == dashboard_id)
+    )
+    dashboard = result.scalar_one_or_none()
+    
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="看板不存在")
+    
+    # 验证确认名称
+    if dashboard.name != confirm_name:
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "error": "CONFIRM_NAME_MISMATCH",
+                "message": f"确认名称不匹配，请输入正确的看板名称: {dashboard.name}"
+            }
+        )
+    
+    # 检查权限（D2-6 修复：基于服务端登录身份，禁止信任客户端 user_id）
+    uid = current_user["user_id"]
+    is_owner = dashboard.created_by == uid
+    is_legacy = dashboard.created_by in ("anonymous", "current")
+    is_admin = bool(current_user.get("is_superuser"))
+    if not (is_owner or is_legacy or is_admin):
+        raise HTTPException(
+            status_code=403,
+            detail="只有创建者或管理员可删除看板"
+        )
+    
+    # 已发布的看板不能删除
+    # 取消：本产品生成看板即自动发布草稿流程，前端暂无"取消发布"入口，
+    # 若保留该校验则所有生成看板都无法删除（用户反馈"删不掉"）。
+    # 删除动作已有二次确认（输入名称）+ 危险确认，足够兜底，故放行已发布看板删除。
+    if dashboard.status == "published":
+        pass  # 放行：允许删除已发布看板
+
+    # 显式删除所有子记录（SQLite CASCADE 在某些场景不生效，需手动清理）
+    await db.execute(delete(Chart).where(Chart.dashboard_id == dashboard_id))
+    await db.execute(delete(DashboardVersion).where(DashboardVersion.dashboard_id == dashboard_id))
+    await db.execute(delete(ExportTask).where(ExportTask.dashboard_id == dashboard_id))
+    await db.execute(delete(ShareLink).where(ShareLink.dashboard_id == dashboard_id))
+    await db.flush()
+
+    await db.delete(dashboard)
+    await db.commit()
+    
+    return {
+        "success": True,
+        "message": f"看板 '{dashboard.name}' 已删除"
+    }
+
+
+@router.get("/stats/overview")
+async def get_dashboard_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    看板统计概览（D2-6 修复：基于服务端登录身份）
+    """
+    uid = current_user["user_id"]
+    _OWNERS = ("anonymous", "current", uid)
+    total_result = await db.execute(
+        select(func.count(Dashboard.id)).where(
+            or_(
+                Dashboard.created_by.in_(_OWNERS),
+                Dashboard.updated_by.in_(_OWNERS)
+            )
+        )
+    )
+    total = total_result.scalar()
+    
+    # 按状态统计
+    status_counts = {}
+    for status in ["draft", "published", "archived"]:
+        count_result = await db.execute(
+            select(func.count(Dashboard.id)).where(
+                and_(
+                    Dashboard.status == status,
+                    or_(
+                        Dashboard.created_by.in_(_OWNERS),
+                        Dashboard.updated_by.in_(_OWNERS)
+                    )
+                )
+            )
+        )
+        status_counts[status] = count_result.scalar()
+    
+    # 今日创建数
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_result = await db.execute(
+        select(func.count(Dashboard.id)).where(
+            and_(
+                Dashboard.created_at >= today_start,
+                Dashboard.created_by.in_(_OWNERS)
+            )
+        )
+    )
+    today_count = today_result.scalar()
+    
+    return {
+        "total": total,
+        "by_status": status_counts,
+        "today_created": today_count
+    }
+
+
+@router.post("/")
+async def create_dashboard(
+    request: CreateDashboardRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """创建看板（D2-1 修复：owner 取服务端登录身份；名称/描述净化，P4-2）"""
+    uid = current_user["user_id"]
+    dashboard = Dashboard(
+        name=sanitize_text(request.name),
+        description=sanitize_text(request.description),
+        dataset_ids=request.dataset_ids,
+        primary_dataset_id=request.dataset_ids[0] if request.dataset_ids else None,
+        created_by=uid,
+        status="draft"
+    )
+    
+    db.add(dashboard)
+    await db.commit()
+    await db.refresh(dashboard)
+    
+    return {
+        "success": True,
+        "dashboard_id": dashboard.id,
+        "name": dashboard.name
+    }
+
+
+@router.patch("/{dashboard_id}")
+async def update_dashboard(
+    dashboard_id: str,
+    request: UpdateDashboardRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
+):
+    """更新看板（部分更新）"""
+    result = await db.execute(
+        select(Dashboard).where(Dashboard.id == dashboard_id)
+    )
+    dashboard = result.scalar_one_or_none()
+    
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="看板不存在")
+    
+    if request.name is not None:
+        dashboard.name = request.name
+    if request.description is not None:
+        dashboard.description = request.description
+    if request.config is not None:
+        dashboard.config = request.config
+    if request.layout is not None:
+        dashboard.layout = request.layout
+    
+    dashboard.updated_by = current_user["user_id"]
+    dashboard.updated_at = datetime.utcnow()
+    
+    await db.commit()
+    
+    # C04 版本管理：看板配置发生变更时自动落版本快照（仅 config 真正变化才保存）
+    try:
+        await VersionManager.auto_save(db, dashboard_id, current_user["user_id"])
+    except Exception as ve:
+        print(f"[Dashboards] 自动版本快照失败(忽略): {ve}")
+    
+    return {
+        "success": True,
+        "message": "看板已更新"
+    }

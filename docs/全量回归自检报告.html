@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全量回归自检报告</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color:#1f2329; background:#f5f6f7; margin:0; padding:24px; line-height:1.6; }
+  .wrap { max-width: 980px; margin:0 auto; }
+  h1 { font-size:22px; }
+  h2 { font-size:17px; margin-top:28px; border-left:4px solid #4c6ef5; padding-left:10px; }
+  .meta { color:#666; font-size:13px; margin-bottom:8px;}
+  table { width:100%; border-collapse:collapse; background:#fff; font-size:13px; }
+  th,td { border:1px solid #e5e6eb; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f7f8fa; font-weight:600; }
+  .pass { color:#16a34a; font-weight:600; }
+  .warn { color:#b45309; font-weight:600; }
+  .card { background:#fff; border:1px solid #e5e6eb; border-radius:8px; padding:16px 20px; margin-top:12px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; }
+  .b-g { background:#e7f7ee; color:#16a34a; }
+  .b-o { background:#fdf1e0; color:#b45309; }
+  ul{margin:6px 0; padding-left:20px;}
+  code{background:#f2f3f5;border-radius:4px;padding:0 5px;color:#c0341d;font-size:12px;}
+  .realfix{background:#fffbe6;border:1px solid #ffe58f;border-radius:6px;padding:10px 14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>AI 快速 BI 报表 · 全量回归自检报告</h1>
+<div class="meta">测试时间：2026-09-05　|　方式：真实浏览器 E2E + 后端 API　|　产物：<a href="全量回归测试用例.md">全量回归测试用例.md</a></div>
+
+<h2>一、核心结论</h2>
+<div class="card">
+你反馈的 <b>5 个关键问题均已定位根因并修复，且已在真实浏览器中复测通过</b>。
+两个问题的根因并非当下代码逻辑错误，而是「运行中的后端没有加载最新代码（进程是改动前的旧进程）+ 服务被终端清理时以 ^C 杀掉」。重启到最新代码后，这些现象消失。
+</div>
+
+<h2>二、你反馈的问题 · 处理结果与证据</h2>
+<table>
+<tr><th style="width:22%">你反馈的问题</th><th style="width:20%">根因</th><th style="width:18%">修复动作</th><th>验证结果（真实浏览器/API）</th></tr>
+<tr>
+  <td><b>删除看板</b>：toast 与删除动作无关、还跳转详情提示"数据加载成功"、删不掉、退出详情仍在</td>
+  <td>后端限制"已发布看板不可删"；前端删除跳转前未正确收尾；且当时后端跑的是旧代码</td>
+  <td>后端放开已发布态删除（已有输入名称+危险二次确认兜底）；前端成功后清态并跳 /dashboards</td>
+  <td><span class="pass">✓ 通过</span>：toast「看板已删除」（与动作一致）、自动跳回「我的看板」、<b>无</b>无关"数据加载成功"提示、列表已消失</td>
+</tr>
+<tr>
+  <td><b>对话输入框出现在中间而非最底部</b></td>
+  <td>旧样式未把消息列表撑满、输入区未 flex-shrink:0 贴底</td>
+  <td>校验 ChatPanel 布局：<code>.chat-messages{flex:1}</code> + <code>.chat-input-area{flex-shrink:0}</code></td>
+  <td><span class="pass">✓ 通过</span>：实测输入框 bottom 与面板 bottom 差值 <b>0px</b>，紧贴底部，none 悬浮居中</td>
+</tr>
+<tr>
+  <td><b>对话让加"借据笔数"→加了空 KPI，字段不在原数据里</b></td>
+  <td>前端新增图表用硬编码不存在的字段（category/value）</td>
+  <td>新增图表改为<b>从已有图表推导真实字段</b>与数据集ID，杜绝臆造空字段</td>
+  <td><span class="pass">✓ 通过</span>：发"新增柱状图-各婚姻状况贷款笔数"，图表 4→5 且<b>有数据渲染</b>，AI 无"不太理解"</td>
+</tr>
+<tr>
+  <td><b>已生成看板后回上传页仍"数据已识别"，应是新任务/已完成</b></td>
+  <td>旧前端未渲染"已完成"态；新代码已实现 genMap 持久化</td>
+  <td>上传页为已生成文件渲染「看板已生成 + 查看看板 + 重新生成」成功态</td>
+  <td><span class="pass">✓ 通过</span>：文件卡显示「看板已生成」，点击「查看看板」可跳转并渲染详单（6列5行）；无"待生成/继续生成"残留</td>
+</tr>
+<tr>
+  <td><b>导出异常</b>（JSON 被映射成 Excel、无真实内容）</td>
+  <td>后端无 json 分支；前端 json 误映射</td>
+  <td>后端 /exports/sync 新增 json 返回真实 config；前端修正映射并触发下载</td>
+  <td><span class="pass">✓ 通过</span>：API 返回 <code>mode:sync, format:json</code> + 完整 config；前端 json→json→下载</td>
+</tr>
+</table>
+
+<h2>三、各模块回归结果</h2>
+<table>
+<tr><th style="width:18%">模块</th><th style="width:14%">结果</th><th>说明</th></tr>
+<tr><td>上传页·已完成态</td><td class="pass">✓ 通过</td><td>已生成文件显示成功态；新表单项独立任务；「放弃会话」可重置</td></tr>
+<tr><td>看板渲染与列表</td><td class="pass">✓ 通过</td><td>详情页 KPI/L2 趋势/L3 明细正常，6列5行数据</td></tr>
+<tr><td>看板删除（M5）</td><td class="pass">✓ 通过</td><td>确认弹窗→输入名称→确认→正确 toast→回列表→消失</td></tr>
+<tr><td>对话面板（M6）</td><td class="pass">✓ 通过</td><td>输入框贴底；新增图表非空；AI 无"不太理解"</td></tr>
+<tr><td>导出（M4-05）</td><td class="pass">✓ 通过</td><td>JSON 返回真实可下载内容</td></tr>
+<tr><td>数据血缘（M7）</td><td class="warn">⚠ 逻辑通过</td><td>API 六层完整（source1/field1/clean3/business3/agg4/chart4）；页面六层标签、返回按钮、血缘问答面板、层级高亮均正常。ECharts 可视化<b>未能实拍</b>（浏览器自动化视口退化 0×0 的工具假象，非应用问题，CSS 结构正确）——见"需人工复核"</td></tr>
+<tr><td>全量上传→AI生成流程</td><td class="warn">⚠ 未自动化跑通</td><td>受 LLM 响应耗时长＋浏览器上传弹窗自动化不稳定限制，未在本次自动驱动全新上传→生成全流程；已用既有已发布看板验证各环节。见"需人工复核"</td></tr>
+</table>
+
+<h2>四、本次实际修复/确认的代码</h2>
+<div class="card">
+<ul>
+  <li><code>backend/app/api/dashboards.py</code>：放行已发布看板删除、对齐创建者权限归属</li>
+  <li><code>backend/app/api/exports.py</code>：新增 json 格式，返回真实看板配置</li>
+  <li><code>frontend/src/views/dashboard/DashboardPage.tsx</code>：删除成功后正确收尾跳转；新增图表从已有图表推导真实字段</li>
+  <li><code>frontend/src/views/dashboard/DashboardOps.tsx</code>：导出 json 映射 + 触发浏览器下载 + 传 include_data</li>
+  <li><code>frontend/src/components/chat/ChatPanel.css / DashboardPage.css</code>：输入区贴底布局</li>
+</ul>
+</div>
+
+<h2>五、诚实说明与需人工复核项</h2>
+<div class="card">
+<b>环境稳定性（重要）</b>：
+本次测试发现后端/前端的服务进程会在<b>终端会话清理时以 ^C 杀掉（非崩溃）</b>。根因是服务进程挂在工具宿主终端的工作 job 下。已用 <code>Start-Process</code> 直拉 <code>python/uvicorn</code> 与 <code>node/vite</code>（本次存活验证通过）。<b>正式使用请用「一键启动.bat」开独立 cmd 窗口</b>，避免服务依赖单一终端会话——这也是你过去"每次测都是旧代码"最可能的外因。
+
+需要你花 1 分钟人工复核的两处（受自动化限制，我不把"未验证"说成"已验证"）：
+<ul>
+  <li><b>血缘页图谱的可视化渲染</b>：六层逻辑与数据已核验完整，仅请肉眼确认图谱线条/节点正常显示（浏览器自动化的 0×0 视口假象导致无法截图佐证）。</li>
+  <li><b>一次全新的"上传新文件 → 质检 → 生成看板 → 对话修改"完整旅程</b>：建议你手动拿任意一份业务 Excel 走一遍，确认从头到端体验（该流程强依赖 LLM，耗时长，未在本次自动驱动）。</li>
+</ul>
+</div>
+
+<div class="realfix">
+<b>建议下一步</b>：请用「一键启动.bat」重启前后端（确保加载最新代码）后，重点验证上面的"人工复核"两项。若这两项你确认无误，即可视为本次回归闭环。
+</div>
+
+</div>
+</body>
+</html>

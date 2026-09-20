@@ -1,0 +1,264 @@
+# S3 图表推荐规则 - M2-05
+# 字段组合 → 图表类型映射（借鉴 LIDA）
+
+# 规则优先级：从上到下匹配，第一个匹配的生效
+
+rules:
+  # ========== KPI类（单值指标）==========
+  - name: "总金额KPI"
+    priority: 100
+    condition:
+      field_types: ["number"]
+      keywords: ["金额", "总额", "total", "amount", "balance"]
+      aggregation: "sum"
+    chart:
+      type: "kpi"
+      title: "总{field}"
+      config:
+        prefix: "¥"
+        decimals: 2
+        show_change: true
+
+  - name: "总笔数KPI"
+    priority: 99
+    condition:
+      field_types: ["number"]
+      keywords: ["笔数", "数量", "count", "num"]
+      aggregation: "count"
+    chart:
+      type: "kpi"
+      title: "总{field}"
+      config:
+        show_change: true
+
+  # ========== 趋势类（时间序列）==========
+  - name: "时间趋势-单指标"
+    priority: 95
+    condition:
+      field_types: ["date", "number"]
+      date_count: 1
+      number_count: 1
+    chart:
+      type: "line"
+      title: "{number_field}趋势"
+      config:
+        x: "{date_field}"
+        y: "{number_field}"
+        smooth: true
+        area: false
+
+  - name: "时间趋势-多指标"
+    priority: 94
+    condition:
+      field_types: ["date", "number"]
+      date_count: 1
+      number_count:
+        min: 2
+        max: 5
+    chart:
+      type: "line"
+      title: "指标趋势对比"
+      config:
+        x: "{date_field}"
+        y: "{number_fields}"
+        smooth: true
+
+  # ========== 对比类（分类 vs 数值）==========
+  - name: "分类对比-横向"
+    priority: 90
+    condition:
+      field_types: ["category", "number"]
+      category_count: 1
+      number_count: 1
+      category_cardinality:
+        max: 20
+    chart:
+      type: "bar"
+      title: "{category_field} vs {number_field}"
+      config:
+        x: "{category_field}"
+        y: "{number_field}"
+        horizontal: true
+
+  - name: "分类对比-纵向"
+    priority: 89
+    condition:
+      field_types: ["category", "number"]
+      category_count: 1
+      number_count: 1
+      category_cardinality:
+        min: 5
+        max: 50
+    chart:
+      type: "bar"
+      title: "{category_field}对比"
+      config:
+        x: "{category_field}"
+        y: "{number_field}"
+        horizontal: false
+
+  - name: "地区对比-地图"
+    priority: 88
+    condition:
+      field_types: ["geo", "number"]
+      geo_count: 1
+      number_count: 1
+    chart:
+      type: "map"
+      title: "{geo_field}分布"
+      config:
+        geo_field: "{geo_field}"
+        value_field: "{number_field}"
+
+  # ========== 分布类（占比/结构）==========
+  - name: "占比分布-饼图"
+    priority: 85
+    condition:
+      field_types: ["category", "number"]
+      category_count: 1
+      number_count: 1
+      category_cardinality:
+        min: 2
+        max: 8
+    chart:
+      type: "pie"
+      title: "{category_field}占比"
+      config:
+        category: "{category_field}"
+        value: "{number_field}"
+        donut: false
+
+  - name: "占比分布-环形图"
+    priority: 84
+    condition:
+      field_types: ["category", "number"]
+      category_count: 1
+      number_count: 1
+      category_cardinality:
+        min: 2
+        max: 8
+    chart:
+      type: "pie"
+      title: "{category_field}占比"
+      config:
+        category: "{category_field}"
+        value: "{number_field}"
+        donut: true
+
+  - name: "分布直方图"
+    priority: 80
+    condition:
+      field_types: ["number"]
+      number_count: 1
+    chart:
+      type: "histogram"
+      title: "{number_field}分布"
+      config:
+        field: "{number_field}"
+        bins: 20
+
+  # ========== 关联类（双数值）==========
+  - name: "散点图-相关性"
+    priority: 75
+    condition:
+      field_types: ["number", "number"]
+      number_count: 2
+    chart:
+      type: "scatter"
+      title: "{number_field1} vs {number_field2}"
+      config:
+        x: "{number_field1}"
+        y: "{number_field2}"
+        size: null
+
+  - name: "热力图-矩阵"
+    priority: 74
+    condition:
+      field_types: ["category", "category", "number"]
+      category_count: 2
+      number_count: 1
+    chart:
+      type: "heatmap"
+      title: "{category_field1} x {category_field2}"
+      config:
+        x: "{category_field1}"
+        y: "{category_field2}"
+        value: "{number_field}"
+
+  # ========== 明细类（表格）==========
+  - name: "明细表-行级"
+    priority: 50
+    condition:
+      grain: "detail"
+    chart:
+      type: "table"
+      title: "数据明细"
+      config:
+        pagination: true
+        page_size: 20
+        sortable: true
+
+  - name: "汇总表-聚合"
+    priority: 49
+    condition:
+      grain: "aggregate"
+    chart:
+      type: "table"
+      title: "汇总数据"
+      config:
+        pagination: true
+        page_size: 50
+        show_total: true
+
+# ========== 兜底规则 ==========
+fallback:
+  # 当没有规则匹配时的默认选择
+  default_charts:
+    - type: "kpi"
+      title: "关键指标"
+      priority: 1
+    - type: "bar"
+      title: "数据对比"
+      priority: 2
+    - type: "pie"
+      title: "结构分布"
+      priority: 3
+    - type: "line"
+      title: "趋势分析"
+      priority: 4
+    - type: "table"
+      title: "数据明细"
+      priority: 5
+
+# ========== 粒度限制 ==========
+grain_constraints:
+  macro:
+    # 宏观粒度禁止的图表
+    forbidden:
+      - "table"  # 宏观指标不能出明细表
+    max_detail_level: "aggregate"
+  
+  aggregate:
+    # 汇总粒度限制
+    forbidden: []
+  
+  detail:
+    # 明细粒度无限制
+    forbidden: []
+
+# ========== 图表约束 ==========
+chart_constraints:
+  pie:
+    max_slices: 8  # 超过8个自动收敛Top7+其他
+    min_slices: 2
+  
+  bar:
+    max_bars: 20   # 超过20个自动收敛Top19+其他
+    horizontal_threshold: 10  # 超过10个建议横向
+  
+  line:
+    max_series: 5  # 最多5条线
+  
+  table:
+    max_columns: 15
+    default_page_size: 20

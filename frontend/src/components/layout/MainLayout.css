@@ -1,0 +1,304 @@
+.main-layout {
+  min-height: 100vh;
+}
+
+/* ===== 顶部水平导航栏 ===== */
+.main-header.top-nav {
+  background: var(--header-bg, rgba(255, 255, 255, 0.85));
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-color, #e8e8e8);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: 64px;
+  line-height: 64px;
+  gap: 16px;
+}
+
+[data-theme="dark"] .main-header.top-nav {
+  background: rgba(20, 20, 20, 0.85);
+  border-bottom-color: #303030;
+}
+
+/* 左侧：Logo + 水平菜单 */
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+/* Logo（顶部栏内联版） */
+.sider-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  padding-right: 16px;
+  border-right: 1px solid var(--border-color, #e8e8e8);
+  height: 64px;
+}
+
+[data-theme="dark"] .sider-logo {
+  border-right-color: #303030;
+}
+
+.logo-mark {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #1677ff, #722ed1);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 14px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.logo-text {
+  line-height: 1.2;
+}
+
+.logo-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-color, #262626);
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .logo-name {
+  color: #fff;
+}
+
+.logo-sub {
+  font-size: 11px;
+  color: var(--text-secondary, #8c8c8c);
+}
+
+/* 顶部水平菜单 */
+.main-menu.top-menu {
+  border-bottom: none;
+  background: transparent;
+  line-height: 46px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.main-menu.top-menu .ant-menu-item {
+  border-radius: 8px;
+  margin: 0 2px;
+  padding: 0 14px;
+  height: 46px;
+  line-height: 46px;
+}
+
+.main-menu.top-menu .ant-menu-item-selected {
+  background: rgba(22, 119, 255, 0.08);
+  color: #1677ff;
+}
+
+.main-menu.top-menu .ant-menu-item-selected::after {
+  display: none;
+}
+
+/* 右侧固定区 */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+/* ===== Token余量Chip — 紧凑模式：图标+百分比，Hover展开详情 ===== */
+.token-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(22, 119, 255, 0.08);
+  border: 1px solid rgba(22, 119, 255, 0.2);
+  border-radius: 20px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.3s;
+  flex-shrink: 0;
+  white-space: nowrap;
+  position: relative;
+}
+
+.token-chip:hover {
+  background: rgba(22, 119, 255, 0.12);
+}
+
+.token-chip.warning {
+  background: rgba(250, 173, 20, 0.1);
+  border-color: rgba(250, 173, 20, 0.3);
+}
+
+.token-chip.error {
+  background: rgba(255, 77, 79, 0.08);
+  border-color: rgba(255, 77, 79, 0.2);
+}
+
+.token-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* 常态只显示百分比数字 */
+.token-percent {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-color, #262626);
+  line-height: 1;
+}
+
+/* 悬停弹出详情卡片 */
+.token-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 200;
+  min-width: 220px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  padding: 14px 16px;
+}
+
+[data-theme="dark"] .token-popover {
+  background: #1f1f1f;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.token-chip:hover .token-popover {
+  display: block;
+}
+
+.token-popover-title {
+  font-size: 12px;
+  color: var(--text-secondary, #8c8c8c);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.token-popover-numbers {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.token-popover-item {
+  text-align: center;
+}
+
+.token-popover-item .value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-color, #262626);
+  display: block;
+}
+
+.token-popover-item .label {
+  font-size: 11px;
+  color: var(--text-secondary, #8c8c8c);
+  margin-top: 2px;
+}
+
+.token-popover-bar {
+  height: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.token-popover-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+  background: #52c41a;
+}
+
+.token-chip.warning .token-popover-fill {
+  background: #faad14;
+}
+
+.token-chip.error .token-popover-fill {
+  background: #ff4d4f;
+}
+
+.token-popover-note {
+  font-size: 11px;
+  color: var(--text-secondary, #8c8c8c);
+  text-align: center;
+}
+
+/* 主题按钮 */
+.theme-btn,
+.notify-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.theme-btn:hover,
+.notify-btn:hover {
+  background: var(--hover-bg, rgba(0, 0, 0, 0.04));
+}
+
+/* 头部右侧固定元素（通知/头像）不允许被压缩 */
+.main-header .header-right > .ant-badge,
+.main-header .header-right > .ant-dropdown-trigger,
+.main-header .notify-btn {
+  flex-shrink: 0;
+}
+
+/* ===== 内容区域（顶部栏让位后，整条横向空间留给看板） ===== */
+.main-content {
+  padding: 24px;
+  background: var(--bg-color, #f5f7fa);
+  min-height: calc(100vh - 64px);
+  /* 兜底：作为 flex 子项允许被压缩但保留最小可读宽度，避免塌成 0 */
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+[data-theme="dark"] .main-content {
+  background: #0e1016;
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 768px) {
+  .main-header.top-nav {
+    padding: 0 12px;
+  }
+  .sider-logo {
+    padding-right: 8px;
+  }
+  .logo-sub {
+    display: none;
+  }
+  .token-text {
+    display: none;
+  }
+  .token-bar {
+    width: 40px;
+  }
+}

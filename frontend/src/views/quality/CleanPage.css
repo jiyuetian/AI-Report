@@ -1,0 +1,72 @@
+.clean-page {
+  padding: 24px;
+}
+
+.clean-steps {
+  margin-bottom: 24px;
+}
+
+.strategy-card {
+  border-radius: 8px;
+}
+
+.strategy-item {
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.strategy-item:last-child {
+  border-bottom: none;
+}
+
+.strategy-header {
+  margin-bottom: 12px;
+}
+
+.progress-card {
+  border-radius: 8px;
+}
+
+.complete-card {
+  border-radius: 8px;
+}
+
+.complete-header {
+  text-align: center;
+  padding: 32px 0;
+}
+
+.complete-header h3 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+.action-bar {
+  margin-top: 24px;
+  text-align: right;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* 状态动画 */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.running-indicator {
+  animation: pulse 1s infinite;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .clean-page {
+    padding: 16px;
+  }
+  
+  .strategy-item .ant-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
