@@ -908,13 +908,45 @@ class ActionExecutor:
             or (context or {}).get("field_profiles")
             or []
         )
+        # 归一化：真实数据列名常带首尾空格/全角空格（Excel 导出极常见），
+        # 若不做归一化，" 抵押率 " 会被误判为 missing（假阴性）。
+        def _norm(s: Any) -> str:
+            return str(s or "").strip()
+
+        def _squash(s: Any) -> str:
+            """去掉所有半角/全角空格，用于兜底匹配。"""
+            return _norm(s).replace(" ", "").replace("\u3000", "")
+
+        def _lookup(field: Any) -> Optional[Dict[str, Any]]:
+            """先精确匹配，再去空格匹配，最后大小写不敏感匹配。"""
+            key = _norm(field)
+            if not key:
+                return None
+            return (
+                field_index.get(key)
+                or field_index.get(_squash(key))
+                or field_index.get(key.lower())
+                or field_index.get(_squash(key).lower())
+            )
+
         field_index: Dict[str, Dict[str, Any]] = {}
+        field_names: List[str] = []  # 仅存原名，供对外话术计数/举例，避免别名污染
         for fp in fps:
             if not isinstance(fp, dict):
                 continue
-            name = fp.get("name") or fp.get("column") or ""
-            if name:
-                field_index[str(name)] = fp
+            name = _norm(fp.get("name") or fp.get("column"))
+            if not name:
+                continue
+            field_names.append(name)
+            field_index[name] = fp
+            sq = _squash(name)
+            if sq != name:
+                field_index[sq] = fp
+            low = name.lower()
+            if low != name:
+                field_index[low] = fp
+                if _squash(low) != low:
+                    field_index[_squash(low)] = fp
 
         charts = (current_config or {}).get("charts") or []
 
@@ -944,7 +976,7 @@ class ActionExecutor:
                     continue
                 if c.get("chart_type") == "kpi":
                     continue
-                if any(f not in field_index for f in _chart_fields(c)):
+                if any(_lookup(f) is None for f in _chart_fields(c)):
                     matched = c
                     break
         if matched is None:
@@ -952,7 +984,8 @@ class ActionExecutor:
 
         # ====== 实查 3：逐字段判定 ======
         def _diagnose(field: str) -> str:
-            fp = field_index.get(field)
+            # 与建索引时同一套归一化：精确 → 去空格 → 大小写不敏感
+            fp = _lookup(field)
             if fp is None:
                 return "missing"
             try:
@@ -979,13 +1012,13 @@ class ActionExecutor:
             checked = {"checkable": False, "reason": "no_field_profiles"}
         elif not charts:
             message = (
-                f"收到对「{analysis_target}」的归因请求。已取到 {len(field_index)} 个真实字段，"
+                f"收到对「{analysis_target}」的归因请求。已取到 {len(field_names)} 个真实字段，"
                 "但当前看板没有图表配置，无法定位是哪张图有问题。请确认看板配置是否已保存。"
             )
             checked = {"checkable": True, "charts": 0}
         elif matched is None:
             message = (
-                f"收到对「{analysis_target}」的归因请求。已实查 {len(field_index)} 个字段、"
+                f"收到对「{analysis_target}」的归因请求。已实查 {len(field_names)} 个字段、"
                 f"{len(charts)} 张图表，但未找到与该目标关联的图表。请指明具体图表名或字段名。"
             )
             checked = {"checkable": True, "charts": len(charts), "matched": None}
@@ -997,7 +1030,7 @@ class ActionExecutor:
                 "checkable": True,
                 "chart": title,
                 "fields": verdicts,
-                "field_count": len(field_index),
+                "field_count": len(field_names),
             }
 
             if not fields:
@@ -1008,9 +1041,9 @@ class ActionExecutor:
                 emptied = [f for f, v in verdicts.items() if v == "emptied"]
                 highnull = [f for f, v in verdicts.items() if v == "high_null"]
                 if miss:
-                    sample = "、".join(list(field_index.keys())[:8])
+                    sample = "、".join(field_names[:8])
                     conclusion = (
-                        f"字段 {('、'.join(miss))} 不在主数据集的 {len(field_index)} 个字段里"
+                        f"字段 {('、'.join(miss))} 不在主数据集的 {len(field_names)} 个字段里"
                         f"（现有字段如：{sample}）。多文件看板时该字段可能来自另一份数据。"
                     )
                     next_step = "到看板里按字段匹配到对应数据集；或告诉我正确的字段名，我按真实字段重建这张图。"

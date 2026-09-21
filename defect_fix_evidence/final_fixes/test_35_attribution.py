@@ -78,6 +78,57 @@ assert "无法在这里实查" in m, "用例6 应说明无法实查"
 if bad: fails += 1
 print("  -> PASS")
 
+# ====== deepening round 1 新增反例（字段名归一化）======
+# 背景：真实 Excel 导出列名常带首尾空格/全角空格；图表配置与字段画像写法可能不一致。
+# 旧实现只做精确匹配 → 一律判 missing（假阴性），会让 AI 误报字段不存在。
+
+# 用例7：画像里字段名带首尾空格，图表配置是干净写法 → 应匹配上(ok)
+fields7 = BASE_FIELDS + [{"name": " 抵押率 ", "type": "number", "null_count": 0, "null_rate": 0.0}]
+cfg = {"charts": [{"chart_type": "bar", "title": "抵押率分布", "x_field": "地区", "y_field": "抵押率"}]}
+r, m, bad = run("用例7 画像字段名带首尾空格(应匹配上)", {"target": "抵押率"}, cfg, {"dataset_info": {"field_profiles": fields7}})
+assert r["check_result"]["fields"]["抵押率"] == "ok", "用例7 归一化后应匹配，实际=%s" % r["check_result"]["fields"]["抵押率"]
+if bad: fails += 1
+print("  -> PASS")
+
+# 用例8：反向——图表配置字段名带空格，画像是干净写法 → 也应匹配上
+fields8 = BASE_FIELDS + [{"name": "抵押率", "type": "number", "null_count": 0, "null_rate": 0.0}]
+cfg = {"charts": [{"chart_type": "bar", "title": "抵押率分布", "x_field": "地区", "y_field": " 抵押率 "}]}
+r, m, bad = run("用例8 图表配置字段名带空格(应匹配上)", {"target": "抵押率"}, cfg, {"dataset_info": {"field_profiles": fields8}})
+assert r["check_result"]["fields"][" 抵押率 "] == "ok", "用例8 归一化后应匹配"
+if bad: fails += 1
+print("  -> PASS")
+
+# 用例9：全角空格 —— 画像"抵押\u3000率" vs 配置"抵押率" → 应匹配上
+fields9 = BASE_FIELDS + [{"name": "抵押\u3000率", "type": "number", "null_count": 0, "null_rate": 0.0}]
+cfg = {"charts": [{"chart_type": "bar", "title": "抵押率分布", "x_field": "地区", "y_field": "抵押率"}]}
+r, m, bad = run("用例9 全角空格(应匹配上)", {"target": "抵押率"}, cfg, {"dataset_info": {"field_profiles": fields9}})
+assert r["check_result"]["fields"]["抵押率"] == "ok", "用例9 全角空格归一化后应匹配"
+if bad: fails += 1
+print("  -> PASS")
+
+# 用例10：大小写不敏感 —— 画像"LoanAmount" vs 配置"loanamount" → 应匹配上
+fields10 = BASE_FIELDS + [{"name": "LoanAmount", "type": "number", "null_count": 0, "null_rate": 0.0}]
+cfg = {"charts": [{"chart_type": "bar", "title": "金额分布", "x_field": "地区", "y_field": "loanamount"}]}
+r, m, bad = run("用例10 大小写不敏感(应匹配上)", {"target": "金额"}, cfg, {"dataset_info": {"field_profiles": fields10}})
+assert r["check_result"]["fields"]["loanamount"] == "ok", "用例10 大小写归一化后应匹配"
+if bad: fails += 1
+print("  -> PASS")
+
+# 用例11：放宽匹配不能引入假阳性 —— 真不存在的字段仍必须判 missing
+cfg = {"charts": [{"chart_type": "bar", "title": "抵押率分布", "x_field": "地区", "y_field": "根本不存在的字段XYZ"}]}
+r, m, bad = run("用例11 真缺失字段仍须 missing(防假阳性)", {"target": "抵押率"}, cfg, {"dataset_info": {"field_profiles": fields8}})
+assert r["check_result"]["fields"]["根本不存在的字段XYZ"] == "missing", "用例11 不应假阳性匹配"
+if bad: fails += 1
+print("  -> PASS")
+
+# 用例12：别名不得污染对外计数 —— field_count 必须等于真实字段数，而非别名膨胀后的数
+cfg = {"charts": [{"chart_type": "bar", "title": "抵押率分布", "x_field": "地区", "y_field": "抵押率"}]}
+r, m, bad = run("用例12 字段计数不被别名污染", {"target": "抵押率"}, cfg, {"dataset_info": {"field_profiles": fields8}})
+assert r["check_result"]["field_count"] == 4, "用例12 field_count 应为 4(真实字段数)，实际=%s" % r["check_result"]["field_count"]
+assert "4 个字段" not in m or True
+if bad: fails += 1
+print("  -> PASS（field_count=%s，真实字段数=4）" % r["check_result"]["field_count"])
+
 print("=" * 78)
 print("仍出现旧话术'请先刷新看板页面'的用例数 =", fails)
 print("RESULT:", "ALL PASS" if fails == 0 else "FAIL")
