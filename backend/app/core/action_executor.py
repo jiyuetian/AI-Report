@@ -881,11 +881,16 @@ class ActionExecutor:
         current_config: Dict[str, Any],
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """归因追问 - 诚实说明版（2026-09-17 修复）。
+        """归因追问 - 实查版（3.5 修复，2026-09-21）。
 
-        此前版本返回写死的假血缘（"华东地区担保申请量激增30%"等模拟数据）和
-        "归因分析完成，已追溯血缘关系"话术，但看板无任何实际变化，用户误以为在修复。
-        现改为明确告知能力边界与真实排查路径，不再编造归因结论。"""
+        演进史：
+        - 最初：返回写死的假血缘（"华东地区担保申请量激增30%"）+ "已追溯血缘关系"话术，纯编造。
+        - 2026-09-17：改为诚实罗列 3 条可能性 + "请先刷新看板页面"——不再编造，但仍未实查，
+          用户等于被告知"你自己去试"，体验上就是"AI 只会说刷新试试"。
+        - 本次：用 context 里的**真实字段画像** + 当前看板图表配置做实查，
+          直接给出"这张图到底卡在哪"的结论（字段缺失 / 清洗置空 / 高缺失率 / 字段正常），
+          无法实查时也明确说明原因，不再让用户盲试。
+        """
         analysis_target = params.get("target", "异常数据")
 
         # 仅记录归因请求轨迹，不伪装成已完成的分析
@@ -896,20 +901,145 @@ class ActionExecutor:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
         })
 
+        # ====== 实查 1：取真实字段画像（兼容两种 context 约定）======
+        # 消息链路(chat.py:533)用 dataset_info.field_profiles；会话链路(chat.py:359)用顶层 field_profiles
+        fps = (
+            ((context or {}).get("dataset_info") or {}).get("field_profiles")
+            or (context or {}).get("field_profiles")
+            or []
+        )
+        field_index: Dict[str, Dict[str, Any]] = {}
+        for fp in fps:
+            if not isinstance(fp, dict):
+                continue
+            name = fp.get("name") or fp.get("column") or ""
+            if name:
+                field_index[str(name)] = fp
+
+        charts = (current_config or {}).get("charts") or []
+
+        # ====== 实查 2：定位与目标相关的图表 ======
+        # 优先：标题或字段命中 target；否则退化为"字段有问题的那张图"；再否则取第一张非 KPI 图
+        def _chart_fields(c: Dict[str, Any]) -> List[str]:
+            keys = ("x_field", "y_field", "category_field", "value_field", "series_field")
+            out: List[str] = []
+            for k in keys:
+                v = c.get(k)
+                if v:
+                    out.append(str(v))
+            return out
+
+        matched = None
+        for c in charts:
+            if not isinstance(c, dict):
+                continue
+            hay = str(c.get("title") or "") + "|" + "|".join(_chart_fields(c))
+            if analysis_target and analysis_target in hay:
+                matched = c
+                break
+        if matched is None:
+            # 找字段缺失的那张（最可能是"无可绘制数据"的元凶）
+            for c in charts:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("chart_type") == "kpi":
+                    continue
+                if any(f not in field_index for f in _chart_fields(c)):
+                    matched = c
+                    break
+        if matched is None:
+            matched = next((c for c in charts if isinstance(c, dict) and c.get("chart_type") != "kpi"), None)
+
+        # ====== 实查 3：逐字段判定 ======
+        def _diagnose(field: str) -> str:
+            fp = field_index.get(field)
+            if fp is None:
+                return "missing"
+            try:
+                rate = float(fp.get("null_rate") or 0)
+            except (TypeError, ValueError):
+                rate = 0.0
+            if rate >= 0.999:
+                return "emptied"
+            if rate >= 0.5:
+                return "high_null"
+            return "ok"
+
+        checked: Dict[str, Any] = {}
+        message = ""
+        if not field_index:
+            # 无法实查：说明原因，而不是让用户盲刷新
+            message = (
+                f"收到对「{analysis_target}」的归因请求。当前会话没有携带该数据集的字段画像"
+                "（多文件看板或数据集未生成画像时会出现），因此我无法在这里实查字段是否存在——"
+                "这也是我不直接说「刷新试试」的原因：没有依据的结论没有价值。\n"
+                "请确认：① 打开看板时是否带上了 dataset；② 到「数据上传/质检」重新生成一次字段画像；"
+                "③ 若字段来自另一份数据，先在主数据集里确认该列是否存在。"
+            )
+            checked = {"checkable": False, "reason": "no_field_profiles"}
+        elif not charts:
+            message = (
+                f"收到对「{analysis_target}」的归因请求。已取到 {len(field_index)} 个真实字段，"
+                "但当前看板没有图表配置，无法定位是哪张图有问题。请确认看板配置是否已保存。"
+            )
+            checked = {"checkable": True, "charts": 0}
+        elif matched is None:
+            message = (
+                f"收到对「{analysis_target}」的归因请求。已实查 {len(field_index)} 个字段、"
+                f"{len(charts)} 张图表，但未找到与该目标关联的图表。请指明具体图表名或字段名。"
+            )
+            checked = {"checkable": True, "charts": len(charts), "matched": None}
+        else:
+            fields = _chart_fields(matched)
+            title = str(matched.get("title") or "未命名图表")
+            verdicts = {f: _diagnose(f) for f in fields}
+            checked = {
+                "checkable": True,
+                "chart": title,
+                "fields": verdicts,
+                "field_count": len(field_index),
+            }
+
+            if not fields:
+                conclusion = "这张图没有配置任何字段（无 x/y/分类字段），所以取不到数据。"
+                next_step = "请重新生成该图表，或在对话里直接说「按 <字段名> 画柱状图」让我重建。"
+            else:
+                miss = [f for f, v in verdicts.items() if v == "missing"]
+                emptied = [f for f, v in verdicts.items() if v == "emptied"]
+                highnull = [f for f, v in verdicts.items() if v == "high_null"]
+                if miss:
+                    sample = "、".join(list(field_index.keys())[:8])
+                    conclusion = (
+                        f"字段 {('、'.join(miss))} 不在主数据集的 {len(field_index)} 个字段里"
+                        f"（现有字段如：{sample}）。多文件看板时该字段可能来自另一份数据。"
+                    )
+                    next_step = "到看板里按字段匹配到对应数据集；或告诉我正确的字段名，我按真实字段重建这张图。"
+                elif emptied:
+                    conclusion = f"字段 {('、'.join(emptied))} 存在，但空值率 100%（质检清洗后被置空）。"
+                    next_step = "返回质检步骤撤销/调整该列的清洗规则，再重新取数。"
+                elif highnull:
+                    conclusion = f"字段 {('、'.join(highnull))} 存在但空值率偏高（>50%），可用数据点很少。"
+                    next_step = "可先按该字段做缺失值处理（填充/删除），再重画。"
+                else:
+                    conclusion = f"字段 {('、'.join(fields))} 都存在于数据集且非空——字段层面没问题。"
+                    next_step = "那更可能是图表配置/取数问题，建议重新生成看板；或告诉我目标，我按现有字段重建一张。"
+
+            message = (
+                f"收到对「{analysis_target}」的归因请求。需要说明：对话助手不能直接改已有图表，"
+                f"所以我不说「刷新试试」，而是先实查给你结论。\n"
+                f"已实查图表「{title}」：{conclusion}\n"
+                f"下一步：{next_step}"
+            )
+
         return {
             "success": True,
             "action_type": "attribution",
             "changes": [],
             "new_config": current_config,
             "render_updates": [],
-            "message": (
-                f"收到对「{analysis_target}」的归因请求。需要说明：当前对话助手不能直接修改图表。"
-                "如果图表显示\"无可绘制数据\"，常见原因是：① 该图表的字段不在主数据集中"
-                "（多文件看板时字段可能来自另一份数据，刷新看板后会自动按字段匹配对应数据集）；"
-                "② 该列在质检清洗后被置空，可返回质检步骤确认；"
-                "③ 图表配置的字段名与数据列名不一致，可重新生成看板。"
-                "请先刷新看板页面，若仍为空请按上述路径排查。"
-            ),
+            "message": message,
+            # 3.5：把实查结论结构化回传，便于前端/日志追踪（不再是一句"请刷新"）
+            "check_result": checked,
         }
     
     @staticmethod
