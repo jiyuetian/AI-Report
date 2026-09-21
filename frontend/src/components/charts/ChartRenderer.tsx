@@ -19,6 +19,8 @@ import {
 import './ChartRenderer.css';
 import { sanitizeChartOption } from './sanitizeChartOption';
 import ChartErrorBoundary from './ChartErrorBoundary';
+import { useChartTheme } from './ThemeProvider';
+import { themeChartOption } from './chartThemeApply';
 
 // 图表配置类型
 export interface ChartConfig {
@@ -65,6 +67,7 @@ const CHART_ICONS = {
 
 // Line图表
 const LineChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) => {
+  const { theme } = useChartTheme();
   const option = {
     title: { text: config.title, left: 'center', textStyle: { fontSize: 14 } },
     tooltip: { trigger: 'axis' },
@@ -85,11 +88,12 @@ const LineChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config})
       itemStyle: { color: '#1890ff' }
     }]
   };
-  return <ReactECharts option={sanitizeChartOption(option)} style={{ height: 300 }} />;
+  return <ReactECharts option={sanitizeChartOption(themeChartOption(option, theme))} style={{ height: 300 }} />;
 };
 
 // Bar图表
 const BarChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) => {
+  const { theme } = useChartTheme();
   const isHorizontal = config.config?.horizontal ?? false;
   const option = {
     title: { text: config.title, left: 'center', textStyle: { fontSize: 14 } },
@@ -108,11 +112,12 @@ const BarChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) 
       label: { show: true, position: 'top' }
     }]
   };
-  return <ReactECharts option={sanitizeChartOption(option)} style={{ height: 300 }} />;
+  return <ReactECharts option={sanitizeChartOption(themeChartOption(option, theme))} style={{ height: 300 }} />;
 };
 
 // Pie图表
 const PieChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) => {
+  const { theme } = useChartTheme();
   // 切片>8收敛到Top7+其他
   let processedData = data.map(d => ({
     name: d[config.category_field || 'category'],
@@ -142,11 +147,12 @@ const PieChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) 
       label: { formatter: '{b}: {d}%' }
     }]
   };
-  return <ReactECharts option={sanitizeChartOption(option)} style={{ height: 300 }} />;
+  return <ReactECharts option={sanitizeChartOption(themeChartOption(option, theme))} style={{ height: 300 }} />;
 };
 
 // Scatter图表
 const ScatterChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, config}) => {
+  const { theme } = useChartTheme();
   const option = {
     title: { text: config.title, left: 'center', textStyle: { fontSize: 14 } },
     tooltip: { 
@@ -163,7 +169,7 @@ const ScatterChart: React.FC<{data: any[]; config: ChartConfig}> = ({data, confi
       itemStyle: { color: '#1890ff' }
     }]
   };
-  return <ReactECharts option={sanitizeChartOption(option)} style={{ height: 300 }} />;
+  return <ReactECharts option={sanitizeChartOption(themeChartOption(option, theme))} style={{ height: 300 }} />;
 };
 
 // Table图表

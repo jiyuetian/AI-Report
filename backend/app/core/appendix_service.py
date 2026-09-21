@@ -127,11 +127,19 @@ async def _clean_log(sql_db: AsyncSession, dataset_ids: List[str]) -> List[Dict[
     issues = (await sql_db.execute(
         select(QualityIssue).where(QualityIssue.dataset_id.in_(dataset_ids))
     )).scalars().all()
-    # (dataset, field, type) -> 已修复影响行数
+    # (dataset, field, type) -> 该字段对应质检问题的"影响行数"
+    # 1.10 修复：原仅取 status=="done" 的 issue，但真实数据中 winsorize 规则对应的质检问题
+    # 多为 ignored/todo（affect_rows=2），导致 apply 阶段"影响行数"全为 None。
+    # 现改为覆盖 done/ignored/todo 三态，并取最大 affect_rows，避免同字段多状态重复计数。
+    # 这样附录 B「已清洗」行的 winsorize 也能显示真实影响行数（比"策略 winsorize"更具体）。
     rows_map = {}
     for iss in issues:
-        if iss.status == "done":
-            rows_map[(iss.dataset_id, iss.field_name, iss.type)] = iss.affect_rows
+        if iss.status in ("done", "ignored", "todo"):
+            key = (iss.dataset_id, iss.field_name, iss.type)
+            prev = rows_map.get(key)
+            cur = iss.affect_rows or 0
+            if prev is None or cur > prev:
+                rows_map[key] = iss.affect_rows
 
     log = []
     seq = 0

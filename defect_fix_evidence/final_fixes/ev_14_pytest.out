@@ -1,0 +1,21 @@
+STDOUT:/n============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\Asus009\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Asus009\Desktop\临时\ai大赛\AI-Report\backend
+plugins: anyio-4.13.0, hydra-core-1.3.3
+collecting ... collected 3 items
+
+tests/test_p2_multifield.py::test_layer1_no_truncation PASSED            [ 33%]
+tests/test_p2_multifield.py::test_multifield_extraction PASSED           [ 66%]
+tests/test_p2_multifield.py::test_compound_delete_add_regression PASSED  [100%]
+
+============================== warnings summary ===============================
+app\core\config.py:12
+  C:\Users\Asus009\Desktop\临时\ai大赛\AI-Report\backend\app\core\config.py:12: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 3 passed, 1 warning in 0.61s =========================
+
+STDERR:/n
+EXIT=0

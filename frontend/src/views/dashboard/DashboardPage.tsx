@@ -3,7 +3,7 @@
  * L1 KPI卡 + L2趋势/分布/对比 + L3明细 + 右侧血缘问答
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Row, Col, Card, Statistic, Badge, Spin, Empty, Table, message, Typography, Breadcrumb, Modal, Descriptions, Button, Space } from 'antd';
 import ReactECharts from 'echarts-for-react';
@@ -14,6 +14,8 @@ import ChatPanel from '../../components/chat/ChatPanel';
 import AppendixPanel from '../../components/appendix/AppendixPanel';
 import DashboardOps from './DashboardOps';
 import { sanitizeChartOption } from '../../components/charts/sanitizeChartOption';
+import { useChartTheme } from '../../components/charts/ThemeProvider';
+import { themeChartOption } from '../../components/charts/chartThemeApply';
 import ChartErrorBoundary from '../../components/charts/ChartErrorBoundary';
 
 // KPI卡片组件
@@ -297,6 +299,9 @@ const DashboardPage: React.FC = () => {
   const [primaryDs, setPrimaryDs] = useState<string>(''); // 主数据集ID（用于血缘跳转）
   const [detailChart, setDetailChart] = useState<ChartConfig | null>(null); // A03-02-01 图表详情子页
 
+  // 1.7 暗色模式：跟随全局主题，图表 option 注入明/暗令牌
+  const { theme } = useChartTheme();
+
   // 处理AI动作（对话调整）
   const handleAction = useCallback((action: any) => {
     if (!config || !urlId) return;
@@ -499,73 +504,74 @@ const DashboardPage: React.FC = () => {
     return mapping[typeName] || typeName;
   };
 
-  // 从后端加载看板详情（真实数据）
+  // 看板详情加载（初始 + 版本回退后重载共用）
+  // mountedRef 用于在异步请求返回后组件已卸载时避免对卸载组件 setState
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let mounted = true;
-    const loadDashboard = async () => {
-      try {
-        if (!urlId) {
-          setLoading(false);
-          return;
-        }
-        
-        // 1. 加载看板配置（标题、图表列表）
-        const dashboardRes = await http.get<any>(`/dashboards/${urlId}`);
-        if (dashboardRes?.name) {
-          setTitle(dashboardRes.name);
-        }
-        if (dashboardRes?.config) {
-          setConfig(dashboardRes.config);
-        }
-        
-        // 2. 主数据集ID（详情接口已返回；若缺失则回退到 datasets/dataset_ids）
-        const primaryDs =
-          dashboardRes.primary_dataset_id ||
-          dashboardRes.dataset_ids?.[0] ||
-          dashboardRes.datasets?.[0]?.id;
-        if (primaryDs) setPrimaryDs(primaryDs);
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
-        // 2b. 多数据集：并行拉取所有数据集的图表数据。
-        // 修复（2026-09-17）：此前只取主数据集，跨数据集图表（如"单位所属行业分布"字段在
-        // 另一份画像表里）拿主数据集取数全为 undefined → 空图。现全量拉取、按字段归属选数据集。
-        const allDsIds: string[] = Array.from(new Set(
-          [
-            ...(dashboardRes.dataset_ids || []),
-            ...((dashboardRes.datasets || []).map((d: any) => d?.id).filter(Boolean)),
-            ...(primaryDs ? [primaryDs] : []),
-          ].filter(Boolean)
-        ));
-        const dsMap: Record<string, any> = {};
-        if (allDsIds.length > 0) {
-          const results = await Promise.all(
-            allDsIds.map(id => http.get<any>(`/datasets/${id}/chart-data`).catch(() => null))
-          );
-          allDsIds.forEach((id, i) => { if (results[i]) dsMap[id] = results[i]; });
-          if (mounted) setDsDataMap(dsMap);
-        }
+  const reloadConfig = useCallback(async () => {
+    if (!urlId) {
+      setLoading(false);
+      return;
+    }
+    try {
+      // 1. 加载看板配置（标题、图表列表）
+      const dashboardRes = await http.get<any>(`/dashboards/${urlId}`);
+      if (!mountedRef.current) return;
+      if (dashboardRes?.name) setTitle(dashboardRes.name);
+      if (dashboardRes?.config) setConfig(dashboardRes.config);
 
-        // 3. 主数据集图表数据（优先复用上面已拉取的结果）
-        if (primaryDs && dsMap[primaryDs]) {
-          setChartData(dsMap[primaryDs]);
-        } else if (primaryDs) {
-          try {
-            const res2 = await http.get<any>(`/datasets/${primaryDs}/chart-data`);
-            if (mounted && res2) setChartData(res2);
-          } catch { /* 保持 null，渲染层兜底 */ }
-        }
-      } catch (err: any) {
-        if (mounted) {
-          message.warning(`看板详情加载失败: ${err?.message || '网络错误'}，将展示默认看板`);
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+      // 2. 主数据集ID（详情接口已返回；若缺失则回退到 datasets/dataset_ids）
+      const primaryDs =
+        dashboardRes.primary_dataset_id ||
+        dashboardRes.dataset_ids?.[0] ||
+        dashboardRes.datasets?.[0]?.id;
+      if (primaryDs) setPrimaryDs(primaryDs);
+
+      // 2b. 多数据集：并行拉取所有数据集的图表数据。
+      // 修复（2026-09-17）：此前只取主数据集，跨数据集图表（如"单位所属行业分布"字段在
+      // 另一份画像表里）拿主数据集取数全为 undefined → 空图。现全量拉取、按字段归属选数据集。
+      const allDsIds: string[] = Array.from(new Set(
+        [
+          ...(dashboardRes.dataset_ids || []),
+          ...((dashboardRes.datasets || []).map((d: any) => d?.id).filter(Boolean)),
+          ...(primaryDs ? [primaryDs] : []),
+        ].filter(Boolean)
+      ));
+      const dsMap: Record<string, any> = {};
+      if (allDsIds.length > 0) {
+        const results = await Promise.all(
+          allDsIds.map(id => http.get<any>(`/datasets/${id}/chart-data`).catch(() => null))
+        );
+        allDsIds.forEach((id, i) => { if (results[i]) dsMap[id] = results[i]; });
+        if (mountedRef.current) setDsDataMap(dsMap);
       }
-    };
-    loadDashboard();
-    return () => { mounted = false; };
+
+      // 3. 主数据集图表数据（优先复用上面已拉取的结果）
+      if (primaryDs && dsMap[primaryDs]) {
+        if (mountedRef.current) setChartData(dsMap[primaryDs]);
+      } else if (primaryDs) {
+        try {
+          const res2 = await http.get<any>(`/datasets/${primaryDs}/chart-data`);
+          if (mountedRef.current && res2) setChartData(res2);
+        } catch { /* 保持 null，渲染层兜底 */ }
+      }
+    } catch (err: any) {
+      if (mountedRef.current) {
+        message.warning(`看板详情加载失败: ${err?.message || '网络错误'}，将展示默认看板`);
+      }
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
   }, [urlId]);
+
+  // 初始加载看板详情
+  useEffect(() => {
+    reloadConfig();
+  }, [reloadConfig]);
 
   // 有效图表列表：在LLM编排结果基础上，自动补足"贷款类型/地区/担保类型"分布图（如缺失）
   const effectiveCharts = useMemo(() => {
@@ -1148,7 +1154,7 @@ const DashboardPage: React.FC = () => {
                 >
                   {ok ? (
                     <ChartErrorBoundary title={chart.title}>
-                      <ReactECharts option={sanitizeChartOption(option)} style={{ height: 300 }} notMerge={true} lazyUpdate={true} />
+                      <ReactECharts option={sanitizeChartOption(themeChartOption(option, theme))} style={{ height: 300 }} notMerge={true} lazyUpdate={true} />
                     </ChartErrorBoundary>
                   ) : (
                     <Empty
@@ -1282,6 +1288,8 @@ const DashboardPage: React.FC = () => {
           title={title}
           generationMode={genMode}
           onRename={setTitle}
+          // 问题3修复：版本回退成功后由 DashboardOps 触发，重载看板详情使界面立即生效
+          onConfigReload={reloadConfig}
           // onDelete 由 DashboardOps 内部在删除成功后跳转到 /dashboards；
           // 这里不再置空 config，避免跳转前闪屏"看板不存在"
           onDelete={() => {}}
@@ -1325,7 +1333,7 @@ const DashboardPage: React.FC = () => {
           <>
             {detailChart.chart_type !== 'kpi' && detailChart.chart_type !== 'table' ? (
               <ChartErrorBoundary title={detailChart.title}>
-                <ReactECharts option={sanitizeChartOption(generateChartOption(detailChart))} style={{ height: 420 }} notMerge={true} lazyUpdate={true} />
+                <ReactECharts option={sanitizeChartOption(themeChartOption(generateChartOption(detailChart), theme))} style={{ height: 420 }} notMerge={true} lazyUpdate={true} />
               </ChartErrorBoundary>
             ) : (
               <Empty description={detailChart.chart_type === 'kpi' ? 'KPI 指标卡，无独立图表' : '明细表，无独立图表'} />

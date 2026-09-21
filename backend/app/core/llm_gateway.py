@@ -77,7 +77,7 @@ except Exception:
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-MAX_RETRIES = 2  # 每 key 内瞬时重试 2 次（初始 1 + 重试 2 = 3 次）；外层再逐 provider 切换
+MAX_RETRIES = 1  # 1.2 fail-fast：每 key 仅初始+1次重试即切下一 key（原 2 → 连试3次太慢）；外层再逐 provider 切换
 
 
 def _mask(text: str) -> str:
@@ -182,11 +182,22 @@ class RateLimiter:
     
     def __init__(self, max_concurrent: int = CONCURRENCY_LIMIT):
         self.max_concurrent = max_concurrent
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        # 1.3 修复：信号量改为惰性、按运行中的 loop 创建（见 _loop_sem），
+        # 禁止在模块导入期绑定到旧 loop（否则跨 loop/已关闭 loop 抛 "Event loop is closed"）
+        self._loop_semaphores: Dict = {}
         self.queue_key = "llm:request_queue"
         self.running_key = "llm:running_count"
         self._redis_available = None
         self._local_count = 0
+
+    def _loop_sem(self) -> "asyncio.Semaphore":
+        """惰性返回绑定到当前运行 loop 的信号量（1.3 修复 Event loop is closed）。"""
+        loop = asyncio.get_running_loop()
+        sem = self._loop_semaphores.get(id(loop))
+        if sem is None:
+            sem = asyncio.Semaphore(self.max_concurrent)
+            self._loop_semaphores[id(loop)] = sem
+        return sem
     
     async def _check_redis(self) -> bool:
         """检查Redis是否可用"""
@@ -215,7 +226,7 @@ class RateLimiter:
                 print("[限流] Redis异常，降级为本地信号量")
         
         # 本地信号量降级
-        await self.semaphore.acquire()
+        await self._loop_sem().acquire()
         self._local_count += 1
         return True
     
@@ -245,7 +256,7 @@ class RateLimiter:
             except Exception:
                 self._redis_available = False
         
-        self.semaphore.release()
+        self._loop_sem().release()
         self._local_count -= 1
     
     async def get_queue_status(self) -> Dict:
@@ -295,7 +306,11 @@ class LLMGateway:
         # providers: provider 列表（每项 {name,base_url,api_key,model,...}）。
         # 缺省则从 config.get_llm_provider_list() 读取（含单 key 回退）。
         self.providers = providers if providers is not None else get_llm_provider_list()
-        self._clients: Dict[str, httpx.AsyncClient] = {}  # name -> client 惰性池
+        # 1.3 修复：client 缓存按 (loop_id, name) 分键。
+        # httpx.AsyncClient 绑定创建时的 loop；action_executor/intent_classifier 用
+        # asyncio.run 在工作线程跑 chat_complete 时是新 loop，复用旧 loop 的 client 会抛
+        # "Event loop is closed"。按运行 loop 分键可同 loop 复用连接池、跨 loop 自动新建。
+        self._clients: Dict = {}
         self.mock_mode = not self.providers  # 无可用 provider → Mock 模式
 
     def _build_client(self, prov: Dict) -> httpx.AsyncClient:
@@ -312,9 +327,13 @@ class LLMGateway:
 
     def _get_client(self, prov: Dict) -> httpx.AsyncClient:
         name = prov.get("name", "default")
-        if name not in self._clients:
-            self._clients[name] = self._build_client(prov)
-        return self._clients[name]
+        loop = asyncio.get_running_loop()
+        key = (id(loop), name)
+        client = self._clients.get(key)
+        if client is None or client.is_closed:
+            client = self._build_client(prov)
+            self._clients[key] = client
+        return client
     
     async def chat_complete(
         self,
@@ -427,7 +446,7 @@ class LLMGateway:
                         last_error = f"LLM超时(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
                         if retry < MAX_RETRIES:
-                            await asyncio.sleep(2 ** retry)  # 指数退避
+                            await asyncio.sleep(min(2 ** retry, 0.5))  # 1.2 退避封顶0.5s（fail-fast 切key）
                             continue
                         key_exhausted = True
                         break
@@ -435,7 +454,7 @@ class LLMGateway:
                         last_error = f"LLM网络错误(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
                         if retry < MAX_RETRIES:
-                            await asyncio.sleep(2 ** retry)
+                            await asyncio.sleep(min(2 ** retry, 0.5))  # 1.2 退避封顶0.5s（fail-fast 切key）
                             continue
                         key_exhausted = True
                         break

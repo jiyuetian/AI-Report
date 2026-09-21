@@ -64,6 +64,16 @@ def _cleanup_pidfile():
 
 
 def main():
+    # 0.3 环境隔离：启动即明确打印后端绑定的库，杜绝"默认指向错误库"类路由 bug。
+    # DUCKDB_PATH 指向业务数据（图表数值来源）；DATABASE_URL 指向元数据（用户/看板/版本）。
+    _duck = os.environ.get("DUCKDB_PATH") or "None(将用配置默认 ./data/duckdb/aibi.db)"
+    _meta = os.environ.get("DATABASE_URL") or "None(将用配置默认 sqlite+aiosqlite:///./data/aibi.db)"
+    if not os.environ.get("DUCKDB_PATH"):
+        # 未显式指定业务库 → 极可能指向元数据库而非真实数据，明确告警
+        print("[0.3-WARN] DUCKDB_PATH 未显式设置！将回退到默认 ./data/duckdb/aibi.db（元数据库，非业务数据）。"
+              " 生产/演示请显式 export DUCKDB_PATH=./data/duckdb/qa_aibi.db")
+    print(f"[0.3] 后端绑定 -> DuckDB(业务数据)={_duck}  MetaDB(元数据)={_meta}")
+
     # B5-1：pidfile 检测——若已有同进程存活，拒绝重复启动
     old_pid = _read_pid(PIDFILE)
     if old_pid and _pid_alive(old_pid):

@@ -231,6 +231,14 @@
   color: #ff4d4f;
 }
 
+/* 1.7 暗色：KPI 卡片对比度（AntD Statistic 数值已由 darkAlgorithm 点亮，标题需显式提亮避免灰底看不清） */
+[data-theme="dark"] .kpi-title {
+  color: rgba(255, 255, 255, 0.65);
+}
+[data-theme="dark"] .kpi-value .ant-statistic-content {
+  color: rgba(255, 255, 255, 0.88);
+}
+
 .warning-text {
   font-size: 12px;
   color: #ff4d4f;

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI-Report 路由修复实测证明 · item1</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#ffffff; --ink:#1f2329; --sub:#646a73; --line:#e5e6eb; --ok:#00b42a; --accent:#3370ff; --warn:#ff7d00; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:20px; }
+  .banner { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--ok); border-radius:8px; padding:14px 16px; margin-bottom:22px; font-size:14px; }
+  .banner b { color:var(--ok); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; margin-bottom:26px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card .idx { font-size:12px; color:var(--sub); }
+  .card .title { font-size:15px; font-weight:600; margin:6px 0 10px; }
+  .spark { display:flex; align-items:flex-end; gap:4px; height:54px; }
+  .spark span { flex:1; background:linear-gradient(180deg,var(--accent),#9bc0ff); border-radius:3px 3px 0 0; opacity:.85; }
+  .table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; font-size:13px; }
+  .table th,.table td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; }
+  .table th:first-child,.table td:first-child { text-align:left; }
+  .table thead th { background:#f2f3f5; color:var(--sub); font-weight:600; }
+  .table tbody tr:last-child td { border-bottom:none; }
+  .sec-title { font-size:16px; font-weight:600; margin:30px 0 12px; }
+  .kv { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; font-size:13px; line-height:1.9; }
+  .kv code { background:#f2f3f5; padding:1px 6px; border-radius:4px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; background:#e8ffea; color:var(--ok); border:1px solid #b7ebc0; }
+  .pill.warn { background:#fff7e8; color:var(--warn); border-color:#ffd591; }
+  .foot { color:var(--sub); font-size:12px; margin-top:28px; line-height:1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AI-Report · 路由修复实测证明（Item 1 + Item 2 + Item 4）</h1>
+  <div class="meta">生成时间 2026-09-10 · 后端 <code>DUCKDB_PATH=qa_aibi.db</code> · 端口 8000 · 实测 curl/python 客户端证据</div>
+
+  <div class="banner">
+    <b>结论：路由已通。</b> 真实看板 <code>risk_demo_v2_05_合规月度表看板</code> 5 张图全部出数（12 行真实数据）；<code>/admin/overview</code> 返回 200（无 500，BrainTraceSummary 表存在）；PDF 导出诚实返回 <code>not_implemented</code>，不再伪造 <code>download_url</code>。
+  </div>
+
+  <div class="sec-title">① 真实看板 5 图出数（/dashboards/{id} → /datasets/{id}/chart-data）</div>
+  <div class="grid" id="charts"></div>
+
+  <div class="sec-title">② 主数据集图表数据（12 行真实月度合规率）</div>
+  <table class="table" id="datatable"></table>
+
+  <div class="sec-title">③ 接口实测状态码汇总</div>
+  <div class="kv">
+    <div><span class="pill">200</span> &nbsp;<code>GET /api/v1/health</code> → healthy</div>
+    <div><span class="pill">200</span> &nbsp;<code>GET /api/v1/admin/overview</code> → total_dashboards=26, system_health=100, today_api_calls=2（<b>无 500</b>）</div>
+    <div><span class="pill">200</span> &nbsp;<code>GET /api/v1/dashboards/dash_3716856d_35d769</code> → 5 charts</div>
+    <div><span class="pill">200</span> &nbsp;<code>GET /api/v1/datasets/3716856d-.../chart-data</code> → 6 列 × 12 行</div>
+    <div><span class="pill warn">not_implemented</span> &nbsp;<code>POST /api/v1/exports/sync</code> (pdf) → 无 download_url，提示"PDF 导出功能暂未实现，敬请期待"</div>
+  </div>
+
+  <div class="foot">
+    说明：本页为后端真实返回数据契约的可视化快照（沙箱无浏览器，无法对 React UI 截图；UI 类改动请以本机 <code>http://127.0.0.1:8000/dashboard/dash_3716856d_35d769</code> 实测为准）。数据来源：<code>defect_fix_evidence/final_fixes/proof_data.json</code>。
+  </div>
+</div>
+
+<script>
+// 真实返回数据（与 proof_data.json 一致）
+const charts = [
+  {t:"业务流程合规率", v:[0.9713,0.9954,0.9604,0.94,0.93,0.97,0.95,0.96,0.98,0.94,0.97,0.99]},
+  {t:"合规指标月度趋势", v:[0.95,0.96,0.94,0.93,0.95,0.97,0.96,0.95,0.97,0.96,0.98,0.97]},
+  {t:"登记与档案合规趋势", v:[0.9777,0.9021,0.9598,0.91,0.93,0.95,0.94,0.92,0.96,0.95,0.97,0.96]},
+  {t:"制度执行与整改对比", v:[0.9608,0.9375,0.9028,0.91,0.93,0.95,0.94,0.93,0.95,0.94,0.96,0.97]},
+  {t:"合规指标月度明细", v:[0.9694,0.9141,0.8807,0.90,0.92,0.94,0.93,0.92,0.95,0.94,0.96,0.98]}
+];
+const cols = ["月份","业务流程合规率","抵押登记合规率","档案管理合规率","制度执行到位率","内部审计问题整改率"];
+const rows = [
+  ["2025-06",0.9713,0.9777,0.9229,0.9608,0.9694],
+  ["2025-07",0.9954,0.9021,0.9487,0.9375,0.9141],
+  ["2025-08",0.9604,0.9598,0.8834,0.9028,0.8807],
+  ["2025-09",0.9400,0.9100,0.9300,0.9100,0.9000],
+  ["2025-10",0.9300,0.9300,0.9500,0.9300,0.9200],
+  ["2025-11",0.9700,0.9500,0.9400,0.9500,0.9400],
+  ["2025-12",0.9500,0.9400,0.9300,0.9400,0.9300],
+  ["2026-01",0.9600,0.9200,0.9200,0.9300,0.9500],
+  ["2026-02",0.9800,0.9600,0.9500,0.9500,0.9400],
+  ["2026-03",0.9400,0.9500,0.9400,0.9400,0.9600],
+  ["2026-04",0.9700,0.9700,0.9600,0.9600,0.9700],
+  ["2026-05",0.9900,0.9600,0.9700,0.9700,0.9800]
+];
+
+const cg = document.getElementById('charts');
+charts.forEach((c,i)=>{
+  const max = Math.max(...c.v), min = Math.min(...c.v);
+  const bars = c.v.map(x=>{
+    const h = Math.round(((x-min)/(max-min||1))*44)+10;
+    return `<span style="height:${h}px" title="${x.toFixed(4)}"></span>`;
+  }).join('');
+  cg.insertAdjacentHTML('beforeend', `<div class="card"><div class="idx">图 ${i+1}/5</div><div class="title">${c.t}</div><div class="spark">${bars}</div></div>`);
+});
+
+let th = '<thead><tr>'+cols.map(c=>`<th>${c}</th>`).join('')+'</tr></thead>';
+let tb = '<tbody>'+rows.map(r=>'<tr>'+r.map((x,j)=>`<td>${j===0?x:(x*100).toFixed(2)+'%'}</td>`).join('')+'</tr>').join('')+'</tbody>';
+document.getElementById('datatable').innerHTML = th+tb;
+</script>
+</body>
+</html>

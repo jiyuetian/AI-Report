@@ -1,85 +1,56 @@
-# OPEN QUESTIONS
+# OPEN_QUESTIONS.md — 待拍板事项
 
-> 本文件记录 AI-Report 项目待澄清/待验证的关键问题。
-> 注：原项目无此文件，2026-09-20 由验证流程新建，先沉淀 #3（AI 成功路径验证）。#1/#2 如有待补，请在此追加。
-
----
-
-## #3 AI 成功路径（绿标）在 nemotron 下是否真实验证通过？
-
-**结论：❌ 未通过。绿标（generated_by=llm / ai_participated=true / generation_mode=ai）在 NVIDIA nemotron-3.5-lightning 下 6 次真跑全部未点亮，S3 一律退回规则兜底（rule_engine）。**
-
-### 验证时间与环境
-- 时间：2026-09-20（实测），首次排查 2026-09-10
-- 后端：本地 `backend/`（SQLite，无 Redis，代理出口 7897/Clash）
-- Provider：NVIDIA `integrate.api.nvidia.com`，模型 `nvidia/nemotron-3.5-lightning-30b-a3b`，key 为用户已有 `nvapi-`
-- 数据集：`verify_dataset.csv`（区域销售业绩，24 行 × 8 列，dataset_id `d9fcd451-1468-4b26-8ff8-2a171ace0a1b`）
-- 触发：注册用户 `aibiverify` 登录 → 上传 → 建数据集 → `POST /api/v1/brain/run`
-
-### 6 次 run 关键字段（终态均为 completed，但 generated_by 全为 rule_engine）
-| run_id | generated_by | ai_participated | generation_mode | S3 阶段耗时 | 说明 |
-|---|---|---|---|---|---|
-| 4edb69da | rule_engine | false | rule | ~111s(等用户选择超时) | 入口探针单次失败→规则兜底 |
-| 62d37707 | rule_engine | false | rule | ~111s | 同上 |
-| 1836b0d8 | rule_engine | false | rule | ~111s | 同上（纯碰探针过关，未过） |
-| 75c4efd0 | rule_engine | false | rule | 141s(探针重试后仍败) | 探针重试修复前 |
-| 059ce246 | rule_engine | false | rule | 50s | 探针重试修复后，探针过关，但 S3 真实 LLM 调用超时 |
-| 74c61899 | rule_engine | false | rule | 171s(撞 180s 包裹) | 超时放宽后，仍超时兜底 |
-
-### 根因（两层，均已定位并实测）
-1. **入口探针 fail-closed 单次无重试（已修复）**
-   - 原 `_check_llm_reachable()` 单次 httpx 调用，撞 NVIDIA ~30% 的 15s 超时即判不可达 → S3 整条降级规则。
-   - 修复：`health.py` 加 3 次重试 + 2s 退避（`attempts` 参数，health 端点用 1 保持快、运行期用 3）。run #5 起入口探针已能过关（不再卡 111s）。
-2. **S3 真实 LLM 生成调用 nemotron 超时（未解决，模型不适配）**
-   - `generate_charts_with_llm` → `llm_chat`(json_mode) → httpx 调 nemotron，日志明确 `LLM超时 (attempt 1/2)` → 重试仍超时 → 降级响应 → `rule_engine`。
-   - S1 主题识别（`detect_theme`, use_llm=True）同样超时兜底。
-   - 即便把 `BRAIN_S3_LLM_TIMEOUT` 50→180s、`TIMEOUT_SECONDS` 60→120s（config.py / llm_gateway.py），run #6 S3 仍跑满 171s 被切断兜底——**nemotron 对该重型图表 JSON 请求在 180s 内未返回**。
-   - 对照：同一 key 对小请求（probe / `quick_nvidia.py`）响应 1–3s、200 OK。即 **nemotron 小请求快、重型生成任务超时/被限流**，在本环境（推理模型 + 7897 代理出口 + 会话内密集调用触发 40/min 限流）跑不通 S3 生成路径。
-
-### 已落地改动（均未回滚，属合理放宽，但未能点亮绿标）
-- `backend/app/api/health.py`：`_check_llm_reachable` 加 3 次重试 + 2s 退避；health 端点 `attempts=1`。
-- `backend/app/core/config.py`：`BRAIN_S3_LLM_TIMEOUT` 50.0 → 180.0。
-- `backend/app/core/llm_gateway.py`：`TIMEOUT_SECONDS` 60 → 120。
-- `backend/run_backend.py`：启动早期注入活代理 7897（覆盖工具锁定的不稳定 59106），让后端 Python 进程能访问外网 LLM。
-
-### 验证产物（实测证据，落盘于 WorkBuddy 会话目录）
-- 探针/代理：`health_loop.txt`（连续 10 次 llm_reachable 闪烁）、`proxy_diag2.txt`（直连/7897/59106 各 5 次，401 证明网络通）、`nvidia_probe.txt`（run#6 前 2/3 可达，1–3s）
-- 各 run 终态：`s3_status2~6.txt`（KEY FIELDS 段）、`s3_run*.txt`（RUN_ID）
-- 后端日志：`backend_run_v3/v4/v5.log`、`llm_lines.txt`/`llm_v5.txt`/`s3_llm_log2.txt`（含 `LLM超时 (attempt 1/2)`、`调用失败，已重试1次，使用降级响应`）
-
-### 下一步建议
-- **Plan B（商汤）应启用**：用户原定 nemotron 主用、商汤备选。nemotron 不适配 S3 重型生成，建议提供商汤 key 切换验证绿标（商汤非推理模型、延迟更低，S3 成功率更高）。
-- 若坚持用 NVIDIA：换更小/更快的 NVIDIA 模型（非 reasoning），或分离代理直连降低延迟，并严格控调用频率避开 40/min 限流；但 路演可靠性存疑。
-- 截图路径：无绿标看板截图（绿标从未点亮，前端无需截图）。
-
-> 状态：BLOCKED on provider 选型。绿标验证需换可用模型（商汤 Plan B）方能闭环。
+> 凡涉及"删数据 / 改语义 / 引新依赖 / 架构改动"，停下记录于此，等你拍板后再动。
+> 更新规则：拍板后把该项移到 PROJECT_STATUS.md 的对应项，并划掉。
 
 ---
 
-## #4 P0 安全债修复（G1–G4）遗留与待跟进项
+## Q1. 1.3 Event loop is closed — 真凶假设 + 路演前必须本机验证
+- **现象**：`_start.log` 报 `[LLM] LLM未知错误: Event loop is closed`。
+- **已做（防御性 hardening，非根治）**：httpx client 按 `(loop_id,name)` 分键、信号量 per-loop、db 导入独立 loop。
+  本沙箱（Py3.12 + httpx0.28.1）这些库本身已 loop-lazy，**无法在此复现原错误串**，故无法 100% 确认已消除。
+- **⚠️ 真凶假设（架构反模式）**：`action_executor.py:653` / `intent_classifier.py:240,656` 用
+  `ex.submit(lambda: asyncio.run(llm_chat(...)))` 在**线程池**跑整套异步 LLM 调用。
+  线程池内 `asyncio.run` 创建的是工作线程局部 loop，而 httpx.AsyncClient 等若在主线程旧 loop 上绑定过，
+  跨 loop 复用即抛 "Event loop is closed"。这是最可能的真凶。
+- **待拍板**：是否做深度重构（改为在主 loop `run_coroutine_threadsafe` 或调用方直接 `await`，需确认 async 上下文）？属架构改动，工作量中。
+- **🔴 路演前必做**：在你本机真实跑一次 LLM 对话/生成，确认 `[LLM] LLM未知错误: Event loop is closed` 不再出现；
+  若仍出现，再启动深度重构（不要带这个 bug 上路演）。沙箱无法替你验证。
 
-> 2026-09-21 完成 G1–G4 四类 P0 修复（分支 `p0-security-fixes`，基线 `f42dcc6`）。以下为修复过程中**仅登记、未顺手改**的问题与新发现，供后续迭代。
+## Q2. 1.8 版本回退语义
+- 现状：回退只还原 `dashboard.config`（图表结构），图表数值来自 DuckDB 不还原 → 用户觉得"没生效"。
+- 待拍板：A) 仅让"结构回退"可见即可（低成本，改前端提示+刷新）；B) 把 DuckDB 数据也纳入版本（高工作量，需版本化数据集快照）。
+- ✅ **已拍板（2026-09-21）**：路演前只做 A（一行级提示，已落地 DashboardOps.tsx："已回退到 X：图表结构已还原（数值来自数据源故不变）"）；B 数据快照语义放路演后。见 PROJECT_STATUS 1.8。
 
-### 4.1 鉴权规范化残留（G1/G3 范畴外，建议下一轮统一排查）
-- `backend/app/api/tokens.py`、`token_applications.py`、`chat.py` 中部分端点仍使用 `current_user: str = "anonymous"` 默认匿名（如 `tokens.py` L46/L73/L94/L163 附近）。G3 已修复 `shares/my/list`、`exports/my/list` 的匿名默认，但其余端点未动——属鉴权语义遗留，需后续统一收敛为「无 token 即 401」。
-- `security.py` 的 `get_current_user` 在非 Bearer 场景返回 401；但个别端点签名仍保留 `current_user` 缺省值，易造成「匿名可访问」误判。建议全局搜索 `= "anonymous"` 与 `= "anonymous"` 默认参数，统一移除。
+## Q3. 1.9 导出 PDF/Excel/PNG 真实现
+- 现状：上一轮仅做"诚实 not_implemented"占位（未生成文件）。
+- 待拍板：引入纯 Py 依赖 reportlab(PDF) / openpyxl(Excel) / matplotlib(PNG) 真生成并落 ExportTask？
+  三项均纯 Py、无外部服务，风险低，但属"引新依赖"需你确认。
+- ✅ **已拍板（2026-09-21）**：路演前只做 PDF。采用 reportlab+matplotlib **纯 Python 真实生成（无需 headless 浏览器）**，已落地 export_service._export_pdf_real + main.py /downloads 静态路由（实测产出 91KB 合法 PDF 可下载）；Excel/PNG 放路演后（当前仍诚实 not_implemented）。见 PROJECT_STATUS 1.9 + ev_19_pdf_proof.md。
 
-### 4.2 G2 归属过滤的边界（已修，但需注意）
-- G2.1 数据集列表 `GET /api/v1/datasets` 保留了 legacy 可见性（登录用户可见全部），仅详情/写操作做归属校验。若业务要求「只看自己」，需改 list 查询加 `created_by` 过滤（当前为兼容性妥协，已在 G3_FIX.md 标注）。
-- `dashboards` 表新增 `created_by`/`updated_by` 列（G2.1 提交 `2b06b74`），**历史数据这两列为 NULL**；归属校验对 NULL 行按「不可越权访问」处理（返回 404/403）。迁移历史看板归属需手动补 `created_by`，否则老看板对原主也不可见。
+## Q4. 1.10 附录 B 行级明细
+- 现状：CleanRule 模型无 old/new/row 列，后端不采集行级前后值。
+- 待拍板：后端清洗前 SELECT 受影响行、UPDATE 后 SELECT 新值、diff 落新表 `clean_rule_rows`；前端加"行/原值/新值"三列。属后端增强 + 新表，需你确认。
+- ✅ **已拍板（2026-09-21）**：路演前不做行级明细，仅加"影响行数"统计（比"策略 winsorize"更具体）。已落地 appendix_service._clean_log（apply winsorize 现显示真实 affected_rows=2）；行级明细 + 新表 `clean_rule_rows` 放路演后。见 PROJECT_STATUS 1.10 + ev_110_affected_rows_proof.md。
 
-### 4.3 G4 净化范围（已闭环，但需部署侧配合）
-- `bleach==6.4.0` 为**新增后端依赖**，项目无 `requirements.txt`，部署清单必须补 `bleach`（否则报告生成端点 import 失败 → 500）。详见 `FIX_SUMMARY.md` 部署注意。
-- 净化白名单不含 `style` 属性（防 CSS 注入）；若未来报告需内联样式，须改用受信任 `<style>` 块或扩展白名单并加 CSS sanitizer。
+## Q5. 5.1 清测试残留（46 用户 / 24 看板 / 30 数据集 / 7 分享）
+- 待拍板（三选范围）：A) 全删测试用户？B) 全删测试看板/数据集？C) demo 种子（`risk_demo_v2_*`）保留 or 删？
+- 纪律：先给清单+备份+顺序，你拍板后我才生成 ID 级删除脚本，执行前再确认一次。方案见 `item6_cleanup_plan.md`。
 
-### 4.4 回归结论（全量）
-- **L1 单测**：隔离 QA 库 `backend/data/qa_l1test.db` + 显式建表重跑，结果见 `defect_fix_evidence/fixes/l1_pytest2.out`。首跑 43 passed / 4 failed，4 失败均为环境/既有问题（`test_quality_checker` 的 `row_count` 误判、`test_run_status_recovery` ×3 缺 conftest 建表），**非 G1–G4 引入**。
-- **L2 前端**：`tsc --noEmit` 退出码 0，类型检查通过（`frontend_tsc.out`）。
-- **L5 安全复现**：`g3_verify.py` 13/13 PASS、`g4_verify.py` 22/22 PASS（见各自 `.out`），P0 清零。
-- **L3 E2E**：由 G3/G4 验证脚本经 ASGI 直调覆盖主链路（鉴权拒绝 + 报告净化），等价于端到端冒烟。
+## Q6. 1.6 残留：S4b 分析说明文本失败不弹窗
+- 现状：生成看板时，S1/S2/S3 的 AI 失败都会经 `_request_user_choice` 暂停并弹窗（已实测）。
+  但 **S4b 分析说明文本**（brain_run_sse.py:1011）的 LLM 调用失败仅 `try/except` 静默回退为规则文案，**不暂停、不弹窗**。
+- 影响：S4b 非核心（仅看板顶部"AI 分析摘要"），看板仍正常生成；但若要求"任何 AI 失败都弹窗"，可把 S4b 也接入 `_request_user_choice`。
+- 待拍板：是否覆盖 S4b？属小改动（低风险），确认后我接 `_request_user_choice` 并复用现有 Modal。
 
-### 4.5 L1 回归暴露的预存缺陷（非 G1–G4 引入，仅登记）
-- `backend/tests/test_quality_checker.py::test_unique_row_count_reflects_total_duplicate_rows` 失败：`QualityChecker._check_unique` 的 `row_count` 仍恒为 0（期望 5），导致前端"涉及行数"列失真、去重无法精确定位行。该测试为"修复回归"用例，说明对应修复未落库；属 pre-existing 逻辑 bug，**不在 G1–G4 范围**，本次不顺手改，登记待修。
-- 隔离 QA 库重跑 L1：46 passed / 1 failed（首跑默认库 43 passed / 4 failed 中的 3 个 `no such table` 环境失败，已随隔离库显式建表消除）。**G1–G4 引入的回归为 0。**
+## Q7. 1.7 暗色模式范围（待确认，未改代码）
+- 现状：前端无统一明暗主题（无 ConfigProvider darkAlgorithm；组件大量硬编码色如 `rgba(0,0,0,.03)`/`#1677ff`）。
+- 方案已出：`defect_fix_evidence/final_fixes/plan_17_darkmode.md`（含现状/组件清单/配色原则/改动量风险工时/路演是否必演示）。
+- 待拍板（三选一）：A) 路演前不做（建议降 P2）；B) 路演前做全量；C) 路演前只做图表+仪表盘核心。
+- 未改代码，等你确认范围后再动。
 
-> 状态：G1–G4 已交付，P0 清零；#4.1/#4.2/#4.5 为后续迭代项，不阻塞本次发布。
+## Q8. 1.6 残留：规则兜底下 S3 图表生成仍较慢
+- 实测（ev_16b_e2e）：死 LLM → 弹窗 → 点"用规则生成"(resume rule_fallback) → 看板最终完成（chart_count=4, generated_by=rule_engine），但**耗时约 125s**。
+- 原因：rule_fallback 仅绕过 probe 暂停，S3 图表生成阶段可能仍尝试 LLM 调用（超时重试）未完全跳过 LLM。
+- 影响：路演若现场 AI 真挂、用户选规则生成，需等 ~2 分钟才出看板（可接受但不顺畅）。
+- 待拍板：是否让 S3 也完全跳过 LLM（接 rule_fallback 标志跳过 LLM 分支）？属小改动，确认后做（与 Q6/S4b 同类）。

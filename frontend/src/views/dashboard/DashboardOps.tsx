@@ -17,6 +17,7 @@ interface DashboardOpsProps {
   onRename?: (next: string) => void
   onDelete?: () => void
   generationMode?: 'ai' | 'rule' | string  // 问题1：看板生成方式（绿标/灰标）
+  onConfigReload?: () => void  // 问题3修复：版本回退成功后触发看板详情重载，界面立即生效
 }
 
 interface VersionItem {
@@ -45,7 +46,7 @@ const mockHistory = [
   { id: 'h4', title: '季度不良率目标达成', time: '08-10 09:22', summary: '按季度拆解不良率目标与实际达成对比' },
 ]
 
-export default function DashboardOps({ id, title, onRename, onDelete, generationMode }: DashboardOpsProps) {
+export default function DashboardOps({ id, title, onRename, onDelete, generationMode, onConfigReload }: DashboardOpsProps) {
   const nav = useNavigate()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
@@ -178,11 +179,18 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
         return
       }
 
-      if (res?.mode === 'async') {
-        message.success('导出任务已创建，将通知（演示）')
+      if (res?.mode === 'not_implemented') {
+        // PDF/Excel/PNG 真实导出未实现：诚实告知，不再伪造「成功」、不再 window.open 不存在的文件页
+        message.info(res?.message || '该格式导出暂未实现，敬请期待')
+        setExportOpen(false)
+        return
+      } else if (res?.mode === 'async') {
+        message.success('导出任务已创建，将通过通知中心告知结果')
       } else if (res?.download_url) {
         message.success('导出完成，文件已生成')
-        if (res.download_url.startsWith('/') || res.download_url.startsWith('http')) {
+        // 仅当后端返回真实可访问的 http(s) 下载地址时才新开页；
+        // 禁止把以「/」开头的占位路径（如 /exports/xxx.pdf）当下载地址打开，避免跳转到不存在的页面
+        if (res.download_url.startsWith('http://') || res.download_url.startsWith('https://')) {
           window.open(res.download_url, '_blank')
         }
       } else {
@@ -195,19 +203,23 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
     }
   }
 
-  const previewVersion = (v: string) => message.info(`预览版本 ${v}（演示）`)
+  // 问题5修复：版本预览/对比尚未实现，明确告知「即将上线」，不再以「（演示）」假提示冒充功能
+  const previewVersion = (v: string) => message.info(`版本预览即将上线`)
   const rollback = async (ver: VersionItem) => {
     if (!id) return
     message.loading({ content: '正在回退...', key: 'rollback' })
     try {
       await http.post('/versions/rollback/' + id, { version_id: ver.id })
-      message.success({ content: `已回退到 ${ver.label}`, key: 'rollback' })
+      // 1.8 路演前提示：明确回退仅还原图表结构，数值来自数据源故不变（避免用户以为"数据也回退了"）
+      message.success({ content: `已回退到 ${ver.label}：图表结构已还原（数值来自数据源故不变）`, key: 'rollback' })
+      // 问题3修复：回退成功后重载看板详情（配置/图表/标题），界面立即反映回退结果
+      onConfigReload?.()
       setVersionOpen(false)
     } catch (err: any) {
       message.error({ content: `回退失败: ${err?.message || '网络错误'}`, key: 'rollback' })
     }
   }
-  const compare = (a: string, b: string) => message.info(`对比 ${a} 与 ${b}（演示）`)
+  const compare = (a: string, b: string) => message.info(`版本对比即将上线`)
 
   const commitRename = async () => {
     const next = draft.trim()
@@ -267,9 +279,9 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
     ...v,
     actions: (
       <Space size={4}>
-        <Tooltip title="预览"><Button size="small" icon={<CheckOutlined />} onClick={() => previewVersion(v.label)} /></Tooltip>
+        <Tooltip title="预览（即将上线）"><Button size="small" icon={<CheckOutlined />} disabled onClick={() => previewVersion(v.label)} /></Tooltip>
         <Tooltip title="回退"><Button size="small" icon={<RollbackOutlined />} disabled={v.current} onClick={() => rollback(v)} /></Tooltip>
-        <Tooltip title="对比"><Button size="small" onClick={() => compare('v1', v.label)} disabled={v.current}>对比</Button></Tooltip>
+        <Tooltip title="对比（即将上线）"><Button size="small" onClick={() => compare('v1', v.label)} disabled>对比</Button></Tooltip>
       </Space>
     ),
   }))
@@ -371,7 +383,7 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
               <Input value={link} readOnly />
               <Button icon={<CopyOutlined />} onClick={copyLink}>复制</Button>
-              <Button onClick={() => message.info('二维码（演示）')}>二维码</Button>
+              <Tooltip title="二维码（即将上线）"><Button disabled onClick={() => message.info('二维码即将上线')}>二维码</Button></Tooltip>
             </div>
           ) : (
             <Button type="primary" onClick={genLink} loading={genLoading}>生成分享链接</Button>
@@ -441,7 +453,7 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
           dataSource={historyFiltered}
           locale={{ emptyText: <Empty description="无匹配对话" /> }}
           renderItem={h => (
-            <List.Item actions={[<Button key="d" size="small" type="text" danger onClick={() => message.success('已删除')}>删除</Button>, <Button key="e" size="small" type="text" onClick={() => message.info('导出对话（演示）')}>导出</Button>]}>
+            <List.Item actions={[<Button key="d" size="small" type="text" danger onClick={() => message.success('已删除')}>删除</Button>, <Tooltip key="e" title="导出对话（即将上线）"><Button size="small" type="text" disabled onClick={() => message.info('导出对话即将上线')}>导出</Button></Tooltip>]}>
               <List.Item.Meta title={h.title} description={<><div style={{ color: 'rgba(0,0,0,.45)' }}>{h.time}</div>{h.summary}</>} />
             </List.Item>
           )}

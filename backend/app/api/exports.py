@@ -84,6 +84,10 @@ async def export_sync(
             user_id=user_id
         )
         
+        if result["mode"] == "not_implemented":
+            # PDF/Excel/PNG 真实导出未实现：诚实透传，不伪造下载地址
+            return {"mode": "not_implemented", "format": result["format"], "message": result["message"]}
+
         if result["mode"] == "async":
             # 超时转异步
             return AsyncExportResponse(**result)

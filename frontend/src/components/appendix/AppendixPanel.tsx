@@ -109,7 +109,7 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
               align: 'right' as const,
             },
           ]}
-          scroll={{ x: 'max-content', y: 360 }}
+          scroll={{ y: 360 }}
         />
       </div>
     );
@@ -119,7 +119,7 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
   const cleanLogTable = (
     <Table
       size="small"
-      scroll={{ x: 'max-content' }}
+      scroll={{ y: 360 }}
       rowKey="seq"
       pagination={false}
       dataSource={data.clean_log || []}

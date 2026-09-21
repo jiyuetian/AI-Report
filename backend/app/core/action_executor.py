@@ -302,20 +302,35 @@ class ActionExecutor:
             return ""
 
         if charts_spec:
+            skipped = 0
+            def _strict_match(cand, role):
+                """2026-09-21 修复（1.5 垃圾图）：严格匹配真实字段，不做"首个字段"回退，
+                避免把无关字段臆造成垃圾图。仅当候选名精确或子串命中真实字段才返回。"""
+                cand = (cand or "").strip()
+                names = [fp.get("name") or fp.get("column") or "" for fp in field_profiles]
+                if cand in names:
+                    return cand
+                for nm in names:
+                    if cand and (cand in nm or nm in cand):
+                        return nm
+                return ""
             for spec in charts_spec[:max(0, limit - existing)]:
                 ct = ActionExecutor.normalize_chart_type(spec.get("chart_type", "bar"))
-                dim = spec.get("dimension_field") or ""
-                metric = spec.get("metric_field") or ""
-                # 问题2 修复（Layer3）：spec 字段缺失时，用 metric_name/title 回退解析真实字段
-                if not metric and (spec.get("metric_name") or spec.get("title")):
-                    metric = _match_field(spec.get("metric_name") or spec.get("title"), "metric")
-                if not dim and spec.get("dimension_field") is None and (spec.get("title") or spec.get("metric_name")):
-                    dim = _match_field(spec.get("dimension_field") or spec.get("title"), "dim")
-                if not dim or not metric:
-                    fd, fm = first_dim_metric()
-                    dim = dim or fd
-                    metric = metric or fm
-                title = (spec.get("title") or "").strip() or f"{dim or '数据'}分布"
+                title = (spec.get("title") or "").strip()
+                metric_cand = spec.get("metric_field") or spec.get("metric_name") or title
+                dim_cand = spec.get("dimension_field") or title
+                metric = _strict_match(metric_cand, "metric")
+                dim = _strict_match(dim_cand, "dim")
+                # 2026-09-21 修复（1.5）：字段无法解析为真实字段时，跳过该图，
+                # 绝不拿"第一个维度/指标"臆造无关的「新增bar」垃圾图。
+                if not metric:
+                    skipped += 1
+                    continue
+                if ct in ("pie", "bar", "line", "scatter", "table") and not dim:
+                    # 维度图必须有真实维度字段；kpi 允许只给指标
+                    skipped += 1
+                    continue
+                title = title or f"{dim or '数据'}分布"
                 seq = existing + len(new_charts) + 1
                 new_charts.append(ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq))
         else:
@@ -360,13 +375,14 @@ class ActionExecutor:
             }
 
         titles = "、".join(c["title"] for c in new_charts)
+        skip_note = f"（{skipped} 个字段无法匹配真实数据，已跳过）" if skipped else ""
         return {
             "success": True,
             "action_type": "add_chart",
             "changes": [{"added_chart": c["id"]} for c in new_charts],
             "new_config": current_config,
             "render_updates": [{"type": "add_chart", "chart": c} for c in new_charts],
-            "message": f"已添加 {len(new_charts)} 个图表：{titles}",
+            "message": f"已添加 {len(new_charts)} 个图表：{titles}{skip_note}",
         }
     
     @staticmethod

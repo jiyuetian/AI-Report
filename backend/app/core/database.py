@@ -23,7 +23,13 @@ def _resolve_db_url() -> str:
                 database=os.getenv("PGDATABASE", "aibi")
             )
             await conn.close()
-        asyncio.get_event_loop().run_until_complete(_probe())
+        # 1.3 修复：用独立临时 loop 探活并关闭，避免导入期 get_event_loop() 绑定到
+        # 后续被 uvicorn 关闭的旧 loop（进而引发 "Event loop is closed"）
+        _loop = asyncio.new_event_loop()
+        try:
+            _loop.run_until_complete(_probe())
+        finally:
+            _loop.close()
         print("📦 使用数据库：PostgreSQL")
         return settings.DATABASE_URL
     except Exception as exc:

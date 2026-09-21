@@ -1,0 +1,13 @@
+STDOUT:/nPASS 1.4 规则优先覆盖 buggy LLM（5字段→5图） | 实际 5 张: ['业务流程合规率', '抵押登记合规率', '档案管理合规率', '制度执行到位率', '内部审计问题整改率']
+PASS 1.4 5 个 metric_field 均为真实字段 | {'制度执行到位率', '档案管理合规率', '业务流程合规率', '内部审计问题整改率', '抵押登记合规率'}
+PASS 1.4 plan_actions 产出 add_chart 动作
+PASS 1.4 plan_actions 识别 5 张图 | 实际 5 张
+PASS 1.5 全垃圾 spec 不产生图表 | render_updates=0
+PASS 1.5 混合 4真实+1垃圾 → 建4跳1 | 实际建 4 张
+PASS 1.5 message 提示已跳过 1 个 | 已添加 4 个图表：业务流程合规率、抵押登记合规率、档案管理合规率、制度执行到位率（1 个字段无法匹配真实数据，已跳过）
+PASS 1.5 metric 为空→跳过不臆造 | render_updates=0
+
+RESULT: ALL PASS
+
+STDERR:/n
+EXIT=0

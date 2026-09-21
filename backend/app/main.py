@@ -1,7 +1,9 @@
 """FastAPI主入口"""
+import os
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
@@ -208,6 +210,11 @@ app.include_router(admin_prompts.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(skills.router, prefix="/api/v1")
+
+# 1.9：导出文件静态服务（PDF 真实生成后落盘于 data/exports，经此路由下载）
+_EXPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "exports")
+os.makedirs(_EXPORT_DIR, exist_ok=True)
+app.mount("/downloads", StaticFiles(directory=_EXPORT_DIR), name="downloads")
 
 
 if __name__ == "__main__":

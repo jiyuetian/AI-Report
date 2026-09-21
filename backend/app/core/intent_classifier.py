@@ -797,11 +797,21 @@ class IntentClassifier:
 
     @classmethod
     def _extract_add_charts(cls, message, field_profiles):
-        """ADD_CHART 结构化提取：LLM 优先，规则兜底。"""
+        """ADD_CHART 结构化提取：规则优先（多字段确定性），LLM 兜底。
+
+        2026-09-21 修复（1.4 多字段截断）：此前 LLM 优先，当消息含
+        「A，B，C，D，E 的平均值汇总」这类多字段列举时，LLM 常把 5 字段合并成 1 张图
+        → 用户看到"5 字段只识别 1 个"。规则提取 `_rule_extract_add_charts` 能确定性地
+        按列举字段产出 N 张图，故当规则产出 ≥2 张时直接采用，避免 LLM 合并。
+        单图/常规表述（规则 ≤1 张）仍走 LLM 优先，保留其灵活性。
+        """
+        rule = cls._rule_extract_add_charts(message, field_profiles)
+        if rule and len(rule) >= 2:
+            return rule
         llm = cls._llm_extract_add_charts(message, field_profiles)
         if llm:
             return llm
-        return cls._rule_extract_add_charts(message, field_profiles)
+        return rule
 
 
 # 便捷函数
