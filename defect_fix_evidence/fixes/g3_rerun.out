@@ -1,0 +1,697 @@
+⚠️ 未检测到PostgreSQL（ModuleNotFoundError），回退到SQLite
+[BrainConfig] Redis不可用，降级为纯数据库模式
+[setup] creating tables ...
+2026-09-21 10:59:31,764 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:31,764 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("users")
+2026-09-21 10:59:31,764 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,766 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("users")
+2026-09-21 10:59:31,766 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,768 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("roles")
+2026-09-21 10:59:31,768 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,769 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("roles")
+2026-09-21 10:59:31,769 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,770 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("user_roles")
+2026-09-21 10:59:31,770 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,771 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("user_roles")
+2026-09-21 10:59:31,771 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,771 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("files")
+2026-09-21 10:59:31,771 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,772 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("files")
+2026-09-21 10:59:31,772 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,773 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("datasets")
+2026-09-21 10:59:31,773 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,774 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("datasets")
+2026-09-21 10:59:31,774 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,775 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("quality_issues")
+2026-09-21 10:59:31,775 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,776 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("quality_issues")
+2026-09-21 10:59:31,776 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,777 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("clean_rules")
+2026-09-21 10:59:31,777 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,777 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("clean_rules")
+2026-09-21 10:59:31,777 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,778 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("dashboards")
+2026-09-21 10:59:31,778 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,779 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("dashboards")
+2026-09-21 10:59:31,779 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,781 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("dashboard_versions")
+2026-09-21 10:59:31,781 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,782 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("dashboard_versions")
+2026-09-21 10:59:31,782 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,783 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("charts")
+2026-09-21 10:59:31,783 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,784 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("charts")
+2026-09-21 10:59:31,784 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,785 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("chat_sessions")
+2026-09-21 10:59:31,785 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,785 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("chat_sessions")
+2026-09-21 10:59:31,785 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,786 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("chat_messages")
+2026-09-21 10:59:31,786 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,787 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("chat_messages")
+2026-09-21 10:59:31,787 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,787 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("token_quotas")
+2026-09-21 10:59:31,787 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,788 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("token_quotas")
+2026-09-21 10:59:31,788 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,789 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("token_applications")
+2026-09-21 10:59:31,789 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,790 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("token_applications")
+2026-09-21 10:59:31,790 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,790 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("lineage_nodes")
+2026-09-21 10:59:31,790 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,791 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("lineage_nodes")
+2026-09-21 10:59:31,791 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,792 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("lineage_edges")
+2026-09-21 10:59:31,792 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,793 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("lineage_edges")
+2026-09-21 10:59:31,793 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,794 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("share_links")
+2026-09-21 10:59:31,794 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,795 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("share_links")
+2026-09-21 10:59:31,795 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,796 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("export_tasks")
+2026-09-21 10:59:31,796 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,797 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("export_tasks")
+2026-09-21 10:59:31,797 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,798 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("quota_usage")
+2026-09-21 10:59:31,798 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,799 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("quota_usage")
+2026-09-21 10:59:31,799 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,800 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("audit_logs")
+2026-09-21 10:59:31,800 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,800 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("audit_logs")
+2026-09-21 10:59:31,801 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,801 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("brain_configs")
+2026-09-21 10:59:31,801 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,802 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("brain_configs")
+2026-09-21 10:59:31,802 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,803 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("brain_traces")
+2026-09-21 10:59:31,803 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,804 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("brain_traces")
+2026-09-21 10:59:31,804 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,804 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("brain_trace_summaries")
+2026-09-21 10:59:31,804 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,805 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("brain_trace_summaries")
+2026-09-21 10:59:31,805 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,806 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("prompts")
+2026-09-21 10:59:31,806 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,806 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("prompts")
+2026-09-21 10:59:31,806 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,807 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("token_blacklist")
+2026-09-21 10:59:31,807 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,807 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("token_blacklist")
+2026-09-21 10:59:31,807 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-21 10:59:31,809 INFO sqlalchemy.engine.Engine 
+CREATE TABLE users (
+	username VARCHAR(100) NOT NULL, 
+	email VARCHAR(255) NOT NULL, 
+	hashed_password VARCHAR(255) NOT NULL, 
+	full_name VARCHAR(100), 
+	is_active BOOLEAN NOT NULL, 
+	is_superuser BOOLEAN NOT NULL, 
+	token_quota INTEGER NOT NULL, 
+	last_login DATETIME, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_users PRIMARY KEY (id), 
+	CONSTRAINT uq_users_username UNIQUE (username), 
+	CONSTRAINT uq_users_email UNIQUE (email)
+)
+
+
+2026-09-21 10:59:31,809 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:31,978 INFO sqlalchemy.engine.Engine 
+CREATE TABLE roles (
+	name VARCHAR(50) NOT NULL, 
+	description TEXT, 
+	default_quota INTEGER NOT NULL, 
+	permissions TEXT, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_roles PRIMARY KEY (id), 
+	CONSTRAINT uq_roles_name UNIQUE (name)
+)
+
+
+2026-09-21 10:59:31,978 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:32,068 INFO sqlalchemy.engine.Engine 
+CREATE TABLE files (
+	name VARCHAR(255) NOT NULL, 
+	hash VARCHAR(64) NOT NULL, 
+	size INTEGER NOT NULL, 
+	mime_type VARCHAR(100) NOT NULL, 
+	extension VARCHAR(20) NOT NULL, 
+	storage_path VARCHAR(500) NOT NULL, 
+	status VARCHAR(20) NOT NULL, 
+	expire_at DATETIME, 
+	uploaded_by VARCHAR(100), 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_files PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:32,068 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:32,154 INFO sqlalchemy.engine.Engine CREATE INDEX ix_files_hash ON files (hash)
+2026-09-21 10:59:32,155 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:32,284 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dashboards (
+	id VARCHAR(36) NOT NULL, 
+	name VARCHAR(200) NOT NULL, 
+	description TEXT, 
+	version INTEGER NOT NULL, 
+	dataset_ids JSON, 
+	primary_dataset_id VARCHAR(36), 
+	score INTEGER, 
+	score_details JSON, 
+	passed INTEGER, 
+	layout JSON, 
+	config JSON, 
+	status VARCHAR(20), 
+	created_by VARCHAR(50), 
+	updated_by VARCHAR(50), 
+	created_at DATETIME, 
+	updated_at DATETIME, 
+	published_at DATETIME, 
+	CONSTRAINT pk_dashboards PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:32,285 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:32,429 INFO sqlalchemy.engine.Engine CREATE INDEX idx_dashboard_created_by ON dashboards (created_by)
+2026-09-21 10:59:32,429 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:32,513 INFO sqlalchemy.engine.Engine CREATE INDEX idx_dashboard_status ON dashboards (status)
+2026-09-21 10:59:32,513 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:32,607 INFO sqlalchemy.engine.Engine 
+CREATE TABLE token_quotas (
+	id VARCHAR(36) NOT NULL, 
+	user_id VARCHAR(50) NOT NULL, 
+	daily_limit INTEGER, 
+	used_today INTEGER, 
+	remaining INTEGER, 
+	warning_threshold INTEGER, 
+	is_warning_shown INTEGER, 
+	is_exhausted INTEGER, 
+	last_reset_at DATETIME, 
+	extra_quota INTEGER, 
+	extra_expires_at DATETIME, 
+	updated_at DATETIME, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_token_quotas PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:32,607 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:32,709 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_token_quotas_user_id ON token_quotas (user_id)
+2026-09-21 10:59:32,709 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:32,831 INFO sqlalchemy.engine.Engine 
+CREATE TABLE token_applications (
+	id VARCHAR(36) NOT NULL, 
+	user_id VARCHAR(50) NOT NULL, 
+	apply_amount INTEGER NOT NULL, 
+	apply_reason TEXT, 
+	status VARCHAR(20), 
+	approved_by VARCHAR(50), 
+	approved_amount INTEGER, 
+	approve_comment TEXT, 
+	expires_at DATETIME, 
+	created_at DATETIME, 
+	updated_at DATETIME, 
+	CONSTRAINT pk_token_applications PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:32,832 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:32,988 INFO sqlalchemy.engine.Engine CREATE INDEX ix_token_applications_user_id ON token_applications (user_id)
+2026-09-21 10:59:32,988 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:33,181 INFO sqlalchemy.engine.Engine 
+CREATE TABLE lineage_nodes (
+	node_type VARCHAR(30) NOT NULL, 
+	dataset_id VARCHAR(100) NOT NULL, 
+	ref_id VARCHAR(100) NOT NULL, 
+	name VARCHAR(255) NOT NULL, 
+	description TEXT, 
+	logic_json JSON, 
+	quality_flag VARCHAR(50), 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_lineage_nodes PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:33,181 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:33,288 INFO sqlalchemy.engine.Engine CREATE INDEX ix_lineage_nodes_dataset_id ON lineage_nodes (dataset_id)
+2026-09-21 10:59:33,288 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:33,426 INFO sqlalchemy.engine.Engine 
+CREATE TABLE quota_usage (
+	user_id VARCHAR(100) NOT NULL, 
+	date DATE NOT NULL, 
+	used_tokens INTEGER NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_quota_usage PRIMARY KEY (user_id, date, id)
+)
+
+
+2026-09-21 10:59:33,426 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:33,588 INFO sqlalchemy.engine.Engine 
+CREATE TABLE audit_logs (
+	user VARCHAR(100), 
+	action VARCHAR(50) NOT NULL, 
+	object_type VARCHAR(50), 
+	object_id VARCHAR(100), 
+	ip VARCHAR(50), 
+	result VARCHAR(20) NOT NULL, 
+	detail_json JSON, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_audit_logs PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:33,588 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:33,731 INFO sqlalchemy.engine.Engine 
+CREATE TABLE brain_configs (
+	id VARCHAR(36) NOT NULL, 
+	config_key VARCHAR(100) NOT NULL, 
+	category VARCHAR(50) NOT NULL, 
+	version INTEGER NOT NULL, 
+	content JSON NOT NULL, 
+	description TEXT, 
+	is_active INTEGER, 
+	created_by VARCHAR(50), 
+	created_at DATETIME, 
+	updated_at DATETIME, 
+	CONSTRAINT pk_brain_configs PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:33,731 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:33,821 INFO sqlalchemy.engine.Engine CREATE INDEX idx_config_key_active ON brain_configs (config_key, is_active)
+2026-09-21 10:59:33,822 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:33,908 INFO sqlalchemy.engine.Engine CREATE INDEX idx_category_version ON brain_configs (category, version)
+2026-09-21 10:59:33,908 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:34,008 INFO sqlalchemy.engine.Engine 
+CREATE TABLE brain_traces (
+	id VARCHAR(36) NOT NULL, 
+	run_id VARCHAR(36) NOT NULL, 
+	dataset_id VARCHAR(36) NOT NULL, 
+	dashboard_id VARCHAR(36), 
+	user_id VARCHAR(50), 
+	stage VARCHAR(20) NOT NULL, 
+	stage_name VARCHAR(50), 
+	stage_status VARCHAR(20), 
+	stage_input JSON, 
+	stage_output JSON, 
+	stage_metrics JSON, 
+	error_info JSON, 
+	started_at DATETIME, 
+	completed_at DATETIME, 
+	created_at DATETIME, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_brain_traces PRIMARY KEY (id)
+)
+
+
+2026-09-21 10:59:34,008 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:34,093 INFO sqlalchemy.engine.Engine CREATE INDEX idx_dataset_run ON brain_traces (dataset_id, run_id)
+2026-09-21 10:59:34,093 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:34,222 INFO sqlalchemy.engine.Engine CREATE INDEX ix_brain_traces_run_id ON brain_traces (run_id)
+2026-09-21 10:59:34,222 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:34,995 INFO sqlalchemy.engine.Engine CREATE INDEX idx_run_stage ON brain_traces (run_id, stage)
+2026-09-21 10:59:34,995 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:35,451 INFO sqlalchemy.engine.Engine CREATE INDEX ix_brain_traces_dataset_id ON brain_traces (dataset_id)
+2026-09-21 10:59:35,451 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:35,899 INFO sqlalchemy.engine.Engine 
+CREATE TABLE brain_trace_summaries (
+	id VARCHAR(36) NOT NULL, 
+	run_id VARCHAR(36) NOT NULL, 
+	dataset_id VARCHAR(36) NOT NULL, 
+	dashboard_id VARCHAR(36), 
+	user_id VARCHAR(50), 
+	overall_status VARCHAR(20), 
+	current_stage VARCHAR(20), 
+	s1_status VARCHAR(20), 
+	s2_status VARCHAR(20), 
+	s3_status VARCHAR(20), 
+	s4_status VARCHAR(20), 
+	s5_status VARCHAR(20), 
+	final_score INTEGER, 
+	passed INTEGER, 
+	started_at DATETIME, 
+	completed_at DATETIME, 
+	version_id VARCHAR(36), 
+	status VARCHAR(20), 
+	result JSON, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_brain_trace_summaries PRIMARY KEY (id), 
+	CONSTRAINT uq_brain_trace_summaries_run_id UNIQUE (run_id)
+)
+
+
+2026-09-21 10:59:35,899 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:36,157 INFO sqlalchemy.engine.Engine CREATE INDEX ix_brain_trace_summaries_dataset_id ON brain_trace_summaries (dataset_id)
+2026-09-21 10:59:36,157 INFO sqlalchemy.engine.Engine [no key 0.00021s] ()
+2026-09-21 10:59:36,274 INFO sqlalchemy.engine.Engine 
+CREATE TABLE prompts (
+	group_key VARCHAR(100) NOT NULL, 
+	title VARCHAR(200) NOT NULL, 
+	description TEXT, 
+	category VARCHAR(100) NOT NULL, 
+	content TEXT, 
+	enabled BOOLEAN NOT NULL, 
+	version INTEGER NOT NULL, 
+	is_builtin BOOLEAN NOT NULL, 
+	remark TEXT, 
+	updated_by VARCHAR(100), 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_prompts PRIMARY KEY (id), 
+	CONSTRAINT uq_prompts_group_key UNIQUE (group_key)
+)
+
+
+2026-09-21 10:59:36,274 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:36,389 INFO sqlalchemy.engine.Engine 
+CREATE TABLE token_blacklist (
+	jti VARCHAR(64) NOT NULL, 
+	exp DATETIME NOT NULL, 
+	blacklisted_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_token_blacklist PRIMARY KEY (jti, id)
+)
+
+
+2026-09-21 10:59:36,389 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:36,476 INFO sqlalchemy.engine.Engine 
+CREATE TABLE user_roles (
+	user_id VARCHAR NOT NULL, 
+	role_id VARCHAR NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_user_roles PRIMARY KEY (user_id, role_id, id), 
+	CONSTRAINT fk_user_roles_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_user_roles_role_id_roles FOREIGN KEY(role_id) REFERENCES roles (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:36,476 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:36,573 INFO sqlalchemy.engine.Engine 
+CREATE TABLE datasets (
+	name VARCHAR(255), 
+	file_id VARCHAR NOT NULL, 
+	created_by VARCHAR(36), 
+	duckdb_table VARCHAR(100), 
+	grain VARCHAR(20) NOT NULL, 
+	schema_json JSON NOT NULL, 
+	profile_json JSON NOT NULL, 
+	quality_score INTEGER, 
+	row_count INTEGER NOT NULL, 
+	status VARCHAR(20) NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_datasets PRIMARY KEY (id), 
+	CONSTRAINT fk_datasets_file_id_files FOREIGN KEY(file_id) REFERENCES files (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:36,573 INFO sqlalchemy.engine.Engine [no key 0.00022s] ()
+2026-09-21 10:59:36,672 INFO sqlalchemy.engine.Engine CREATE INDEX ix_datasets_created_by ON datasets (created_by)
+2026-09-21 10:59:36,672 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:36,759 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dashboard_versions (
+	id VARCHAR(36) NOT NULL, 
+	dashboard_id VARCHAR(36) NOT NULL, 
+	version_number INTEGER NOT NULL, 
+	name VARCHAR(200), 
+	description TEXT, 
+	config_snapshot JSON, 
+	prompt_version VARCHAR(50), 
+	is_auto_save INTEGER, 
+	created_by VARCHAR(50), 
+	created_at DATETIME, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_dashboard_versions PRIMARY KEY (id), 
+	CONSTRAINT fk_dashboard_versions_dashboard_id_dashboards FOREIGN KEY(dashboard_id) REFERENCES dashboards (id)
+)
+
+
+2026-09-21 10:59:36,759 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:36,837 INFO sqlalchemy.engine.Engine CREATE INDEX idx_version_auto_save ON dashboard_versions (dashboard_id, is_auto_save, created_at)
+2026-09-21 10:59:36,837 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:36,919 INFO sqlalchemy.engine.Engine CREATE INDEX idx_version_dashboard ON dashboard_versions (dashboard_id, version_number)
+2026-09-21 10:59:36,919 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-21 10:59:37,022 INFO sqlalchemy.engine.Engine 
+CREATE TABLE chat_sessions (
+	id VARCHAR(36) NOT NULL, 
+	user_id VARCHAR(50) NOT NULL, 
+	dashboard_id VARCHAR(36), 
+	dataset_id VARCHAR(36), 
+	context JSON, 
+	status VARCHAR(20), 
+	created_at DATETIME, 
+	updated_at DATETIME, 
+	CONSTRAINT pk_chat_sessions PRIMARY KEY (id), 
+	CONSTRAINT fk_chat_sessions_dashboard_id_dashboards FOREIGN KEY(dashboard_id) REFERENCES dashboards (id)
+)
+
+
+2026-09-21 10:59:37,022 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:37,129 INFO sqlalchemy.engine.Engine CREATE INDEX ix_chat_sessions_user_id ON chat_sessions (user_id)
+2026-09-21 10:59:37,129 INFO sqlalchemy.engine.Engine [no key 0.00015s] ()
+2026-09-21 10:59:37,996 INFO sqlalchemy.engine.Engine 
+CREATE TABLE lineage_edges (
+	source_id VARCHAR NOT NULL, 
+	target_id VARCHAR NOT NULL, 
+	transform_type VARCHAR(30) NOT NULL, 
+	description TEXT, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_lineage_edges PRIMARY KEY (id), 
+	CONSTRAINT fk_lineage_edges_source_id_lineage_nodes FOREIGN KEY(source_id) REFERENCES lineage_nodes (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_lineage_edges_target_id_lineage_nodes FOREIGN KEY(target_id) REFERENCES lineage_nodes (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:37,997 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:39,644 INFO sqlalchemy.engine.Engine 
+CREATE TABLE share_links (
+	dashboard_id VARCHAR(36) NOT NULL, 
+	perm VARCHAR(20) NOT NULL, 
+	expire_at DATETIME, 
+	password VARCHAR(100), 
+	revoked BOOLEAN NOT NULL, 
+	access_count INTEGER NOT NULL, 
+	created_by VARCHAR(100) NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_share_links PRIMARY KEY (id), 
+	CONSTRAINT fk_share_links_dashboard_id_dashboards FOREIGN KEY(dashboard_id) REFERENCES dashboards (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:39,644 INFO sqlalchemy.engine.Engine [no key 0.00024s] ()
+2026-09-21 10:59:39,742 INFO sqlalchemy.engine.Engine 
+CREATE TABLE export_tasks (
+	dashboard_id VARCHAR(36) NOT NULL, 
+	fmt VARCHAR(20) NOT NULL, 
+	status VARCHAR(20) NOT NULL, 
+	file_path TEXT, 
+	file_size INTEGER, 
+	expire_at DATETIME, 
+	error_msg TEXT, 
+	created_by VARCHAR(100) NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_export_tasks PRIMARY KEY (id), 
+	CONSTRAINT fk_export_tasks_dashboard_id_dashboards FOREIGN KEY(dashboard_id) REFERENCES dashboards (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:39,742 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:39,877 INFO sqlalchemy.engine.Engine 
+CREATE TABLE quality_issues (
+	dataset_id VARCHAR NOT NULL, 
+	field_name VARCHAR(100), 
+	type VARCHAR(20) NOT NULL, 
+	severity VARCHAR(20) NOT NULL, 
+	status VARCHAR(20) NOT NULL, 
+	message TEXT NOT NULL, 
+	fix_rule JSON, 
+	affect_rows INTEGER, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_quality_issues PRIMARY KEY (id), 
+	CONSTRAINT fk_quality_issues_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:39,877 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:39,974 INFO sqlalchemy.engine.Engine 
+CREATE TABLE clean_rules (
+	dataset_id VARCHAR NOT NULL, 
+	rule_type VARCHAR(30) NOT NULL, 
+	target_field VARCHAR(100), 
+	params JSON NOT NULL, 
+	reversible BOOLEAN NOT NULL, 
+	execution_order INTEGER NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_clean_rules PRIMARY KEY (id), 
+	CONSTRAINT fk_clean_rules_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id) ON DELETE CASCADE
+)
+
+
+2026-09-21 10:59:39,974 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:40,183 INFO sqlalchemy.engine.Engine 
+CREATE TABLE charts (
+	dashboard_id VARCHAR(36) NOT NULL, 
+	dataset_id VARCHAR NOT NULL, 
+	type VARCHAR(20) NOT NULL, 
+	config_json JSON NOT NULL, 
+	query_config JSON, 
+	position JSON, 
+	title VARCHAR(255), 
+	status VARCHAR(20) NOT NULL, 
+	sort_order INTEGER NOT NULL, 
+	id VARCHAR NOT NULL, 
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_charts PRIMARY KEY (id), 
+	CONSTRAINT fk_charts_dashboard_id_dashboards FOREIGN KEY(dashboard_id) REFERENCES dashboards (id) ON DELETE CASCADE, 
+	CONSTRAINT fk_charts_dataset_id_datasets FOREIGN KEY(dataset_id) REFERENCES datasets (id)
+)
+
+
+2026-09-21 10:59:40,183 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:41,725 INFO sqlalchemy.engine.Engine 
+CREATE TABLE chat_messages (
+	id VARCHAR(36) NOT NULL, 
+	session_id VARCHAR(36) NOT NULL, 
+	role VARCHAR(20) NOT NULL, 
+	content TEXT NOT NULL, 
+	intent_type VARCHAR(50), 
+	intent_confidence INTEGER, 
+	intent_analysis JSON, 
+	action_type VARCHAR(50), 
+	action_params JSON, 
+	action_result JSON, 
+	tokens_used INTEGER, 
+	moderation_status VARCHAR(20), 
+	moderation_reason VARCHAR(200), 
+	retry_count INTEGER, 
+	original_content TEXT, 
+	created_at DATETIME, 
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, 
+	CONSTRAINT pk_chat_messages PRIMARY KEY (id), 
+	CONSTRAINT fk_chat_messages_session_id_chat_sessions FOREIGN KEY(session_id) REFERENCES chat_sessions (id)
+)
+
+
+2026-09-21 10:59:41,725 INFO sqlalchemy.engine.Engine [no key 0.00018s] ()
+2026-09-21 10:59:42,422 INFO sqlalchemy.engine.Engine CREATE INDEX idx_chat_intent ON chat_messages (intent_type)
+2026-09-21 10:59:42,422 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-21 10:59:42,568 INFO sqlalchemy.engine.Engine CREATE INDEX ix_chat_messages_session_id ON chat_messages (session_id)
+2026-09-21 10:59:42,568 INFO sqlalchemy.engine.Engine [no key 0.00015s] ()
+2026-09-21 10:59:42,726 INFO sqlalchemy.engine.Engine CREATE INDEX idx_chat_session_time ON chat_messages (session_id, created_at)
+2026-09-21 10:59:42,726 INFO sqlalchemy.engine.Engine [no key 0.00017s] ()
+2026-09-21 10:59:42,822 INFO sqlalchemy.engine.Engine COMMIT
+[setup] tables created
+[test] datasets_list ...
+2026-09-21 10:59:42,826 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,854 INFO sqlalchemy.engine.Engine SELECT datasets.name, datasets.file_id, datasets.created_by, datasets.duckdb_table, datasets.grain, datasets.schema_json, datasets.profile_json, datasets.quality_score, datasets.row_count, datasets.status, datasets.id, datasets.created_at, datasets.updated_at 
+FROM datasets ORDER BY datasets.created_at DESC
+ LIMIT ? OFFSET ?
+2026-09-21 10:59:42,855 INFO sqlalchemy.engine.Engine [generated in 0.00024s] (50, 0)
+2026-09-21 10:59:42,858 INFO sqlalchemy.engine.Engine COMMIT
+[PASS] datasets_list          no_tok=401 user_tok=200
+[test] dataset_detail ...
+2026-09-21 10:59:42,861 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,862 INFO sqlalchemy.engine.Engine SELECT datasets.name, datasets.file_id, datasets.created_by, datasets.duckdb_table, datasets.grain, datasets.schema_json, datasets.profile_json, datasets.quality_score, datasets.row_count, datasets.status, datasets.id, datasets.created_at, datasets.updated_at 
+FROM datasets 
+WHERE datasets.id = ?
+2026-09-21 10:59:42,862 INFO sqlalchemy.engine.Engine [generated in 0.00027s] ('nope-id',)
+2026-09-21 10:59:42,864 INFO sqlalchemy.engine.Engine ROLLBACK
+[PASS] dataset_detail         no_tok=401 user_tok=404
+[test] brain_report ...
+2026-09-21 10:59:42,867 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,868 INFO sqlalchemy.engine.Engine SELECT datasets.name, datasets.file_id, datasets.created_by, datasets.duckdb_table, datasets.grain, datasets.schema_json, datasets.profile_json, datasets.quality_score, datasets.row_count, datasets.status, datasets.id, datasets.created_at, datasets.updated_at 
+FROM datasets 
+WHERE datasets.id = ?
+2026-09-21 10:59:42,868 INFO sqlalchemy.engine.Engine [cached since 0.00573s ago] ('nope-id',)
+2026-09-21 10:59:42,869 INFO sqlalchemy.engine.Engine ROLLBACK
+[PASS] brain_report           no_tok=401 user_tok=404
+[test] quality_issues ...
+2026-09-21 10:59:42,872 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,872 INFO sqlalchemy.engine.Engine SELECT datasets.name, datasets.file_id, datasets.created_by, datasets.duckdb_table, datasets.grain, datasets.schema_json, datasets.profile_json, datasets.quality_score, datasets.row_count, datasets.status, datasets.id, datasets.created_at, datasets.updated_at 
+FROM datasets 
+WHERE datasets.id = ?
+2026-09-21 10:59:42,872 INFO sqlalchemy.engine.Engine [cached since 0.01011s ago] ('nope-id',)
+2026-09-21 10:59:42,874 INFO sqlalchemy.engine.Engine ROLLBACK
+[PASS] quality_issues         no_tok=401 user_tok=404
+[test] lineage_graph ...
+2026-09-21 10:59:42,876 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,877 INFO sqlalchemy.engine.Engine SELECT datasets.name, datasets.file_id, datasets.created_by, datasets.duckdb_table, datasets.grain, datasets.schema_json, datasets.profile_json, datasets.quality_score, datasets.row_count, datasets.status, datasets.id, datasets.created_at, datasets.updated_at 
+FROM datasets 
+WHERE datasets.id = ?
+2026-09-21 10:59:42,877 INFO sqlalchemy.engine.Engine [cached since 0.01462s ago] ('nope-id',)
+2026-09-21 10:59:42,878 INFO sqlalchemy.engine.Engine ROLLBACK
+[PASS] lineage_graph          no_tok=401 user_tok=404
+[test] lineage_stats ...
+2026-09-21 10:59:42,881 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,882 INFO sqlalchemy.engine.Engine SELECT datasets.name, datasets.file_id, datasets.created_by, datasets.duckdb_table, datasets.grain, datasets.schema_json, datasets.profile_json, datasets.quality_score, datasets.row_count, datasets.status, datasets.id, datasets.created_at, datasets.updated_at 
+FROM datasets 
+WHERE datasets.id = ?
+2026-09-21 10:59:42,882 INFO sqlalchemy.engine.Engine [cached since 0.01956s ago] ('nope-id',)
+2026-09-21 10:59:42,885 INFO sqlalchemy.engine.Engine ROLLBACK
+[PASS] lineage_stats          no_tok=401 user_tok=404
+[test] chat_sessions_latest ...
+2026-09-21 10:59:42,888 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,889 INFO sqlalchemy.engine.Engine SELECT chat_sessions.id, chat_sessions.user_id, chat_sessions.dashboard_id, chat_sessions.dataset_id, chat_sessions.context, chat_sessions.status, chat_sessions.created_at, chat_sessions.updated_at 
+FROM chat_sessions 
+WHERE chat_sessions.dashboard_id = ? ORDER BY chat_sessions.created_at DESC
+ LIMIT ? OFFSET ?
+2026-09-21 10:59:42,889 INFO sqlalchemy.engine.Engine [generated in 0.00023s] ('x', 20, 0)
+2026-09-21 10:59:42,891 INFO sqlalchemy.engine.Engine COMMIT
+[PASS] chat_sessions_latest   no_tok=401 user_tok=200
+[test] shares_my_list ...
+2026-09-21 10:59:42,894 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-21 10:59:42,895 INFO sqlalchemy.engine.Engine SELECT share_links.dashboard_id, share_links.perm, share_links.expire_at, share_links.password, share_links.revoked, share_links.access_count, share_links.created_by, share_links.id, share_links.created_at, share_links.updated_at 
+FROM share_links 
+WHERE share_links.created_by = ? ORDER BY share_links.created_at DESC
+2026-09-21 10:59:42,895 INFO sqlalchemy.engine.Engine [generated in 0.00022s] ('qa_user',)
+2026-09-21 10:59:42,897 INFO sqlalchemy.engine.Engine COMMIT
+[PASS] shares_my_list         no_tok=401 user_tok=200
+[test] exports_my_list ...
+[PASS] exports_my_list        no_tok=401 user_tok=200
+[test] llm_config ...
+[PASS] llm_config             no_tok=401 user_tok=403 admin_tok=200
+[test] brain_configs ...
+[PASS] brain_configs          no_tok=401 user_tok=403 admin_tok=200
+[test] brain_config_cat ...
+[PASS] brain_config_cat       no_tok=401 user_tok=403 admin_tok=200
+[test] brain_config_hist ...
+[PASS] brain_config_hist      no_tok=401 user_tok=403 admin_tok=200
+
+==== G3 SUMMARY ====
+total=13 pass=13 fail=0
+G3_VERIFY_ALL_PASS
+[done] verify finished

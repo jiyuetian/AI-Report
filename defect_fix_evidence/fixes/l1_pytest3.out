@@ -1,0 +1,41 @@
+.................................F.............                          [100%]
+================================== FAILURES ===================================
+_____________ test_unique_row_count_reflects_total_duplicate_rows _____________
+
+    def test_unique_row_count_reflects_total_duplicate_rows():
+        """
+        修复回归：唯一性校验的 row_count 不应再固定为 0。
+        之前 _check_unique 把 row_indices 留空列表，导致前端"数量"列恒为 0，
+        与 message 中"涉及 N 行"自相矛盾，且去重修复无法精确定位行。
+        修复后 row_count 应等于实际重复行 rowid 数。
+        """
+        con = duckdb.connect(":memory:")
+        # 3 重复值：id=1 出现 3 次、id=2 出现 2 次、id=3 唯一 → 重复行共 5
+        con.execute("CREATE TABLE pk (id INT)")
+        con.executemany(
+            "INSERT INTO pk VALUES (?)",
+            [(1,), (1,), (1,), (2,), (2,), (3,)],
+        )
+        qc = QualityChecker(_DB(con), None)
+        res = qc.check_table("pk", [{"name": "id", "type": "INTEGER"}])
+        unique_issues = [i for i in res["issues"] if i["type"] == "unique"]
+        assert unique_issues, "未触发唯一性阻断项"
+        issue = unique_issues[0]
+        # 核心断言：row_count 必须真实反映"涉及行数"，不能再是 0
+>       assert issue["row_count"] == 5, (
+            f"唯一性问题 row_count 应为 5（实际重复行数），实际 {issue['row_count']}。"
+            "原 bug：_check_unique 把 row_indices 留空 → 前端数量列恒为 0"
+        )
+E       AssertionError: 唯一性问题 row_count 应为 5（实际重复行数），实际 0。原 bug：_check_unique 把 row_indices 留空 → 前端数量列恒为 0
+E       assert 0 == 5
+
+backend\tests\test_quality_checker.py:103: AssertionError
+============================== warnings summary ===============================
+..\..\..\..\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291
+  C:\Users\Asus009\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.9/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED backend/tests/test_quality_checker.py::test_unique_row_count_reflects_total_duplicate_rows
+1 failed, 46 passed, 1 warning in 12.42s

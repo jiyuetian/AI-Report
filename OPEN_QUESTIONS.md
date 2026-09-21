@@ -53,3 +53,33 @@
 - 截图路径：无绿标看板截图（绿标从未点亮，前端无需截图）。
 
 > 状态：BLOCKED on provider 选型。绿标验证需换可用模型（商汤 Plan B）方能闭环。
+
+---
+
+## #4 P0 安全债修复（G1–G4）遗留与待跟进项
+
+> 2026-09-21 完成 G1–G4 四类 P0 修复（分支 `p0-security-fixes`，基线 `f42dcc6`）。以下为修复过程中**仅登记、未顺手改**的问题与新发现，供后续迭代。
+
+### 4.1 鉴权规范化残留（G1/G3 范畴外，建议下一轮统一排查）
+- `backend/app/api/tokens.py`、`token_applications.py`、`chat.py` 中部分端点仍使用 `current_user: str = "anonymous"` 默认匿名（如 `tokens.py` L46/L73/L94/L163 附近）。G3 已修复 `shares/my/list`、`exports/my/list` 的匿名默认，但其余端点未动——属鉴权语义遗留，需后续统一收敛为「无 token 即 401」。
+- `security.py` 的 `get_current_user` 在非 Bearer 场景返回 401；但个别端点签名仍保留 `current_user` 缺省值，易造成「匿名可访问」误判。建议全局搜索 `= "anonymous"` 与 `= "anonymous"` 默认参数，统一移除。
+
+### 4.2 G2 归属过滤的边界（已修，但需注意）
+- G2.1 数据集列表 `GET /api/v1/datasets` 保留了 legacy 可见性（登录用户可见全部），仅详情/写操作做归属校验。若业务要求「只看自己」，需改 list 查询加 `created_by` 过滤（当前为兼容性妥协，已在 G3_FIX.md 标注）。
+- `dashboards` 表新增 `created_by`/`updated_by` 列（G2.1 提交 `2b06b74`），**历史数据这两列为 NULL**；归属校验对 NULL 行按「不可越权访问」处理（返回 404/403）。迁移历史看板归属需手动补 `created_by`，否则老看板对原主也不可见。
+
+### 4.3 G4 净化范围（已闭环，但需部署侧配合）
+- `bleach==6.4.0` 为**新增后端依赖**，项目无 `requirements.txt`，部署清单必须补 `bleach`（否则报告生成端点 import 失败 → 500）。详见 `FIX_SUMMARY.md` 部署注意。
+- 净化白名单不含 `style` 属性（防 CSS 注入）；若未来报告需内联样式，须改用受信任 `<style>` 块或扩展白名单并加 CSS sanitizer。
+
+### 4.4 回归结论（全量）
+- **L1 单测**：隔离 QA 库 `backend/data/qa_l1test.db` + 显式建表重跑，结果见 `defect_fix_evidence/fixes/l1_pytest2.out`。首跑 43 passed / 4 failed，4 失败均为环境/既有问题（`test_quality_checker` 的 `row_count` 误判、`test_run_status_recovery` ×3 缺 conftest 建表），**非 G1–G4 引入**。
+- **L2 前端**：`tsc --noEmit` 退出码 0，类型检查通过（`frontend_tsc.out`）。
+- **L5 安全复现**：`g3_verify.py` 13/13 PASS、`g4_verify.py` 22/22 PASS（见各自 `.out`），P0 清零。
+- **L3 E2E**：由 G3/G4 验证脚本经 ASGI 直调覆盖主链路（鉴权拒绝 + 报告净化），等价于端到端冒烟。
+
+### 4.5 L1 回归暴露的预存缺陷（非 G1–G4 引入，仅登记）
+- `backend/tests/test_quality_checker.py::test_unique_row_count_reflects_total_duplicate_rows` 失败：`QualityChecker._check_unique` 的 `row_count` 仍恒为 0（期望 5），导致前端"涉及行数"列失真、去重无法精确定位行。该测试为"修复回归"用例，说明对应修复未落库；属 pre-existing 逻辑 bug，**不在 G1–G4 范围**，本次不顺手改，登记待修。
+- 隔离 QA 库重跑 L1：46 passed / 1 failed（首跑默认库 43 passed / 4 failed 中的 3 个 `no such table` 环境失败，已随隔离库显式建表消除）。**G1–G4 引入的回归为 0。**
+
+> 状态：G1–G4 已交付，P0 清零；#4.1/#4.2/#4.5 为后续迭代项，不阻塞本次发布。
