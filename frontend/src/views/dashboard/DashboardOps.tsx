@@ -469,7 +469,7 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
           locale={{ emptyText: <Empty description="无匹配对话" /> }}
           renderItem={h => (
             // 3.7：删除此前只弹 message.success('已删除') 但数据纹丝不动（假动作）→ 改为禁用 + 标注，与右侧「导出」一致
-            <List.Item actions={[<Tooltip key="d" title="删除（即将上线）"><Button size="small" type="text" danger disabled onClick={() => message.success('已删除')}>删除</Button></Tooltip>, <Tooltip key="e" title="导出对话（即将上线）"><Button size="small" type="text" disabled onClick={() => message.info('导出对话即将上线')}>导出</Button></Tooltip>]}>
+            <List.Item actions={[<Tooltip key="d" title="删除（即将上线）"><Button size="small" type="text" danger disabled>删除</Button></Tooltip>, <Tooltip key="e" title="导出对话（即将上线）"><Button size="small" type="text" disabled onClick={() => message.info('导出对话即将上线')}>导出</Button></Tooltip>]}>
               <List.Item.Meta title={h.title} description={<><div style={{ color: 'rgba(0,0,0,.45)' }}>{h.time}</div>{h.summary}</>} />
             </List.Item>
           )}

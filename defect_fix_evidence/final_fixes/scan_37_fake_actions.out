@@ -1,0 +1,13 @@
+=== 3.7 全仓假动作扫描 v3（按钮级精准判定）===
+扫描 frontend/src：文件 36，onClick 处理器 139 处
+判据：处理器体只有一句 message.* 调用，且无 await/请求/setState
+
+🔴 R1 假动作（点了只弹提示、谎报成功，实际无副作用）：0 处
+  （无）
+
+🟠 R2 空壳可点（文案说"即将上线"但按钮仍可点，应 disabled+Tooltip）：0 处
+  （无）
+
+✅ R3 诚实标注（"即将上线"且已 disabled）：2 处
+  frontend/src/views/dashboard/DashboardOps.tsx:394  [info] '二维码即将上线'
+  frontend/src/views/dashboard/DashboardOps.tsx:472  [info] '导出对话即将上线'
