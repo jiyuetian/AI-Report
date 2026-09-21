@@ -1,0 +1,26 @@
+[PASS] strip_exec::<script>alert(1)</script  -> alert(1)
+[PASS] strip_exec::<img src=x onerror=alert  -> <img src="x">
+[PASS] strip_exec::<svg/onload=alert(1)>
+[PASS] strip_exec::<a href="javascript:aler  -> <a>x</a>
+[PASS] strip_exec::<iframe src="javascript:
+[PASS] strip_exec::<div style="background:u  -> <div>x</div>
+[PASS] strip_exec::<object data="javascript
+[PASS] strip_exec::<p onclick="alert(1)">hi  -> <p>hi</p>
+[PASS] strip_exec::<!--<script>alert(1)</sc
+[PASS] keep_safe::<p>正常<strong>加粗</strong>  -> <p>正常<strong>加粗</strong>文本</p>
+[PASS] keep_safe::<div class="echarts-char  -> <div class="echarts-chart" data-option="{&quot;x&q
+[PASS] keep_safe::<table class="data-table  -> <table class="data-table"><tbody><tr><th>列</th></t
+[PASS] keep_safe::<a href="https://example  -> <a href="https://example.com">链接</a>
+[PASS] keep_safe::<ul><li>项1</li><li>项2</l  -> <ul><li>项1</li><li>项2</li></ul>
+[PASS] render:chapter_img_onerror_gone  -> <table class="data-table"><tbody><tr><td><img src="x">col</t
+[PASS] render:chapter_script_gone  -> alert('xss')<p>正常文本保留</p>
+[PASS] render:no_iframe
+[PASS] render:no_javascript_proto
+[PASS] render:keeps_echarts
+[PASS] render:keeps_normal_text
+[PASS] render:keeps_md_list
+[PASS] render:theme_escaped
+
+==== G4 SUMMARY ====
+total=22 pass=22 fail=0
+G4_VERIFY_ALL_PASS
