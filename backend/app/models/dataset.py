@@ -14,6 +14,10 @@ class Dataset(Base):
     
     # 关联文件
     file_id: Mapped[str] = mapped_column(ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+
+    # 归属用户（G2.1 横向越权修复：标记数据集创建者，读取时校验归属）
+    # NULL 视为历史/匿名数据（legacy），任何已登录用户可读，避免破坏存量演示数据
+    created_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     
     # DuckDB表名（文档型数据集为空：不建表，文本存 profile_json.extracted_text）
     duckdb_table: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

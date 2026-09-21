@@ -8,6 +8,22 @@ from app.core.config import settings
 from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills
 
 
+def _ensure_dataset_owner(sync_conn):
+    """增量迁移：datasets 新增 created_by 归属列（G2.1 横向越权修复）
+
+    仅新增可空列，SQLite 原生支持 ALTER TABLE ADD COLUMN，无需重建表。
+    存量数据 created_by 为 NULL，按 legacy 处理（任何已登录用户可读）。
+    """
+    from sqlalchemy import text, inspect
+    insp = inspect(sync_conn)
+    if "datasets" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("datasets")}
+    if "created_by" not in existing:
+        sync_conn.execute(text("ALTER TABLE datasets ADD COLUMN created_by VARCHAR(36)"))
+        print("🔧 datasets.created_by 已新增（归属列，存量数据视为 legacy）")
+
+
 def _ensure_report_columns(sync_conn):
     """增量迁移：确保 brain_trace_summaries 含报告生成所需列"""
     from sqlalchemy import text, inspect
@@ -112,6 +128,10 @@ async def lifespan(app: FastAPI):
         # 增量迁移：为已存在的 brain_trace_summaries 补充报告生成新列
         async with engine.begin() as conn:
             await conn.run_sync(_ensure_report_columns)
+
+        # 增量迁移：datasets 新增 created_by 归属列（G2.1 横向越权修复）
+        async with engine.begin() as conn:
+            await conn.run_sync(_ensure_dataset_owner)
 
         print("✅ 报告扩展列已就绪")
 

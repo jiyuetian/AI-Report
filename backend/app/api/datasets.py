@@ -41,6 +41,36 @@ def _find_uploaded_file(file_id: str):
     return None, None
 
 
+async def _assert_dataset_access(db: AsyncSession, dataset_id: str, current_user: Dict):
+    """G2.1 横向越权防护：校验当前用户对该数据集的读取权限。
+
+    规则（与 dashboards 既有 delete 策略一致）：
+    - 数据集不存在 → 404（不泄露存在性）
+    - created_by 为 NULL（历史/匿名 legacy 数据）→ 允许（避免破坏存量演示）
+    - created_by == 当前用户 user_id → 允许
+    - 当前用户为超管 → 允许
+    - 其余 → 404（等同不存在，避免越权者探测他人数据）
+    """
+    result = await db.execute(select(Dataset).where(Dataset.id == dataset_id))
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "DATASET_NOT_FOUND", "message": "数据集不存在"},
+        )
+    owner = getattr(record, "created_by", None)
+    if owner is None:
+        return record  # legacy 数据，任何已登录用户可读
+    if owner == current_user.get("user_id"):
+        return record
+    if current_user.get("is_superuser"):
+        return record
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"code": "DATASET_NOT_FOUND", "message": "数据集不存在"},
+    )
+
+
 class DatasetCreateRequest(BaseModel):
     file_id: str
     name: str = Field(..., min_length=1, max_length=200)  # P3-3：限长
@@ -146,6 +176,7 @@ async def create_dataset(
                 id=dataset_id,
                 name=sanitize_text(request.name),
                 file_id=file_id,
+                created_by=current_user["user_id"],
                 duckdb_table=None,
                 row_count=0,
                 schema_json={
@@ -197,6 +228,7 @@ async def create_dataset(
             id=dataset_id,
             name=sanitize_text(request.name),
             file_id=file_id,
+            created_by=current_user["user_id"],
             duckdb_table=table_name,
             row_count=table_info["row_count"],
             schema_json={
@@ -238,22 +270,26 @@ async def create_dataset(
 
 
 @router.get("/{dataset_id}")
-async def get_dataset(dataset_id: str, db: AsyncSession = Depends(get_db)):
-    """获取数据集信息"""
-    result = await db.execute(select(Dataset).where(Dataset.id == dataset_id))
-    record = result.scalar_one_or_none()
-    if not record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "DATASET_NOT_FOUND", "message": "数据集不存在"}
-        )
+async def get_dataset(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """获取数据集信息（G2.1：需登录 + 归属校验）"""
+    record = await _assert_dataset_access(db, dataset_id, current_user)
     return record.to_dict()
 
 
 @router.get("/{dataset_id}/preview")
-async def preview_dataset(dataset_id: str, limit: int = 5):
-    """预览数据集（前N行）"""
+async def preview_dataset(
+    dataset_id: str,
+    limit: int = 5,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """预览数据集（前N行）（G2.1：需登录 + 归属校验）"""
     try:
+        await _assert_dataset_access(db, dataset_id, current_user)
         db = get_duckdb()
         table_name = f"ds_{dataset_id.replace('-', '_')}"
         
@@ -286,16 +322,21 @@ async def preview_dataset(dataset_id: str, limit: int = 5):
 
 
 @router.get("/{dataset_id}/profile")
-async def profile_dataset(dataset_id: str):
+async def profile_dataset(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
     """
-    获取数据集字段画像（M1-07b）
-    
+    获取数据集字段画像（M1-07b）（G2.1：需登录 + 归属校验）
+
     返回：
     - 8类字段类型推断
     - 每个字段的缺失率、基数、分布
     - 数据粒度识别（grain）
     """
     try:
+        await _assert_dataset_access(db, dataset_id, current_user)
         db = get_duckdb()
         table_name = f"ds_{dataset_id.replace('-', '_')}"
         
@@ -399,7 +440,9 @@ async def delete_dataset(
     db: AsyncSession = Depends(get_db),
     current_user: Dict = Depends(get_current_user)
 ):
-    """删除数据集"""
+    """删除数据集（G2.1：需登录 + 归属校验）"""
+    # G2.1 归属校验：无权限视为不存在，先查后删（置于 try 外，避免被 500 分支吞掉 404）
+    await _assert_dataset_access(db, dataset_id, current_user)
     try:
         # 删除DuckDB表
         duckdb = get_duckdb()
@@ -441,16 +484,21 @@ async def list_duckdb_tables(current_user: Dict = Depends(require_admin)):
 
 
 @router.get("/{dataset_id}/chart-data")
-async def get_chart_data(dataset_id: str):
+async def get_chart_data(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
     """
-    获取图表数据（用于前端渲染真实的ECharts图表）
-    
+    获取图表数据（用于前端渲染真实的ECharts图表）（G2.1：需登录 + 归属校验）
+
     返回数据包括：
     - 所有字段的样本数据
     - 数值字段统计（min/max/avg/median）
     - 分类字段分布
     """
     try:
+        await _assert_dataset_access(db, dataset_id, current_user)
         db = get_duckdb()
         # 优先读取清洗层
         table_name = f"ds_{dataset_id.replace('-', '_')}_cleaned"
