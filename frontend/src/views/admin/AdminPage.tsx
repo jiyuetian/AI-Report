@@ -500,6 +500,21 @@ const SettingsTab: React.FC = () => {
   const appThemeCtx = useContext(AppThemeContext);
   const theme = appThemeCtx?.theme || 'light';
 
+  // 3.6：LLM 网关状态改为实时真取数（/health → llm_reachable）。
+  // 此前写死"已启用"，在模型实际不可达时仍显示已启用——与 2.1/2.4 的诚实标注原则冲突。
+  const [llmReachable, setLlmReachable] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    http.get<any>('/health')
+      .then((res: any) => {
+        if (!alive) return;
+        const v = res?.llm_reachable ?? res?.data?.llm_reachable;
+        setLlmReachable(typeof v === 'boolean' ? v : null);
+      })
+      .catch(() => { if (alive) setLlmReachable(null); });
+    return () => { alive = false; };
+  }, []);
+
   const ThemeCard: React.FC<{ keyName: string; label: string; active: boolean; onClick: () => void }> = ({
     keyName, label, active, onClick,
   }) => (
@@ -520,12 +535,24 @@ const SettingsTab: React.FC = () => {
 
   return (
     <Card title="系统设置">
-      <Alert message="配置中心已实现（M2-01），设置通过配置中心管理" type="info" showIcon />
+      {/* 3.6：原文案"配置中心已实现（M2-01）"——全站检索并无"配置中心"页面，属失效声明，已改为如实说明 */}
+      <Alert
+        message="系统设置：仅「主题配置」为真实可操作项；其余状态项尚未接入数据源，暂标注为「即将上线」，不做假展示。"
+        type="info"
+        showIcon
+      />
       <div style={{ marginTop: 16 }}>
-        <p><strong>当前配置版本:</strong> v2.1.0</p>
-        <p><strong>LLM网关:</strong> 已启用</p>
-        <p><strong>审计日志:</strong> 已启用</p>
-        <p><strong>自动备份:</strong> 每日00:00</p>
+        {/* LLM 网关：实时真取数，三态（可达 / 不可达 / 未知），不谎报 */}
+        <p>
+          <strong>LLM网关:</strong>{' '}
+          {llmReachable === true && <Tag color="green">已启用（实时检测可达）</Tag>}
+          {llmReachable === false && <Tag color="red">当前不可达（将自动降级为规则生成）</Tag>}
+          {llmReachable === null && <Tag color="default">状态未知（健康检查未返回）</Tag>}
+        </p>
+        {/* 3.6：以下三项此前为硬编码假值（v2.1.0 / 已启用 / 每日00:00），无数据源支撑 → 标注即将上线 */}
+        <p><strong>当前配置版本:</strong> <Tag>即将上线</Tag></p>
+        <p><strong>审计日志:</strong> <Tag>即将上线</Tag></p>
+        <p><strong>自动备份:</strong> <Tag>即将上线</Tag></p>
       </div>
       <div style={{ marginTop: 16 }}>
         <p style={{ fontWeight: 600, marginBottom: 8 }}>主题配置（实时预览）</p>
