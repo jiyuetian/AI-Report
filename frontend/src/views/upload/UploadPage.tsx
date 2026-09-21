@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Card, Upload, Button, Progress, message, Modal, Typography, Space, List, Tag, Table, Steps, Segmented, Spin } from 'antd'
-import { InboxOutlined, PlusOutlined, FileExcelOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DownloadOutlined, FileTextOutlined, ExclamationCircleOutlined, CheckCircleOutlined, WarningOutlined, FolderOpenOutlined, SafetyOutlined, ThunderboltOutlined, ShareAltOutlined, ArrowRightOutlined } from '@ant-design/icons'
+import { InboxOutlined, PlusOutlined, FileExcelOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DownloadOutlined, FileTextOutlined, ExclamationCircleOutlined, CheckCircleOutlined, WarningOutlined, FolderOpenOutlined, SafetyOutlined, ThunderboltOutlined, ShareAltOutlined, ArrowRightOutlined, DownOutlined, UpOutlined } from '@ant-design/icons'
 import type { UploadFile, UploadProps } from 'antd/es/upload/interface'
 import './UploadPage.css'
 import { SheetSelectModal, EncodingSelectModal } from '../../components/modals'
@@ -61,6 +61,8 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false)
   // 3.1：上传≥1份后 Dragger 收缩为一行摘要（不占第一屏），点"继续上传"再展开
   const [uploadExpanded, setUploadExpanded] = useState(false)
+  // 3.1 深度补充：上传队列同样会撑满首屏（N 份文件 = N 行），全部完成后一并收缩
+  const [queueExpanded, setQueueExpanded] = useState(false)
   const [duplicateModal, setDuplicateModal] = useState<{
     visible: boolean
     file: UploadItem | null
@@ -826,6 +828,14 @@ export default function UploadPage() {
   // 3.1：已上传≥1份 → 收缩 Dragger（用 done 份数，避免"上传中"就误收缩）
   const shouldCollapse = doneFiles.length > 0 && !uploadExpanded
 
+  // 3.1 深度补充：上传队列是 N 行列表，N 大时同样撑满首屏 → 全部结束后一并收缩成一行。
+  // 边界：只要还有 uploading / error 项就必须保持展开（用户要看进度条与重试按钮）。
+  const activeQueueItems = fileList.filter(
+    f => f.status === 'uploading' || f.status === 'error'
+  )
+  const queueCollapsed =
+    fileList.length > 0 && activeQueueItems.length === 0 && !queueExpanded
+
   return (
     <div className="upload-page">
       {/* Hero 首屏标语区 */}
@@ -917,9 +927,40 @@ export default function UploadPage() {
         </div>
       </Card>
 
-      {/* 上传列表 */}
-      {fileList.length > 0 && (
-        <Card title="上传队列" className="upload-list-card" style={{ marginTop: 24 }}>
+      {/* 上传列表：全部结束后收缩为一行，避免 N 份文件撑满首屏（3.1 深度补充） */}
+      {fileList.length > 0 && queueCollapsed && (
+        <div className="upload-collapsed-bar" style={{ marginTop: 24 }}>
+          <span className="upload-collapsed-text">
+            上传队列 · {fileList.length} 份文件，全部完成
+          </span>
+          <Button
+            type="link"
+            size="small"
+            icon={<DownOutlined />}
+            onClick={() => setQueueExpanded(true)}
+          >
+            展开队列
+          </Button>
+        </div>
+      )}
+      {fileList.length > 0 && !queueCollapsed && (
+        <Card
+          title="上传队列"
+          className="upload-list-card"
+          style={{ marginTop: 24 }}
+          extra={
+            activeQueueItems.length === 0 ? (
+              <Button
+                type="link"
+                size="small"
+                icon={<UpOutlined />}
+                onClick={() => setQueueExpanded(false)}
+              >
+                收起
+              </Button>
+            ) : null
+          }
+        >
           <List
             dataSource={fileList}
             renderItem={item => (
