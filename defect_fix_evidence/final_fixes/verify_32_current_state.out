@@ -1,0 +1,40 @@
+==============================================================================
+3.2a-e 现状验证（方案 C 可行性）
+==============================================================================
+
+【a】规则引擎实际耗时（方案 C 的前提：必须毫秒级才能"秒出图"）
+  字段数 = 16，重复 20 次
+  平均 20.69 ms | P50 15.70 ms | P95 68.29 ms | 最大 68.29 ms
+  产出图表数 = 6
+  generated_by = rule_engine_v2
+  ✅ 结论：毫秒级，满足"秒出图"前提（P95 < 100ms）
+
+【b】AI 链路超时配置
+  BRAIN_S3_LLM_TIMEOUT     = 180.0
+  BRAIN_AI_CHOICE_TIMEOUT  = (未找到)
+  BRAIN_S2_USE_LLM         = True
+
+  >>> 最坏耗时测算：S3 LLM 硬超时 180.0 秒 + 用户决策等待 120 秒 = 300 秒（5.0 分钟）
+      即：LLM 抽风时加载页最多卡 5.0 分钟，且中途弹框要求用户做选择。
+      这是方案 C（规则图秒出 + AI 后台增强）要消除的头号风险。
+
+【c】AI 失败弹框是否真会阻塞流水线
+  存在 _request_user_choice 调用 : True
+  默认等待超时                   : (见 _request_user_choice 注释=120) 秒
+  ⚠️ 结论：AI 失败会暂停流水线等用户决策，最多卡 120 秒 —— 路演头号风险
+
+【d】前端加载页支持 partial 跳转，需改哪几处
+  完成判定（需扩为 completed|partial）            L[105]
+  轮询间隔                                   L[179]
+  ai_awaiting 弹框（方案 C 下不再需要）             L[151, 152, 153]
+  完成后跳转 onComplete                       L[121]
+
+【e】版本表能否承载 v1(规则) / v2(AI增强)
+  DashboardVersion.version_number : 有
+  DashboardVersion.config_snapshot : 有
+  DashboardVersion.is_auto_save : 有
+  DashboardVersion.prompt_version : 有
+  写入路径：[('\\backend\\app\\core\\version_manager.py', 1), ('\\backend\\app\\models\\dashboard.py', 1)]
+  ✅ 结论：表结构能承载；写入路径需新增（方案 C 的 P2）
+
+==============================================================================
