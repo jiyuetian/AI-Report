@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
+    # 多 key 容错：provider 列表（JSON 数组）。每项 {name,base_url,api_key,model,function_calling,json_mode}。
+    # 未设/为空时回退到上面的单 key（LLM_API_KEY/BASE_URL/MODEL），保持向后兼容。
+    # 例：LLM_PROVIDERS=[{"name":"sensenova","base_url":"https://token.sensenova.cn/v1","api_key":"sk-...","model":"kimi-k3"},{"name":"nvidia","base_url":"https://integrate.api.nvidia.com/v1","api_key":"nvapi-...","model":"nvidia/nemotron-3.5-lightning-30b-a3b"}]
+    LLM_PROVIDERS: str = ""
 
     # 模型能力标记（移植 B 的能力探测思想：
     #   L3 = 支持 OpenAI 风格函数调用 -> 可一次性下发 tools/整块改写
@@ -75,6 +79,48 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def get_llm_provider_list() -> list:
+    """返回 LLM provider 列表。
+
+    - 若 LLM_PROVIDERS 配了合法非空 JSON 数组 → 直接返回（每项可省略 base_url/model 继承默认）。
+    - 否则回退单 key：用 LLM_API_KEY/BASE_URL/MODEL 构造一个 provider。
+    - 都没有 → 返回空列表（网关进入 mock 模式）。
+    向后兼容：不配 LLM_PROVIDERS 时行为与旧版单 key 完全一致。
+    """
+    import json
+    raw = getattr(settings, "LLM_PROVIDERS", "") or ""
+    if raw.strip():
+        try:
+            items = json.loads(raw)
+            if isinstance(items, list) and items:
+                norm = []
+                for it in items:
+                    if isinstance(it, dict) and it.get("api_key"):
+                        norm.append({
+                            "name": it.get("name", f"provider{len(norm)}"),
+                            "base_url": it.get("base_url") or settings.LLM_BASE_URL,
+                            "api_key": it.get("api_key"),
+                            "model": it.get("model") or settings.LLM_MODEL,
+                            "function_calling": it.get("function_calling", settings.LLM_FUNCTION_CALLING),
+                            "json_mode": it.get("json_mode", settings.LLM_JSON_MODE),
+                        })
+                if norm:
+                    return norm
+        except Exception as e:
+            print(f"[LLM] LLM_PROVIDERS 解析失败，回退单 key: {e}")
+    # 单 key 回退
+    if settings.LLM_API_KEY:
+        return [{
+            "name": "default",
+            "base_url": settings.LLM_BASE_URL,
+            "api_key": settings.LLM_API_KEY,
+            "model": settings.LLM_MODEL,
+            "function_calling": settings.LLM_FUNCTION_CALLING,
+            "json_mode": settings.LLM_JSON_MODE,
+        }]
+    return []
 
 
 @lru_cache()

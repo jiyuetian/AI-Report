@@ -63,7 +63,7 @@ def _extract_json(text: str) -> Optional[Any]:
 
 # 从settings加载配置（确保.env文件生效）
 try:
-    from app.core.config import settings
+    from app.core.config import settings, get_llm_provider_list
     LLM_API_KEY = settings.LLM_API_KEY or "mock-key-for-dev"
     LLM_BASE_URL = settings.LLM_BASE_URL or "http://localhost:8001/v1"
     LLM_MODEL = settings.LLM_MODEL or "gpt-4"
@@ -77,7 +77,14 @@ except Exception:
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-MAX_RETRIES = 1
+MAX_RETRIES = 2  # 每 key 内瞬时重试 2 次（初始 1 + 重试 2 = 3 次）；外层再逐 provider 切换
+
+
+def _mask(text: str) -> str:
+    """脱敏：遮蔽响应错误中的密钥片段（sk-/nvapi-/agnes- 前缀），仅保留前缀避免误伤模型名。"""
+    if not text:
+        return text
+    return re.sub(r'(sk|nvapi|agnes)[-A-Za-z0-9]{6,}', r'\1-***', text)
 # 2026-09-20 放宽至 120s：NVIDIA nemotron-3.5-lightning 推理模型经 7897 代理出口，
 # 图表 JSON 真实生成常需 50~120s，原 60s 会让单次调用未返回即超时→重试→降级规则兜底。
 # 配合 BRAIN_S3_LLM_TIMEOUT=180（外层包裹）给足总时长，让慢推理模型返回以点亮绿标。
@@ -284,16 +291,30 @@ class LLMGateway:
     7. 错误处理与降级
     """
     
-    def __init__(self):
-        self.client = httpx.AsyncClient(
-            base_url=LLM_BASE_URL,
+    def __init__(self, providers: Optional[List[Dict]] = None):
+        # providers: provider 列表（每项 {name,base_url,api_key,model,...}）。
+        # 缺省则从 config.get_llm_provider_list() 读取（含单 key 回退）。
+        self.providers = providers if providers is not None else get_llm_provider_list()
+        self._clients: Dict[str, httpx.AsyncClient] = {}  # name -> client 惰性池
+        self.mock_mode = not self.providers  # 无可用 provider → Mock 模式
+
+    def _build_client(self, prov: Dict) -> httpx.AsyncClient:
+        base_url = prov.get("base_url") or "http://localhost:8001/v1"
+        api_key = prov.get("api_key") or "mock-key-for-dev"
+        return httpx.AsyncClient(
+            base_url=base_url,
             headers={
-                "Authorization": f"Bearer {LLM_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             },
             timeout=TIMEOUT_SECONDS
         )
-        self.mock_mode = not LLM_API_KEY or LLM_API_KEY == "mock-key-for-dev"  # Mock模式标识
+
+    def _get_client(self, prov: Dict) -> httpx.AsyncClient:
+        name = prov.get("name", "default")
+        if name not in self._clients:
+            self._clients[name] = self._build_client(prov)
+        return self._clients[name]
     
     async def chat_complete(
         self,
@@ -327,147 +348,161 @@ class LLMGateway:
                     {"role": "user", "content": request.prompt}
                 ]
             
-            request_body = {
-                "model": request.model or LLM_MODEL,  # 模型覆盖优先，否则用 settings.LLM_MODEL
-                "messages": messages,
-                "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
-            }
-            # Sensenova API 需要 business_type，OpenAI 兼容接口（如讯飞）不需要
-            if "sensenova" in LLM_BASE_URL:
-                request_body["business_type"] = "chat"
-            # kimi 系列仅允许 temperature=1，否则 400 invalid_request_error
-            if "kimi" in (request.model or LLM_MODEL or ""):
-                request_body["temperature"] = 1
-            
-            # JSON模式
-            if request.json_mode:
-                request_body["response_format"] = {"type": "json_object"}
-            
-            # 3. 执行调用（带重试）
+            # Mock 模式：无可用 provider，直接返回模拟数据
+            if self.mock_mode:
+                await asyncio.sleep(0.5)  # 模拟延迟
+                mock_response = self._generate_mock_response(request)
+                duration_ms = int((time.time() - start_time) * 1000)
+                return LLMResponse(
+                    success=True,
+                    content=json.dumps(mock_response, ensure_ascii=False),
+                    response_json=mock_response,
+                    tokens_used=TokenCounter.estimate(request.prompt) + 500,
+                    tokens_prompt=TokenCounter.estimate(request.prompt),
+                    tokens_completion=500,
+                    duration_ms=duration_ms,
+                    model="mock-llm",
+                    retry_count=0,
+                )
+
             last_error = None
-            for retry in range(MAX_RETRIES + 1):
-                try:
-                    print(f"[LLM] 调用 attempt {retry + 1}/{MAX_RETRIES + 1}, request_id={request_id}")
-                    
-                    if self.mock_mode:
-                        # Mock模式返回模拟数据
-                        await asyncio.sleep(0.5)  # 模拟延迟
-                        mock_response = self._generate_mock_response(request)
-                        
+            # 外层：逐个 provider 容错（多 key / 跨 provider 切换）
+            for pi, prov in enumerate(self.providers):
+                client = self._get_client(prov)
+                prov_name = prov.get("name", f"provider#{pi}")
+                base_url = prov.get("base_url") or ""
+                model = request.model or prov.get("model") or "gpt-4"
+                need_business = "sensenova" in (base_url or "")  # SenseNova 需 business_type
+                is_kimi = "kimi" in (model or "")  # kimi 仅允许 temperature=1
+
+                key_exhausted = False
+                # 内层：单 key 内瞬时重试（MAX_RETRIES 次）
+                for retry in range(MAX_RETRIES + 1):
+                    try:
+                        print(f"[LLM] provider {prov_name} attempt {retry + 1}/{MAX_RETRIES + 1}, request_id={request_id}")
+                        request_body = {
+                            "model": model,
+                            "messages": messages,
+                            "max_tokens": request.max_tokens,
+                            "temperature": 1.0 if is_kimi else request.temperature,
+                        }
+                        if need_business:
+                            request_body["business_type"] = "chat"
+                        if request.json_mode:
+                            request_body["response_format"] = {"type": "json_object"}
+
+                        eff_timeout = getattr(request, 'timeout', None) or TIMEOUT_SECONDS
+                        response = await client.post(
+                            "/chat/completions",
+                            json=request_body,
+                            timeout=eff_timeout
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        content = data["choices"][0]["message"]["content"]
+                        response_json = None
+                        if request.json_mode:
+                            response_json = _extract_json(content)
+                            # 若JSON提取失败则不视为成功（交给上层降级），避免抛异常中断
+                            if response_json is None:
+                                raise ValueError("LLM响应未包含有效JSON")
+                        usage = data.get("usage", {})
+                        prompt_tokens = usage.get("prompt_tokens", TokenCounter.estimate(request.prompt))
+                        completion_tokens = usage.get("completion_tokens", 0)
+                        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
                         duration_ms = int((time.time() - start_time) * 1000)
-                        
+                        await self._record_usage(request.user_id, total_tokens)
                         return LLMResponse(
                             success=True,
-                            content=json.dumps(mock_response, ensure_ascii=False),
-                            response_json=mock_response,
-                            tokens_used=TokenCounter.estimate(request.prompt) + 500,
-                            tokens_prompt=TokenCounter.estimate(request.prompt),
-                            tokens_completion=500,
+                            content=content,
+                            response_json=response_json,
+                            tokens_used=total_tokens,
+                            tokens_prompt=prompt_tokens,
+                            tokens_completion=completion_tokens,
                             duration_ms=duration_ms,
-                            model="mock-llm",
-                            retry_count=retry
+                            model=data.get("model", model),
+                            retry_count=retry,
                         )
-                    
-                    # 真实调用（支持请求级超时，默认用全局）
-                    eff_timeout = getattr(request, 'timeout', None) or TIMEOUT_SECONDS
-                    response = await self.client.post(
-                        "/chat/completions",
-                        json=request_body,
-                        timeout=eff_timeout
-                    )
-                    response.raise_for_status()
-                    
-                    data = response.json()
-                    
-                    # 解析响应
-                    content = data["choices"][0]["message"]["content"]
-                    response_json = None
-                    if request.json_mode:
-                        response_json = _extract_json(content)
-                        # 若JSON提取失败则不视为成功（交给上层降级），避免抛异常中断
-                        if response_json is None:
-                            raise ValueError("LLM响应未包含有效JSON")
-                    
-                    # Token使用量
-                    usage = data.get("usage", {})
-                    prompt_tokens = usage.get("prompt_tokens", TokenCounter.estimate(request.prompt))
-                    completion_tokens = usage.get("completion_tokens", 0)
-                    total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-                    
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    
-                    # 记录使用量
-                    await self._record_usage(request.user_id, total_tokens)
-                    
-                    return LLMResponse(
-                        success=True,
-                        content=content,
-                        response_json=response_json,
-                        tokens_used=total_tokens,
-                        tokens_prompt=prompt_tokens,
-                        tokens_completion=completion_tokens,
-                        duration_ms=duration_ms,
-                        model=data.get("model", "unknown"),
-                        retry_count=retry
-                    )
-                    
-                except httpx.TimeoutException as e:
-                    last_error = f"LLM超时 (attempt {retry + 1}): {str(e)}"
-                    print(f"[LLM] {last_error}")
-                    if retry < MAX_RETRIES:
-                        await asyncio.sleep(2 ** retry)  # 指数退避
-                        continue
-                    
-                except httpx.NetworkError as e:
-                    last_error = f"LLM网络错误 (attempt {retry + 1}): {str(e)}"
-                    print(f"[LLM] {last_error}")
-                    if retry < MAX_RETRIES:
-                        await asyncio.sleep(2 ** retry)
-                        continue
-                    
-                except httpx.HTTPStatusError as e:
-                    # 提取API返回的错误信息
-                    try:
-                        err_body = e.response.text[:500]
-                    except Exception:
-                        err_body = str(e)
-                    last_error = f"LLM API错误 (HTTP {e.response.status_code}): {err_body}"
-                    print(f"[LLM] {last_error}")
-                    if retry < MAX_RETRIES:
-                        await asyncio.sleep(2 ** retry)
-                        continue
-                    
-                except Exception as e:
-                    last_error = f"LLM未知错误: {str(e)}"
-                    print(f"[LLM] {last_error}")
-                    break
-            
-            # 全部重试失败
-            print(f"[LLM] 调用失败，已重试{MAX_RETRIES}次，使用降级响应")
-            
-            # 降级响应一律标记为失败，不再伪装成功
+                    except httpx.TimeoutException as e:
+                        last_error = f"LLM超时(attempt {retry + 1}): {e}"
+                        print(f"[LLM] provider {prov_name} {last_error}")
+                        if retry < MAX_RETRIES:
+                            await asyncio.sleep(2 ** retry)  # 指数退避
+                            continue
+                        key_exhausted = True
+                        break
+                    except httpx.NetworkError as e:
+                        last_error = f"LLM网络错误(attempt {retry + 1}): {e}"
+                        print(f"[LLM] provider {prov_name} {last_error}")
+                        if retry < MAX_RETRIES:
+                            await asyncio.sleep(2 ** retry)
+                            continue
+                        key_exhausted = True
+                        break
+                    except httpx.HTTPStatusError as e:
+                        status = e.response.status_code
+                        try:
+                            err_body = e.response.text[:500]
+                        except Exception:
+                            err_body = str(e)
+                        if status == 429:
+                            last_error = f"LLM限流(429, attempt {retry + 1}): {err_body}"
+                            print(f"[LLM] provider {prov_name} {last_error}")
+                            if retry < MAX_RETRIES:
+                                # 优先采用服务端 Retry-After，否则指数退避
+                                ra = e.response.headers.get("retry-after")
+                                wait = float(ra) if (ra and str(ra).strip().isdigit()) else 2 ** retry
+                                await asyncio.sleep(wait)
+                                continue
+                            key_exhausted = True
+                            break
+                        else:
+                            # 4xx 非 429：key 无效，立即跳下一 provider，不重试
+                            last_error = f"LLM API错误(HTTP {status}): {err_body}"
+                            print(f"[LLM-FAILOVER] provider {prov_name} 失败({status} key无效)，切换下一 provider")
+                            key_exhausted = True
+                            break
+                    except ValueError as e:
+                        # JSON 解析失败：本 key 仅重试 1 次，仍失败则切 key（另一 provider 可能更听话）
+                        last_error = f"LLM响应JSON解析失败: {e}"
+                        print(f"[LLM] provider {prov_name} {last_error}")
+                        if retry < 1:
+                            await asyncio.sleep(1)
+                            continue
+                        key_exhausted = True
+                        break
+                    except Exception as e:
+                        last_error = f"LLM未知错误: {e}"
+                        print(f"[LLM] provider {prov_name} {last_error}")
+                        key_exhausted = True
+                        break
+                # 本 provider 失败 → 打 failover 日志（4xx 已打过，避免重复）
+                if key_exhausted and "key无效" not in (last_error or ""):
+                    print(f"[LLM-FAILOVER] provider {prov_name} 失败({_mask(last_error)})，切换下一 provider")
+                # 继续外层循环尝试下一 provider
+
+            # 所有 provider 均失败
+            print(f"[LLM-ALL-KEYS-FAILED] {len(self.providers)} 个 provider 均失败，进入降级")
             if fallback_response:
                 duration_ms = int((time.time() - start_time) * 1000)
                 return LLMResponse(
                     success=False,  # 明确标记为失败
                     content=None,
-                    error=last_error or "LLM全部重试失败，已降级",
+                    error=last_error or "所有 LLM provider 均失败",
                     tokens_used=0,
                     tokens_prompt=0,
                     tokens_completion=0,
                     duration_ms=duration_ms,
                     model="fallback",
                     retry_count=MAX_RETRIES,
-                    fallback_used=True
+                    fallback_used=True,
                 )
-            
             # 无降级响应
             return LLMResponse(
                 success=False,
                 content=None,
                 error=last_error,
-                retry_count=MAX_RETRIES
+                retry_count=MAX_RETRIES,
             )
             
         finally:
@@ -573,8 +608,12 @@ class LLMGateway:
             }
     
     async def close(self):
-        """关闭连接"""
-        await self.client.aclose()
+        """关闭所有 provider 客户端连接"""
+        for c in self._clients.values():
+            try:
+                await c.aclose()
+            except Exception:
+                pass
 
 
 # 全局网关实例（按需使用，或每次创建新实例）
