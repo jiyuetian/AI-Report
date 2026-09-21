@@ -485,6 +485,50 @@
   line-height: 1.6;
 }
 
+/* ====== 3.1：上传后收缩条（替代大 Dragger，不占第一屏） ====== */
+.upload-collapsed-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.upload-collapsed-text {
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.upload-collapsed-bar .ant-btn {
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+
+/* 暗色：对齐 upload-dragger 的暗色令牌（面板 #1f1f1f / 边框 #434343 / 文字 rgba 白） */
+[data-theme="dark"] .upload-collapsed-bar {
+  background: #1f1f1f;
+  border-color: #434343;
+}
+
+[data-theme="dark"] .upload-collapsed-text {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* 窄屏：文字与按钮换行，避免按钮被挤出卡片 */
+@media (max-width: 576px) {
+  .upload-collapsed-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .upload-collapsed-bar .ant-btn {
+    margin-left: 0;
+  }
+}
+
 /* 查看历史分析项目 */
 .home-history {
   text-align: center;

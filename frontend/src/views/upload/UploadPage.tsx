@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Card, Upload, Button, Progress, message, Modal, Typography, Space, List, Tag, Table, Steps, Segmented, Spin } from 'antd'
-import { InboxOutlined, FileExcelOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DownloadOutlined, FileTextOutlined, ExclamationCircleOutlined, CheckCircleOutlined, WarningOutlined, FolderOpenOutlined, SafetyOutlined, ThunderboltOutlined, ShareAltOutlined, ArrowRightOutlined } from '@ant-design/icons'
+import { InboxOutlined, PlusOutlined, FileExcelOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DownloadOutlined, FileTextOutlined, ExclamationCircleOutlined, CheckCircleOutlined, WarningOutlined, FolderOpenOutlined, SafetyOutlined, ThunderboltOutlined, ShareAltOutlined, ArrowRightOutlined } from '@ant-design/icons'
 import type { UploadFile, UploadProps } from 'antd/es/upload/interface'
 import './UploadPage.css'
 import { SheetSelectModal, EncodingSelectModal } from '../../components/modals'
@@ -59,6 +59,8 @@ function markGenDone(fid: string, dashboardId: string) {
 export default function UploadPage() {
   const [fileList, setFileList] = useState<UploadItem[]>([])
   const [uploading, setUploading] = useState(false)
+  // 3.1：上传≥1份后 Dragger 收缩为一行摘要（不占第一屏），点"继续上传"再展开
+  const [uploadExpanded, setUploadExpanded] = useState(false)
   const [duplicateModal, setDuplicateModal] = useState<{
     visible: boolean
     file: UploadItem | null
@@ -605,6 +607,8 @@ export default function UploadPage() {
       ))
 
       message.success(`${file.name} 上传成功`)
+      // 3.1：上传完成后自动收缩 Dragger，让首屏让位给内容（可点"继续上传"再展开）
+      setUploadExpanded(false)
 
       // M1-06: 检查是否需要Sheet选择或编码选择
       const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase()
@@ -819,6 +823,8 @@ export default function UploadPage() {
   const activePreview = activeFileId ? previewMap[activeFileId] : null
   const doneFiles = fileList.filter(f => f.status === 'done')
   const previewFileIds = Object.keys(previewMap)
+  // 3.1：已上传≥1份 → 收缩 Dragger（用 done 份数，避免"上传中"就误收缩）
+  const shouldCollapse = doneFiles.length > 0 && !uploadExpanded
 
   return (
     <div className="upload-page">
@@ -847,30 +853,63 @@ export default function UploadPage() {
       />
 
       <Card className="upload-card" style={{ marginTop: 16 }}>
-        <div
-          style={{ borderRadius: 8 }}
-          onDragEnter={(e) => { e.preventDefault(); setDragging(true) }}
-          onDragOver={(e) => e.preventDefault()}
-          onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
-          onDrop={(e) => { e.preventDefault(); setDragging(false) }}
-        >
-          <Dragger
-            {...uploadProps}
-            className="upload-dragger"
-            style={dragging ? { borderColor: '#1677ff', background: '#e6f4ff' } : undefined}
-          >
-            <p className="ant-upload-drag-icon">
-              <InboxOutlined />
-            </p>
-            <p className="upload-text">拖拽文件到这里，或点击上传</p>
-            <p className="ant-upload-hint">
-              支持 Excel、Word、PDF、图片、CSV、JSON，单个文件最大 100MB
-            </p>
-            <Button type="primary" icon={<FolderOpenOutlined />} style={{ marginTop: 16 }} tabIndex={-1}>
-              选择文件开始分析
+        {shouldCollapse ? (
+          // 3.1：已上传≥1份 → 收缩为一行摘要，不再占第一屏
+          <div className="upload-collapsed-bar">
+            <span className="upload-collapsed-text">
+              已上传 {doneFiles.length} 份，可继续上传
+            </span>
+            <Button
+              size="small"
+              icon={<PlusOutlined />}
+              onClick={() => setUploadExpanded(true)}
+            >
+              继续上传
             </Button>
-          </Dragger>
-        </div>
+          </div>
+        ) : (
+          // 边界：已上传≥1份却手动展开了 → 提供"收起"回到收缩态（否则只能靠下次上传成功才收缩）
+          doneFiles.length > 0 && (
+            <div className="upload-collapsed-bar" style={{ marginBottom: 12 }}>
+              <span className="upload-collapsed-text">
+                已上传 {doneFiles.length} 份，正在追加上传
+              </span>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => setUploadExpanded(false)}
+              >
+                收起
+              </Button>
+            </div>
+          )
+        )}
+        {!shouldCollapse && (
+          <div
+            style={{ borderRadius: 8 }}
+            onDragEnter={(e) => { e.preventDefault(); setDragging(true) }}
+            onDragOver={(e) => e.preventDefault()}
+            onDragLeave={(e) => { e.preventDefault(); setDragging(false) }}
+            onDrop={(e) => { e.preventDefault(); setDragging(false) }}
+          >
+            <Dragger
+              {...uploadProps}
+              className="upload-dragger"
+              style={dragging ? { borderColor: '#1677ff', background: '#e6f4ff' } : undefined}
+            >
+              <p className="ant-upload-drag-icon">
+                <InboxOutlined />
+              </p>
+              <p className="upload-text">拖拽文件到这里，或点击上传</p>
+              <p className="ant-upload-hint">
+                支持 Excel、Word、PDF、图片、CSV、JSON，单个文件最大 100MB
+              </p>
+              <Button type="primary" icon={<FolderOpenOutlined />} style={{ marginTop: 16 }} tabIndex={-1}>
+                选择文件开始分析
+              </Button>
+            </Dragger>
+          </div>
+        )}
         <div style={{ marginTop: 12, textAlign: 'right' }}>
           <Button type="link" icon={<DownloadOutlined />} onClick={downloadTemplate}>
             下载参考模板
