@@ -16,6 +16,7 @@ interface DashboardOpsProps {
   title: string
   onRename?: (next: string) => void
   onDelete?: () => void
+  generationMode?: 'ai' | 'rule' | string  // 问题1：看板生成方式（绿标/灰标）
 }
 
 interface VersionItem {
@@ -44,7 +45,7 @@ const mockHistory = [
   { id: 'h4', title: '季度不良率目标达成', time: '08-10 09:22', summary: '按季度拆解不良率目标与实际达成对比' },
 ]
 
-export default function DashboardOps({ id, title, onRename, onDelete }: DashboardOpsProps) {
+export default function DashboardOps({ id, title, onRename, onDelete, generationMode }: DashboardOpsProps) {
   const nav = useNavigate()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
@@ -307,6 +308,13 @@ export default function DashboardOps({ id, title, onRename, onDelete }: Dashboar
           <Tooltip title="点击编辑标题">
             <h1 className="dash-ops-title" onClick={() => { setDraft(title); setEditing(true) }}>
               {title} <EditOutlined className="dash-ops-title-edit" />
+              {/* 问题1修复：生成方式徽标——绿标「AI 生成」/ 灰标「本次为规则生成」 */}
+              {generationMode === 'ai' && (
+                <Tag color="green" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>AI 生成</Tag>
+              )}
+              {generationMode === 'rule' && (
+                <Tag color="default" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>本次为规则生成</Tag>
+              )}
             </h1>
           </Tooltip>
         )}

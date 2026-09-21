@@ -1,0 +1,5 @@
+src/views/dashboard/DashboardPage.tsx(591,27): error TS2339: Property 'generation_mode' does not exist on type 'DashboardConfig'.
+src/views/dashboard/DashboardPage.tsx(592,14): error TS2339: Property 'generation_mode' does not exist on type 'DashboardConfig'.
+src/views/dashboard/DashboardPage.tsx(593,15): error TS2339: Property 'ai_participated' does not exist on type 'DashboardConfig'.
+src/views/dashboard/DashboardPage.tsx(595,17): error TS2339: Property 'generated_by' does not exist on type 'DashboardConfig'.
+src/views/dashboard/DashboardPage.tsx(597,19): error TS2339: Property 'generated_by' does not exist on type 'DashboardConfig'.

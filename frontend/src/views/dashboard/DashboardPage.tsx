@@ -109,6 +109,10 @@ interface DashboardConfig {
   theme: string;
   score: number;
   analysis_text?: string;
+  // 问题1修复：生成方式标注（由后端 brain_run_sse 落库），用于打开页渲染绿标/灰标
+  generated_by?: 'llm' | 'rule_engine' | 'hybrid' | string;
+  generation_mode?: 'ai' | 'rule' | 'hybrid' | string;
+  ai_participated?: boolean;
 }
 
 // ======== 稳健图表数据解析 helper（弱化 LLM 字段映射不准的影响）========
@@ -585,6 +589,18 @@ const DashboardPage: React.FC = () => {
     }
     return auto.length ? [...base, ...auto] : base;
   }, [config, chartData]);
+
+  // 问题1修复：从已落库的 config 推导生成方式，供 DashboardOps 渲染绿标/灰标
+  // （优先用显式字段 generation_mode/ai_participated；旧看板仅有 generated_by 时回退推断）
+  const genMode = config?.generation_mode
+    ? config.generation_mode
+    : config?.ai_participated
+      ? 'ai'
+      : config?.generated_by === 'llm'
+        ? 'ai'
+        : config?.generated_by
+          ? 'rule'
+          : '';
 
   // 按图表来源数据集取数：a 数据 → 图表1/2/3，b 数据 → 图表4/5/6，各取各的，互不影响。
   // ① 优先用图表自带的 dataset_id（S3 生成时写入，最可靠）
@@ -1257,6 +1273,7 @@ const DashboardPage: React.FC = () => {
         <DashboardOps
           id={urlId}
           title={title}
+          generationMode={genMode}
           onRename={setTitle}
           // onDelete 由 DashboardOps 内部在删除成功后跳转到 /dashboards；
           // 这里不再置空 config，避免跳转前闪屏"看板不存在"

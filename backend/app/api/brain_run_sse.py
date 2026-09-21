@@ -730,9 +730,10 @@ async def brain_run_pipeline(
                     "theme": theme_tag, "fields": fields, "goals": goals
                 }), "S3")
                 if llm_offline:
-                    # LLM 不可达：跳过 LLM 调用，直接走规则引擎兜底，
-                    # 避免 generate_charts_with_llm 跑满超时 + 后续 _request_user_choice 挂起 600s
-                    print("[Brain] LLM 不可达：S3 直接走规则引擎兜底，不调用 AI、不询问用户")
+                    # LLM 不可达：跳过 LLM 调用，直接走规则引擎兜底（省去 180s 超时等待）。
+                    # 问题1修复：仍标记 s3_ai_failed，让用户在看板完成前被明确告知「AI 未参与」并可选择等待重试，
+                    # 不再静默兜底（原设计因担心 600s 用户询问挂起而吞掉提示，导致生成看板时无限流告警）。
+                    print("[Brain] LLM 不可达：S3 直接走规则引擎兜底，标记 s3_ai_failed 交还用户选择")
                     from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
                     engine = S3ChartEngine(derived_metrics=derived_metrics)
                     engine_cfg = engine.generate_dashboard_config(
@@ -743,6 +744,8 @@ async def brain_run_pipeline(
                         "generated_by": "rule_engine",
                         "fallback_reason": "LLM 不可达，规则引擎兜底"
                     }
+                    s3_ai_failed = True
+                    s3_ai_reason = "AI 探测失败（模型限流/不可达），已用规则引擎兜底生成基础看板"
                 else:
                     try:
                         s3_result = await asyncio.wait_for(
@@ -757,9 +760,10 @@ async def brain_run_pipeline(
                             timeout=settings.BRAIN_S3_LLM_TIMEOUT,
                         )
                     except asyncio.TimeoutError:
-                        # S3 LLM 调用在硬超时内未返回：规则引擎兜底，并视为不可达，
-                        # 跳过 _request_user_choice（避免原 D1 的 600s 用户询问挂起）
-                        print(f"[Brain] S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，按规则引擎兜底")
+                        # S3 LLM 调用在硬超时内未返回：规则引擎兜底。
+                        # 问题1修复：标记 s3_ai_failed（不再仅靠 llm_offline 吞掉提示），
+                        # 让用户在看板完成前被明确告知并可选「等待 AI 恢复重试」。
+                        print(f"[Brain] S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，按规则引擎兜底，标记 s3_ai_failed")
                         from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
                         engine = S3ChartEngine(derived_metrics=derived_metrics)
                         engine_cfg = engine.generate_dashboard_config(
@@ -770,6 +774,8 @@ async def brain_run_pipeline(
                             "generated_by": "rule_engine",
                             "fallback_reason": f"S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，规则引擎兜底",
                         }
+                        s3_ai_failed = True
+                        s3_ai_reason = f"S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，已用规则引擎兜底"
                         llm_offline = True
                 await _safe_trace(db, BrainTraceManager.complete_stage(db, s3_trace_id, {"result": s3_result}), "S3")
                 # P1-1 累计 S3 消耗并触发 80% 告警（仅一次）
@@ -790,8 +796,9 @@ async def brain_run_pipeline(
                 print(f"[Brain] S3失败(准备询问用户): {e}")
 
             # AI 失败：暂停流水线，把选择权交还用户（规则兜底生成 / 等 AI 恢复重试）
-            # LLM 不可达时不询问用户（已直接规则兜底），避免 600s 挂起
-            if s3_ai_failed and not llm_offline:
+            # 问题1修复：任何 S3 AI 失败（含探针失败/超时导致的静默兜底）都弹出选择框，
+            # 不再因 llm_offline 吞掉提示。用户选「等待重试」时由 _retry_s3_with_ai 重跑。
+            if s3_ai_failed:
                 choice = await _request_user_choice(run_id, {
                     "stage": "S3",
                     "options": ["rule_fallback", "wait_retry"],
@@ -1085,6 +1092,10 @@ async def brain_run_pipeline(
                 "theme": theme_tag,
                 "goals": goals,
                 "generated_by": generated_by,
+                # 问题1修复（Layer2）：把生成方式显式落库，供前端打开看板时渲染绿标/灰标
+                # （此前仅在 SSE 完成事件 detail 里算，未写入 config，导致打开页无标注）
+                "ai_participated": generated_by == "llm",
+                "generation_mode": "ai" if generated_by == "llm" else "rule",
                 "score": {
                     "overall": overall_score,
                     "passed": passed,
