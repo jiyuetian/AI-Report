@@ -133,6 +133,10 @@ class IntentClassifier:
             # 2026-09-18：「把不存在的字段做成饼图」此前 ADD_CHART 识别不到（没有"新增/添加"），
             # 直接落到 UNKNOWN 走 LLM 闲聊，用户得不到"字段不存在"的明确拦截。
             r"(把|用|将|拿|对)\s*[^，。；]{0,20}?(做成|做成|画成|画个|画|生成|来个|做成一张|来一张)\s*(饼图|柱状图|柱图|条形图|直方图|线图|折线图|散点图|圆环图|环形图|表格|图|图表)",
+            # 2026-09-21 问题2：加上/新增 + （多字段列举，允许逗号）+ 平均值/均值/汇总
+            # → 识别为加图（用户「加上每个：A，B，C 的平均值汇总」此前无图型词/指标词，被漏判为 unknown）。
+            # 用 .{0,80}? 跨逗号匹配字段列举；必须含动作动词(新增/添加/加/插入/来个/来一张)与聚合词(平均值/均值/平均/汇总)。
+            r"(新增|添加|加|插入|来个|来一张).{0,80}?(平均值|均值|平均|汇总|平均汇总)",
         ],
         IntentType.DELETE_CHART: [
             r"(删除|移除|去掉|删掉|删了).{0,20}(图|图表|这个|那个|第.{1,2}个)",
@@ -246,6 +250,12 @@ class IntentClassifier:
             analysis = data.get("analysis", {})
             analysis["raw_message"] = message
             analysis["classified_by"] = "llm"  # 标记是LLM分类的
+
+            # 问题2 修复（Layer2）：LLM 直接返回的字段名可能带「每个：」前缀或表述差异，
+            # 执行前用 _match_field 规范化成真实字段名，避免执行器报「匹配不到字段」。
+            fps = (context.get("dataset_info") or {}).get("field_profiles") or context.get("field_profiles") or []
+            if fps:
+                analysis = cls._canonicalize_analysis(analysis, fps)
 
             # 转换到枚举
             try:
@@ -686,17 +696,31 @@ class IntentClassifier:
                 if t in p:
                     ct = t
                     break
-            dim = ""
-            for k in dim_keywords:
-                if k in p:
-                    dim = cls._match_field(k, field_profiles, "dim")
-                    if dim:
-                        break
-            metric = ""
-            # 取子句中位置最靠后的指标关键词（如"产品销售数量分布"应取"数量"而非"销售"）；同位取更长词
-            matched = [(p.find(k), len(k), k) for k in metric_keywords if k in p]
-            if matched:
-                metric = cls._match_field(max(matched)[2], field_profiles, "metric")
+            # 问题2 修复：优先把「子句中命中的真实数值字段」当作指标（合规率类字段本身就是数值指标），
+            # 避免被维度/指标关键词噪声误导（如「业务」维度词误把合规率当维度导致 metric 为空、
+            # 或「均值」关键词回退到首个数值字段而非真实字段）。仅当子句无真实数值字段时，
+            # 才走原有维度/指标关键词匹配（处理「地区分布柱状图」类表述）。
+            _mf = cls._match_field(p, field_profiles, "metric")
+            _mf_fp = next((fp for fp in field_profiles
+                           if (fp.get("name") or fp.get("column")) == _mf), None)
+            if _mf and cls._is_numeric_profile(_mf_fp or {}):
+                is_avg = bool(re.search(r"(平均值|均值|平均|汇总|平均汇总)", p))
+                metric = _mf
+                dim = ""
+                title = f"{_mf}平均值" if is_avg else _mf
+                ct = "kpi" if is_avg else (ct or "bar")
+            else:
+                dim = ""
+                for k in dim_keywords:
+                    if k in p:
+                        dim = cls._match_field(k, field_profiles, "dim")
+                        if dim:
+                            break
+                metric = ""
+                # 取子句中位置最靠后的指标关键词（如"产品销售数量分布"应取"数量"而非"销售"）；同位取更长词
+                matched = [(p.find(k), len(k), k) for k in metric_keywords if k in p]
+                if matched:
+                    metric = cls._match_field(max(matched)[2], field_profiles, "metric")
             # 仅当该子句含图型或维度/指标，才视为一个新增图请求
             if ct or dim or metric:
                 title = p
@@ -721,7 +745,55 @@ class IntentClassifier:
                     "dimension_field": dim,
                     "metric_field": metric,
                 })
+        # 问题2 修复（Change C）：上述按子句拆图全空时，兜底——若消息含聚合/统称词
+        # （平均值/均值/平均/汇总/每个/所有/各）且列举了真实字段名，则按「每个字段的均值」生成一张图。
+        # 直接对字段画像做子串扫描，避免「加上每个：A，B，C，D，E 的平均值汇总」被漏判（裸字段无图型/指标词）。
+        if not charts:
+            agg = re.search(r"(平均值|均值|平均|汇总|平均汇总|每个|所有|各|这些|全部)", message)
+            if agg and field_profiles:
+                seen = set()
+                for fp in field_profiles:
+                    nm = fp.get("name") or fp.get("column") or ""
+                    if not nm or nm in seen:
+                        continue
+                    seen.add(nm)
+                    if nm in message or message in nm:
+                        is_avg = bool(re.search(r"(平均值|均值|平均|汇总|平均汇总)", message))
+                        charts.append({
+                            "title": f"{nm}平均值" if is_avg else nm,
+                            "chart_type": cls._normalize_chart_type("kpi" if is_avg else "bar"),
+                            "dimension_field": "",
+                            "metric_field": nm,
+                        })
         return charts if charts else None
+
+    @classmethod
+    def _canonicalize_analysis(cls, analysis, field_profiles):
+        """问题2 修复（Layer2）：把 LLM 返回的 analysis 中的字段名规范化成真实字段名。
+
+        覆盖 extracted_params 的 dimension_field/metric_field，以及 charts[] 列表里每项的同名字段。
+        LLM 路径此前直接采用原始 JSON、从不调用 _match_field，导致「每个：业务流程合规率」等
+        带前缀的候选名到执行器仍匹配不到（问题2 匹配失败根因之一）。
+        """
+        def _fix(v, role):
+            return cls._match_field(v, field_profiles, role) if v else v
+
+        ep = analysis.get("extracted_params") or {}
+        if isinstance(ep, dict):
+            for k, role in (("dimension_field", "dim"), ("metric_field", "metric"),
+                            ("value_field", "metric"), ("y_field", "metric")):
+                if ep.get(k):
+                    ep[k] = _fix(ep[k], role)
+            charts = ep.get("charts")
+            if isinstance(charts, list):
+                for c in charts:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("dimension_field"):
+                        c["dimension_field"] = _fix(c["dimension_field"], "dim")
+                    if c.get("metric_field"):
+                        c["metric_field"] = _fix(c["metric_field"], "metric")
+        return analysis
 
     @classmethod
     def _extract_add_charts(cls, message, field_profiles):

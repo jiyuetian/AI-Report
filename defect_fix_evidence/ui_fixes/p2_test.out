@@ -1,0 +1,43 @@
+FF.                                                                      [100%]
+================================== FAILURES ===================================
+__________________________ test_layer1_no_truncation __________________________
+
+    def test_layer1_no_truncation():
+        clauses = split_clauses(MSG5)
+>       assert len(clauses) == 1, f"5字段消息应合并为1子句，实际: {clauses}"
+E       AssertionError: 5字段消息应合并为1子句，实际: ['我想要顶部的汇总看板加上每个：业务流程合规率，抵押登记合规率，档案管理合规率，制度执行到位率', '内部审计问题整改率的平均值汇总']
+E       assert 2 == 1
+E        +  where 2 = len(['我想要顶部的汇总看板加上每个：业务流程合规率，抵押登记合规率，档案管理合规率，制度执行到位率', '内部审计问题整改率的平均值汇总'])
+
+tests\test_p2_multifield.py:42: AssertionError
+_________________________ test_multifield_extraction __________________________
+
+    def test_multifield_extraction():
+        plan = plan_actions(MSG5, CONTEXT)
+        assert plan["actions"], "应至少产出1个动作"
+        act = plan["actions"][0]
+        assert act["type"] == "add_chart", f"应识别为 add_chart，实际: {act['type']}"
+        charts = act["params"].get("charts") or []
+>       assert len(charts) == 5, f"应提取5张图，实际: {charts}"
+E       AssertionError: 应提取5张图，实际: []
+E       assert 0 == 5
+E        +  where 0 = len([])
+
+tests\test_p2_multifield.py:53: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[限流] Redis不可用，降级为本地信号量
+[LLM] provider default attempt 1/3, request_id=1789969684541
+[LLM] provider default attempt 1/3, request_id=1789969707849
+[LLM] provider default LLM未知错误: Event loop is closed
+[LLM-FAILOVER] provider default 失败(LLM未知错误: Event loop is closed)，切换下一 provider
+[LLM-ALL-KEYS-FAILED] 1 个 provider 均失败，进入降级
+============================== warnings summary ===============================
+..\..\..\..\..\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291
+  C:\Users\Asus009\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.9/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_p2_multifield.py::test_layer1_no_truncation - AssertionErro...
+FAILED tests/test_p2_multifield.py::test_multifield_extraction - AssertionErr...
+2 failed, 1 passed, 1 warning in 23.95s

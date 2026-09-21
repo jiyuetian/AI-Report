@@ -1,0 +1,35 @@
+.F.                                                                      [100%]
+================================== FAILURES ===================================
+_________________________ test_multifield_extraction __________________________
+
+    def test_multifield_extraction():
+        plan = plan_actions(MSG5, CONTEXT)
+        assert plan["actions"], "应至少产出1个动作"
+        act = plan["actions"][0]
+        assert act["type"] == "add_chart", f"应识别为 add_chart，实际: {act['type']}"
+        charts = act["params"].get("charts") or []
+        assert len(charts) == 5, f"应提取5张图，实际: {charts}"
+        metrics = {c["metric_field"] for c in charts}
+>       assert metrics == {
+            "业务流程合规率", "抵押登记合规率", "档案管理合规率",
+            "制度执行到位率", "内部审计问题整改率",
+        }, f"metric_field 应为5个真实字段，实际: {metrics}"
+E       AssertionError: metric_field 应为5个真实字段，实际: {'', '抵押登记合规率', '档案管理合规率', '业务流程合规率', '制度执行到位率'}
+E       assert {'', '业务流程合规率...率', '档案管理合规率'} == {'业务流程合规率', '...率', '档案管理合规率'}
+E         
+E         Extra items in the left set:
+E         ''
+E         Extra items in the right set:
+E         '内部审计问题整改率'
+E         Use -v to get more diff
+
+tests\test_p2_multifield.py:55: AssertionError
+============================== warnings summary ===============================
+..\..\..\..\..\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291
+  C:\Users\Asus009\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.9/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_p2_multifield.py::test_multifield_extraction - AssertionErr...
+1 failed, 2 passed, 1 warning in 0.47s

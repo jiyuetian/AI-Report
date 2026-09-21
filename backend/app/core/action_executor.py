@@ -281,11 +281,36 @@ class ActionExecutor:
         limit = 50  # 与 feasibility 上限一致
         new_charts = []
 
+        def _match_field(cand, role):
+            """问题2 修复（Layer3）：把候选名（可能带「每个：」前缀或表述差异）解析成真实字段名。"""
+            cand = (cand or "").strip()
+            names = [fp.get("name") or fp.get("column") or "" for fp in field_profiles]
+            if cand in names:
+                return cand
+            for fp in field_profiles:
+                nm = fp.get("name") or fp.get("column") or ""
+                if cand and (cand in nm or nm in cand):
+                    return nm
+            for fp in field_profiles:
+                nm = fp.get("name") or fp.get("column") or ""
+                if not nm:
+                    continue
+                if role == "metric" and ActionExecutor._is_numeric_field(fp):
+                    return nm
+                if role == "dim" and not ActionExecutor._is_numeric_field(fp):
+                    return nm
+            return ""
+
         if charts_spec:
             for spec in charts_spec[:max(0, limit - existing)]:
                 ct = ActionExecutor.normalize_chart_type(spec.get("chart_type", "bar"))
                 dim = spec.get("dimension_field") or ""
                 metric = spec.get("metric_field") or ""
+                # 问题2 修复（Layer3）：spec 字段缺失时，用 metric_name/title 回退解析真实字段
+                if not metric and (spec.get("metric_name") or spec.get("title")):
+                    metric = _match_field(spec.get("metric_name") or spec.get("title"), "metric")
+                if not dim and spec.get("dimension_field") is None and (spec.get("title") or spec.get("metric_name")):
+                    dim = _match_field(spec.get("dimension_field") or spec.get("title"), "dim")
                 if not dim or not metric:
                     fd, fm = first_dim_metric()
                     dim = dim or fd

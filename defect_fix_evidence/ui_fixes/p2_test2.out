@@ -1,0 +1,25 @@
+.F.                                                                      [100%]
+================================== FAILURES ===================================
+_________________________ test_multifield_extraction __________________________
+
+    def test_multifield_extraction():
+        plan = plan_actions(MSG5, CONTEXT)
+        assert plan["actions"], "应至少产出1个动作"
+        act = plan["actions"][0]
+        assert act["type"] == "add_chart", f"应识别为 add_chart，实际: {act['type']}"
+        charts = act["params"].get("charts") or []
+>       assert len(charts) == 5, f"应提取5张图，实际: {charts}"
+E       AssertionError: 应提取5张图，实际: [{'title': '我想要顶部的汇总看板加上每个：业务流程合规率', 'chart_type': 'pie', 'dimension_field': '业务流程合规率', 'metric_field': ''}, {'title': '内部审计问题整改率的平均值汇总', 'chart_type': 'pie', 'dimension_field': '', 'metric_field': '业务流程合规率'}]
+E       assert 2 == 5
+E        +  where 2 = len([{'title': '我想要顶部的汇总看板加上每个：业务流程合规率', 'chart_type': 'pie', 'dimension_field': '业务流程合规率', 'metric_field': ''}, {'title': '内部审计问题整改率的平均值汇总', 'chart_type': 'pie', 'dimension_field': '', 'metric_field': '业务流程合规率'}])
+
+tests\test_p2_multifield.py:53: AssertionError
+============================== warnings summary ===============================
+..\..\..\..\..\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291
+  C:\Users\Asus009\.workbuddy\binaries\python\envs\default\Lib\site-packages\pydantic\_internal\_config.py:291: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.9/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_p2_multifield.py::test_multifield_extraction - AssertionErr...
+1 failed, 2 passed, 1 warning in 0.50s
