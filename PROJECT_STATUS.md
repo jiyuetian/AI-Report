@@ -34,8 +34,8 @@
 ### 第 2 层：AI 含量
 - [x] 2.1 AI 能力鉴定（已完成，证据 `ai_capability_appraisal.md`）
 - [x] 2.2 Prompt 中心可编辑性（已完成）
-- [ ] 2.3 能补的 AI 能力补齐（方案已出 `plan_23_ai_upgrade.md`，待用户确认后改；唯一真半空壳=s2_goal_generator，S3/summary 已真 LLM 不列入）
-- [ ] 2.4 路演 AI 展示脚本
+- [✅] 2.3 能补的 AI 能力补齐（2.3-A 翻 `BRAIN_S2_USE_LLM` 默认 True + 2.3-B s2 加 `generated_by`/`ai_participated` 标记对齐 S3；hash `ed72f47`；mock 验证 `verify_23.py` 三用例全过）— 证据 `plan_23_ai_upgrade.md`
+- [ ] 2.4 路演 AI 展示脚本（方案已出 `plan_24_roadshow_script.md`，待落地：前端绿/灰标渲染 + 演示数据 + 翻车保险话术）
 
 ### 第 3 层：UI 体验
 - [ ] 3.1 上传页布局（上传后收缩，不占第一屏）
@@ -85,6 +85,7 @@
 14. **1.10 附录 B 影响行数（✅ 完成）** — `appendix_service._clean_log` 的 `rows_map` 覆盖 `done/ignored/todo` 三态并取最大 `affect_rows`，apply 阶段 winsorize 现显示真实"影响行数=2"（修复前全 None）。证据 `ev_110_affected_rows_proof.md`。
 15. **1.6 端到端实测补全（✅ 完成）** — 死 LLM 后端实测：t=14s `ai_awaiting=YES`(probe,HTTP 502) → `POST /resume rule_fallback`(200) → 看板 `dash_e8c94106_87b068` 完成，`chart_count=4`，`generated_by=rule_engine`，`ai_participated=false`。证据 `ev_16b_e2e.py` + `ev_16b_popup_proof.md`。
 16. **1.7 暗色模式（C 范围，✅ 代码完成，本机视觉待确认）** — 仅做「图表+KPI+页面背景/导航」，不扩全量。新建 `chartThemeApply.ts` 集中注入 ECharts 明/暗主题（取自 `CHART_THEMES`，无散落硬编码）；`DashboardPage.tsx` 主图(1157)+详情弹窗图(1336) 与 `ChartRenderer.tsx` 四图(line/bar/pie/scatter) 接入 `useChartTheme`+`themeChartOption`；`DashboardPage.css` 加 KPI 暗色对比度。tsc EXIT=0。视觉证据：`darkmode_preview.html`(本机可交互真截图) + `darkmode_light.png`/`darkmode_dark.png`(matplotlib 保真，沙箱无浏览器)。证据 `ev_17_darkmode.md`。
+17. **2.3 AI 能力补齐（✅ 完成）** — 2.3-A：`config.py:40 BRAIN_S2_USE_LLM False→True`（默认走 LLM，守卫 `not llm_offline` 已安全）；2.3-B：`AnalysisGoal` 加 `generated_by` 字段、`generate_goals_llm_enhanced` 成功置 `llm`、`to_dict` 含 `generated_by`；`brain_run_sse.py` S2 段算 `s2_generated_by` 存 `ctx.shared`，dashboard_config 与 progress.detail 的 `ai_participated` 合并 S2+S3、新增 `s2_generated_by` 字段（路演可秀"目标生成也由 AI 参与"）。mock 验证 `verify_23.py` 三用例全过（默认LLM→6目标llm/ai=True；规则兜底→rule/False；LLM失败回退→rule/False）。hash `ed72f47`。方案 `plan_23_ai_upgrade.md`。
 
 ## 关键事实（怕忘）
 - **跑后端用系统 Python 3.12**：`C:/Users/Asus009/AppData/Local/Programs/Python/Python312/python.exe`（非 workbuddy venv）。
