@@ -127,8 +127,34 @@ interface DashboardConfig {
  * 前端旧逻辑只认 chart_type，导致 type='kpi' 的卡片既不计入 KPI 层（数量偏小→列宽算错），
  * 又会漏进图表层被当普通图渲染。这里统一归一化。
  */
+/** 图表类型别名表：与后端三处归一化保持一致
+ *  - action_executor.CHART_TYPE_MAPPING: KPI / KPI卡 → kpi
+ *  - intent_classifier: kpi / KPI / 指标卡 / 指标 → kpi
+ *  - lineage_service: str(type).lower() == 'kpi'（说明真实数据存在大写）
+ */
+const CHART_TYPE_ALIAS: Record<string, string> = {
+  kpi: 'kpi',
+  'kpi卡': 'kpi',
+  'kpi卡片': 'kpi',
+  指标卡: 'kpi',
+  指标: 'kpi',
+  表格: 'table',
+};
+
+/** 归一化图表类型：兼容 chart_type / type 两种字段，去空格 + 转小写 + 中文别名 */
+function normChartType(c: any): string {
+  const raw = String(c?.chart_type ?? c?.type ?? '').trim().toLowerCase();
+  if (!raw) return '';
+  return CHART_TYPE_ALIAS[raw] ?? raw;
+}
+
 function isKpiChart(c: any): boolean {
-  return c?.chart_type === 'kpi' || c?.type === 'kpi';
+  return normChartType(c) === 'kpi';
+}
+
+/** 表格类同样需要归一化，否则 type='表格' 会被漏进图表层 */
+function isTableChart(c: any): boolean {
+  return normChartType(c) === 'table';
 }
 
 /**
@@ -607,7 +633,7 @@ const DashboardPage: React.FC = () => {
     if (!chartData?.columns?.length) return base;
     const covered = new Set<string>();
     base.forEach((c: any) => {
-      if (c.chart_type !== 'kpi') covered.add(c.x_field || c.category_field || '');
+      if (!isKpiChart(c)) covered.add(c.x_field || c.category_field || '');
     });
     const want = ['贷款类型', '地区', '担保类型'];
     const auto: any[] = [];
@@ -695,7 +721,7 @@ const DashboardPage: React.FC = () => {
     const data = cd.data;
     const numericStats = cd.numeric_stats;
 
-    switch (chart_type) {
+    switch (normChartType(chart)) {
       case 'kpi':
         // KPI 不在这里渲染，单独用KPICard
         return {};
@@ -1147,7 +1173,7 @@ const DashboardPage: React.FC = () => {
   const renderChartLayer = () => {
     if (!config) return null;
     // 3.3：与 KPI 层用同一归一化判定，避免 type='kpi' 的卡片漏进图表层被当普通图渲染
-    const nonKpiCharts = effectiveCharts.filter(c => !isKpiChart(c) && c.chart_type !== 'table');
+    const nonKpiCharts = effectiveCharts.filter(c => !isKpiChart(c) && !isTableChart(c));
 
     if (nonKpiCharts.length === 0) return null;
 
@@ -1361,12 +1387,12 @@ const DashboardPage: React.FC = () => {
       >
         {detailChart && (
           <>
-            {detailChart.chart_type !== 'kpi' && detailChart.chart_type !== 'table' ? (
+            {!isKpiChart(detailChart) && !isTableChart(detailChart) ? (
               <ChartErrorBoundary title={detailChart.title}>
                 <ReactECharts option={sanitizeChartOption(themeChartOption(generateChartOption(detailChart), theme))} style={{ height: 420 }} notMerge={true} lazyUpdate={true} />
               </ChartErrorBoundary>
             ) : (
-              <Empty description={detailChart.chart_type === 'kpi' ? 'KPI 指标卡，无独立图表' : '明细表，无独立图表'} />
+              <Empty description={isKpiChart(detailChart) ? 'KPI 指标卡，无独立图表' : '明细表，无独立图表'} />
             )}
 
             <Descriptions title="图表配置" bordered column={1} size="small" style={{ marginTop: 16 }}>
