@@ -10,23 +10,10 @@ from sqlalchemy import select, desc, and_, update
 from datetime import datetime, timedelta
 
 from app.core.database import get_db
+from app.core.security import require_admin
 from app.models.chat import TokenQuota, TokenApplication
 
 router = APIRouter(prefix="/tokens/applications", tags=["Token加量申请"])
-
-
-# 管理员权限检查
-async def require_admin(current_user: str = "anonymous"):
-    """检查是否为管理员"""
-    # 2026-09-18：本地单用户 MVP 模式下前端以 anonymous 访问，若直接 403 会让
-    # 配额审批功能完全不可用。匿名视为本地管理员；其余非管理员名仍拒绝。
-    admin_users = ["admin", "administrator", "system", "anonymous"]
-    if current_user not in admin_users and not current_user.startswith("admin_"):
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "需要管理员权限"}
-        )
-    return current_user
 
 
 # ============== 请求/响应模型 ==============
@@ -170,7 +157,7 @@ async def get_application_detail(
 async def get_pending_applications(
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
-    admin: str = Depends(require_admin)
+    admin: Dict[str, Any] = Depends(require_admin)
 ):
     """管理员获取待审批列表"""
     result = await db.execute(
@@ -194,7 +181,7 @@ async def approve_application(
     application_id: str,
     request: ApproveQuotaRequest,
     db: AsyncSession = Depends(get_db),
-    admin_user: str = Depends(require_admin)
+    admin_user: Dict[str, Any] = Depends(require_admin)
 ):
     """
     管理员审批通过
@@ -269,7 +256,7 @@ async def reject_application(
     application_id: str,
     comment: str = "",
     db: AsyncSession = Depends(get_db),
-    admin_user: str = Depends(require_admin)
+    admin_user: Dict[str, Any] = Depends(require_admin)
 ):
     """管理员拒绝申请"""
     result = await db.execute(
@@ -309,7 +296,7 @@ async def get_all_applications(
     status: Optional[str] = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    admin: str = Depends(require_admin)
+    admin: Dict[str, Any] = Depends(require_admin)
 ):
     """管理员获取全部申请列表"""
     query = select(TokenApplication)

@@ -10,6 +10,7 @@ from datetime import datetime
 
 from app.core.database import get_db
 from app.core.token_manager import TokenManager, schedule_daily_reset
+from app.core.security import require_admin
 from app.models.chat import TokenQuota, TokenApplication
 
 router = APIRouter(prefix="/tokens", tags=["Tokens-Token管理"])
@@ -112,24 +113,11 @@ async def can_send_message(
     }
 
 
-async def require_admin(current_user: str = "anonymous"):
-    """检查是否为管理员 - 简化版，实际应查询用户角色"""
-    # 简化：检查用户ID是否以"admin"开头或等于特定管理员
-    # 实际生产环境应从数据库查询用户角色
-    admin_users = ["admin", "administrator", "system"]
-    if current_user not in admin_users and not current_user.startswith("admin_"):
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "需要管理员权限"}
-        )
-    return current_user
-
-
 @router.post("/admin/reset", response_model=Dict)
 async def admin_reset_quota(
     user_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    admin: str = Depends(require_admin)
+    admin: Dict[str, Any] = Depends(require_admin)
 ):
     """
     管理员重置Token配额 (修复：添加权限控制)
@@ -144,7 +132,7 @@ async def admin_reset_quota(
 async def trigger_scheduled_reset(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    admin: str = Depends(require_admin)
+    admin: Dict[str, Any] = Depends(require_admin)
 ):
     """
     触发定时重置 (模拟APScheduler)
