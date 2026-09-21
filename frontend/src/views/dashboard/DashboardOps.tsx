@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Button, Dropdown, Modal, Radio, Input, Switch, Tag, List, Drawer, message, Space, Divider, Empty, Select, Segmented, Tooltip, Breadcrumb, Spin,
+  Button, Dropdown, Modal, Radio, Input, Switch, Tag, List, Drawer, message, Space, Divider, Empty, Select, Segmented, Tooltip, Breadcrumb, Spin, Alert,
 } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -452,6 +452,13 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
 
       {/* C06 对话历史 */}
       <Modal title="对话历史" open={historyOpen} onCancel={() => setHistoryOpen(false)} footer={null} width={560}>
+        {/* 3.7：本弹窗数据源为前端写死的 mockHistory，不是真实会话记录；如实告知，不做假展示 */}
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="以下为演示样例数据，真实对话记录的持久化即将上线。"
+        />
         <Space style={{ marginBottom: 12, width: '100%' }}>
           <Input placeholder="搜索历史对话" value={hkw} onChange={e => setHkw(e.target.value)} allowClear style={{ flex: 1 }} />
           <Select value={hRange} onChange={setHRange} style={{ width: 130 }}
@@ -461,7 +468,8 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
           dataSource={historyFiltered}
           locale={{ emptyText: <Empty description="无匹配对话" /> }}
           renderItem={h => (
-            <List.Item actions={[<Button key="d" size="small" type="text" danger onClick={() => message.success('已删除')}>删除</Button>, <Tooltip key="e" title="导出对话（即将上线）"><Button size="small" type="text" disabled onClick={() => message.info('导出对话即将上线')}>导出</Button></Tooltip>]}>
+            // 3.7：删除此前只弹 message.success('已删除') 但数据纹丝不动（假动作）→ 改为禁用 + 标注，与右侧「导出」一致
+            <List.Item actions={[<Tooltip key="d" title="删除（即将上线）"><Button size="small" type="text" danger disabled onClick={() => message.success('已删除')}>删除</Button></Tooltip>, <Tooltip key="e" title="导出对话（即将上线）"><Button size="small" type="text" disabled onClick={() => message.info('导出对话即将上线')}>导出</Button></Tooltip>]}>
               <List.Item.Meta title={h.title} description={<><div style={{ color: 'rgba(0,0,0,.45)' }}>{h.time}</div>{h.summary}</>} />
             </List.Item>
           )}
