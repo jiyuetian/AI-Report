@@ -14,6 +14,53 @@ from app.core.llm_gateway import llm_chat
 from app.core.prompt_loader import load_prompt
 
 
+import bleach
+
+
+# ── G4: 报告 HTML 净化（落库前）─────────────────────────────────────
+# 报告内容由数据派生（列名/字段名/采样值/LLM 文本），可能携带 XSS。
+# 在写入 .html 文件前用 bleach 白名单净化章节内容；允许的标签/属性
+# 仅覆盖报告排版需要，并保留 ECharts 图表占位（data-option）。
+# 不允许 script/iframe/object/embed/style 全局/on* 事件/javascript: 协议。
+_REPORT_ALLOWED_TAGS = {
+    "p", "br", "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li", "blockquote",
+    "strong", "em", "code", "pre",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "div", "span", "section", "img", "small", "hr", "sub", "sup", "a",
+}
+_REPORT_ALLOWED_ATTRS = {
+    "*": ["class", "id", "data-option"],
+    "a": ["href", "title", "target", "rel"],
+    "img": ["src", "alt", "width", "height"],
+    "td": ["class"],
+    "th": ["class"],
+    "table": ["class"],
+    "div": ["class", "data-option"],
+    "span": ["class"],
+    "section": ["class", "id"],
+}
+_REPORT_ALLOWED_PROTOCOLS = {"http", "https", "mailto"}
+
+
+def sanitize_report_fragment(fragment_html: str) -> str:
+    """净化单段报告章节 HTML（数据派生内容）。
+
+    保留排版标签与 ECharts 占位（data-option），剥离 script/iframe/on* 事件/
+    javascript: 协议/危险标签。strip=True 时仅移除危险标签、保留其文本。
+    """
+    if not fragment_html:
+        return ""
+    return bleach.clean(
+        fragment_html,
+        tags=_REPORT_ALLOWED_TAGS,
+        attributes=_REPORT_ALLOWED_ATTRS,
+        protocols=_REPORT_ALLOWED_PROTOCOLS,
+        strip=True,
+        strip_comments=True,
+    )
+
+
 class ReportChapter:
     """报告章节"""
     def __init__(self, number: int, title: str, content: str, charts: Optional[List[Dict]] = None):
@@ -853,6 +900,8 @@ class ReportGenerator:
             # 图表已内联在 ch.content 中（ECharts），不再渲染重复占位符
             # 纯文本/markdown 内容（不含 '<' 标签）转 HTML；HTML 章节原样透传
             content_html = self._md_to_html(ch.content) if "<" not in ch.content else ch.content
+            # G4: 净化数据派生内容（含内联 ECharts 占位），剥离 XSS
+            content_html = sanitize_report_fragment(content_html)
             chapters_html += f"""
 <section class="chapter" id="ch{ch.number}">
   <h2 class="chapter-title">第{ch.number}章 {ch.title}</h2>
@@ -912,7 +961,7 @@ class ReportGenerator:
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>{self.theme} - 分析报告</title>
+  <title>{html.escape(self.theme)} - 分析报告</title>
   {css}
 </head>
 <body>
