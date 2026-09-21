@@ -154,7 +154,6 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
     <>
       <Table
         size="small"
-        scroll={{ x: 'max-content' }}
         rowKey={(r: any, i?: number) => `${r.title}-${i}`}
         pagination={false}
         dataSource={data.metrics || []}

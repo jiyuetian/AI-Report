@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>UI 修复视觉复现 — 问题3 KPI 列宽 / 问题4 附录表格（AntD 行为等价复现）</title>
+<style>
+  :root { --gap: 16px; --border: #f0f0f0; --primary: #1677ff; --bg: #fafafa; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: #1f1f1f; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h2 { margin-top: 40px; border-left: 4px solid var(--primary); padding-left: 10px; }
+  .note { color: #888; font-size: 13px; margin: 6px 0 18px; }
+  /* ── AntD Row/Col 等价实现（flex 24 栅格） ── */
+  .ant-row { display: flex; flex-wrap: wrap; margin: 0 calc(var(--gap) / -2); }
+  .ant-col { padding: 0 calc(var(--gap) / 2); }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+  .card .title { font-size: 13px; color: #666; margin-bottom: 8px; }
+  .card .value { font-size: 28px; font-weight: 600; }
+  /* 自适应 span（问题3 修复逻辑）：1→24, 2→12, 3→8, ≥4→6 */
+  .span-24 { flex: 0 0 100%; max-width: 100%; }
+  .span-12 { flex: 0 0 50%; max-width: 50%; }
+  .span-8  { flex: 0 0 33.3333%; max-width: 33.3333%; }
+  .span-6  { flex: 0 0 25%; max-width: 25%; }
+  /* ── AntD Table 等价实现 ── */
+  .tbl-wrap { background: #fff; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  table { border-collapse: collapse; width: 100%; }
+  /* 有 scroll.x:'max-content' 时 AntD 切 table-layout:fixed 且按内容定宽 → 不拉伸 */
+  table.fixed { table-layout: fixed; width: max-content; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; font-size: 13px; white-space: nowrap; }
+  th { background: #fafafa; font-weight: 600; }
+  .bad { color: #cf1322; font-size: 12px; }
+  .ok  { color: #389e0d; font-size: 12px; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px){ .compare { grid-template-columns: 1fr; } .span-8,.span-6,.span-12 { flex: 0 0 100%; max-width: 100%; } }
+</style>
+</head>
+<body>
+  <h1>UI 修复视觉复现（AntD 栅格/表格行为等价）</h1>
+  <p class="note">说明：本文件用原生 CSS 等价复现 Ant Design 的 Row/Col 栅格与 Table 的 <code>scroll.x:'max-content'</code> 行为，用于在不启动全栈的前提下确认「问题3 / 问题4」的布局修复逻辑。<b>真机截图仍需在 dev 环境按 UI_FIX_SUMMARY.md 的步骤执行。</b></p>
+
+  <h2>问题3 · KPI 卡片自适应列宽（修复后）</h2>
+  <p class="note">规则：1 张→占满整行(24)；2 张→各 1/2(12)；3 张→各 1/3(8)；≥4 张→各 1/4(6)。单卡片不再只占 1/4 留白。</p>
+
+  <h3>① 单 KPI（之前只占左 1/4 → 现在占满整行）</h3>
+  <div class="ant-row">
+    <div class="ant-col span-24"><div class="card"><div class="title">内审整改率汇总</div><div class="value">92.5%</div></div></div>
+  </div>
+
+  <h3>② 2 张 KPI（各 1/2）</h3>
+  <div class="ant-row">
+    <div class="ant-col span-12"><div class="card"><div class="title">业务流程合规率</div><div class="value">88.1%</div></div></div>
+    <div class="ant-col span-12"><div class="card"><div class="title">抵押登记合规率</div><div class="value">95.3%</div></div></div>
+  </div>
+
+  <h3>③ 4 张 KPI（各 1/4，与旧行为一致）</h3>
+  <div class="ant-row">
+    <div class="ant-col span-6"><div class="card"><div class="title">A</div><div class="value">88%</div></div></div>
+    <div class="ant-col span-6"><div class="card"><div class="title">B</div><div class="value">91%</div></div></div>
+    <div class="ant-col span-6"><div class="card"><div class="title">C</div><div class="value">95%</div></div></div>
+    <div class="ant-col span-6"><div class="card"><div class="title">D</div><div class="value">76%</div></div></div>
+  </div>
+
+  <h2>问题4 · 附录表格撑满（修复后去掉 scroll.x）</h2>
+  <p class="note">去掉 <code>scroll.x:'max-content'</code> 后，表格按容器宽度 100% 弹性分配列；仅 A 保留 <code>scroll.y:360</code> 纵向滚动。</p>
+
+  <div class="compare">
+    <div>
+      <p class="ok">修复后 · A 字段字典（撑满，无右留白）</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>字段名</th><th>类型</th><th>含义</th><th>示例</th></tr></thead>
+          <tbody>
+            <tr><td>业务流程合规率</td><td>float</td><td>流程合规占比</td><td>0.881</td></tr>
+            <tr><td>抵押登记合规率</td><td>float</td><td>抵押登记合规占比</td><td>0.953</td></tr>
+            <tr><td>档案管理合规率</td><td>float</td><td>档案合规占比</td><td>0.902</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <p class="bad">修复前 · A 字段字典（scroll.x:max-content → 右留白）</p>
+      <div class="tbl-wrap">
+        <table class="fixed">
+          <thead><tr><th>字段名</th><th>类型</th><th>含义</th><th>示例</th></tr></thead>
+          <tbody>
+            <tr><td>业务流程合规率</td><td>float</td><td>流程合规占比</td><td>0.881</td></tr>
+            <tr><td>抵押登记合规率</td><td>float</td><td>抵押登记合规占比</td><td>0.953</td></tr>
+            <tr><td>档案管理合规率</td><td>float</td><td>档案合规占比</td><td>0.902</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:24px">对比可见：修复前表格宽度 = 内容宽度（约 560px），容器 1100px → 右侧约 540px 空白；修复后宽度 = 100% 撑满。</p>
+</body>
+</html>

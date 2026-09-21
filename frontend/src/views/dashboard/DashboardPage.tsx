@@ -1074,8 +1074,15 @@ const DashboardPage: React.FC = () => {
   const renderKPILayer = () => {
     if (!config) return null;
     const kpiCharts = effectiveCharts.filter((c: any) => c.chart_type === 'kpi');
-    
+
     if (kpiCharts.length === 0) return null;
+
+    // 问题3 修复：KPI 卡片列宽随数量自适应，避免单卡片只占 1/4 导致右侧大片空白
+    const kpiCount = kpiCharts.length;
+    const kpiSpan = kpiCount >= 4 ? { xs: 24, sm: 12, lg: 6 }
+                  : kpiCount === 3 ? { xs: 24, sm: 12, lg: 8 }
+                  : kpiCount === 2 ? { xs: 24, sm: 12, lg: 12 }
+                  : { xs: 24, sm: 24, lg: 24 };  // 单卡片占满整行
 
     return (
       <div className="kpi-layer">
@@ -1083,7 +1090,7 @@ const DashboardPage: React.FC = () => {
           {kpiCharts.map((chart: ChartConfig, index: number) => {
             const kv = deriveKpi(chart);
             return (
-            <Col xs={24} sm={12} lg={6} key={`kpi-${index}`}>
+            <Col {...kpiSpan} key={`kpi-${index}`}>
               <KPICard
                 title={chart.title}
                 value={kv.value}
