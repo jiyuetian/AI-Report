@@ -696,7 +696,11 @@ async def brain_run_pipeline(
                     ),
                 )
                 ctx.shared["goals"] = goals
-                await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals}), "S2")
+                # 2.3-B：标记 S2 目标生成是否由 LLM 参与（对齐 S3 的 ai_participated）
+                s2_generated_by = "llm" if any(g.get("generated_by") == "llm" for g in goals) else "rule"
+                ctx.shared["s2_generated_by"] = s2_generated_by
+                print(f"[Brain] S2 生成方式: {s2_generated_by}（{goals_count} 个目标）")
+                await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals, "generated_by": s2_generated_by}), "S2")
                 goals_count = len(goals)
                 progress.stage_status = "completed"
                 progress.progress = 40
@@ -1086,16 +1090,22 @@ async def brain_run_pipeline(
                             "ratio": _ratio,
                         }
 
+            # 2.3-B：合并 S2(目标) 与 S3(图表) 的 AI 参与情况
+            s2_gen = ctx.shared.get("s2_generated_by", "rule")
+            ai_participated = (generated_by == "llm") or (s2_gen == "llm")
             dashboard_config = {
                 "charts": final_charts,
                 "chart_count": len(final_charts),
                 "theme": theme_tag,
                 "goals": goals,
                 "generated_by": generated_by,
+                # 2.3-B：S2 目标生成的 AI 参与标记（对齐 S3），路演可证明"目标生成也由 AI 参与"
+                "s2_generated_by": s2_gen,
                 # 问题1修复（Layer2）：把生成方式显式落库，供前端打开看板时渲染绿标/灰标
                 # （此前仅在 SSE 完成事件 detail 里算，未写入 config，导致打开页无标注）
-                "ai_participated": generated_by == "llm",
-                "generation_mode": "ai" if generated_by == "llm" else "rule",
+                # 2.3-B：ai_participated 合并 S2(目标) 与 S3(图表)，任一为 LLM 即 True
+                "ai_participated": ai_participated,
+                "generation_mode": "ai" if ai_participated else "rule",
                 "score": {
                     "overall": overall_score,
                     "passed": passed,
@@ -1163,9 +1173,11 @@ async def brain_run_pipeline(
                 "theme": theme_tag,
                 # Phase 4 透明度：前端据此区分「AI 参与」与「规则兜底」，避免「模型不可用却显示成功」
                 "generated_by": generated_by,
-                "ai_participated": generated_by == "llm",
+                # 2.3-B：S2 目标生成的 AI 参与标记（与 dashboard_config 一致）
+                "s2_generated_by": s2_gen,
+                "ai_participated": ai_participated,
                 # M2（拍板）：显式标注生成方式，供前端展示「本次为规则生成」徽标
-                "generation_mode": "ai" if generated_by == "llm" else "rule",
+                "generation_mode": "ai" if ai_participated else "rule",
                 "no_chartable_fields": s3_result.get("no_chartable_fields", False),
                 "suggestion": s3_result.get("suggestion", "")
             }

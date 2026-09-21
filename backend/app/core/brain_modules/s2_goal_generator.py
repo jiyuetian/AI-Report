@@ -22,6 +22,7 @@ class AnalysisGoal:
     type: str  # KPI/趋势/对比/分布/预警/画像/关联
     priority: int = 1  # 优先级 1-10
     expected_charts: List[str] = None
+    generated_by: str = "rule"  # 2.3-B：标记目标由 LLM 还是规则生成（路演可证明 AI 参与）
     
     def to_dict(self) -> Dict:
         result = {
@@ -29,7 +30,8 @@ class AnalysisGoal:
             "title": self.title,
             "description": self.description,
             "type": self.type,
-            "priority": self.priority
+            "priority": self.priority,
+            "generated_by": self.generated_by
         }
         if self.expected_charts:
             result["expected_charts"] = self.expected_charts
@@ -238,6 +240,7 @@ class S2GoalGenerator:
             base_goals=base_goals_json,
             sample_data=sample_json,
         )
+        print(f"[LLM] S2 目标生成调用 LLM (theme={theme}, fields={len(fields)})")
         response = await llm_chat(
             prompt=prompt,
             json_mode=True,
@@ -251,8 +254,8 @@ class S2GoalGenerator:
         
         if response.success and response.response_json:
             llm_goals = response.response_json.get("goals", [])
-            
-            # 转换为AnalysisGoal
+            print(f"[LLM] S2 LLM 返回 {len(llm_goals)} 个目标，转为 AnalysisGoal")
+            # 转换为AnalysisGoal（标记由 LLM 生成）
             goals = []
             for g in llm_goals[:6]:
                 goals.append(AnalysisGoal(
@@ -261,7 +264,8 @@ class S2GoalGenerator:
                     description=g.get("description", ""),
                     type=g.get("type", "分析"),
                     priority=g.get("priority", 5),
-                    expected_charts=g.get("expected_charts", [])
+                    expected_charts=g.get("expected_charts", []),
+                    generated_by="llm"
                 ))
             
             return goals if goals else base_goals

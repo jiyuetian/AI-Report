@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     LLM_FUNCTION_CALLING: bool = True
     LLM_JSON_MODE: bool = True
 
-    # 大脑阶段开关（PRD 4.8：S2 目标生成默认规则引擎降本，可开 LLM 增强）
-    BRAIN_S2_USE_LLM: bool = False
+    # 大脑阶段开关（PRD 4.8：S2 目标生成；2.3-A 起默认开启 LLM 增强，规则兜底保底）
+    BRAIN_S2_USE_LLM: bool = True
 
     # 单任务 Token 预算（P1-1 取长补短 InsightDesk §3.1）：
     # 一次 /brain/run 生成流水线的 LLM 累计消耗上限。达 80% 告警、达 100% 熔断，
