@@ -121,6 +121,31 @@ interface DashboardConfig {
 
 // ======== 稳健图表数据解析 helper（弱化 LLM 字段映射不准的影响）========
 
+/**
+ * 3.3：KPI 判定——对齐后端语义。
+ * 后端 report_generator.py 同时认 chart_type/type 两种写法（历史数据混用），
+ * 前端旧逻辑只认 chart_type，导致 type='kpi' 的卡片既不计入 KPI 层（数量偏小→列宽算错），
+ * 又会漏进图表层被当普通图渲染。这里统一归一化。
+ */
+function isKpiChart(c: any): boolean {
+  return c?.chart_type === 'kpi' || c?.type === 'kpi';
+}
+
+/**
+ * 3.3：按「所在行的卡片数」计算列宽，末行不足时该行卡片均分整行。
+ * 旧逻辑只看总数：n=5 时前 4 张各占 1/4、第 5 张仍占 1/4，右侧 3/4 空白（即"单卡留白"）。
+ * 新逻辑：末行 1 张→占满(24)、2 张→各半(12)、3 张→各 1/3(8)，任意数量都无末行空白。
+ */
+function kpiSpanFor(index: number, total: number) {
+  const spanFor = (perRow: number) => {
+    const full = Math.floor(total / perRow) * perRow;   // 满行的卡片数
+    const inRow = index < full ? perRow : ((total % perRow) || perRow);
+    return Math.round(24 / inRow);
+  };
+  // lg 每行最多 4 张，sm 每行 2 张，xs 每行 1 张
+  return { xs: 24, sm: spanFor(2), lg: spanFor(4) };
+}
+
 /** 把任意日期样字符串规约为 YYYY-MM（无法识别返回 null） */
 function guessMonth(v: any): string | null {
   const s = String(v ?? '').trim();
@@ -1084,22 +1109,20 @@ const DashboardPage: React.FC = () => {
   // 渲染KPI层
   const renderKPILayer = () => {
     if (!config) return null;
-    const kpiCharts = effectiveCharts.filter((c: any) => c.chart_type === 'kpi');
+    // 3.3：用归一化判定（chart_type 或 type），避免 type='kpi' 的卡片漏统计
+    const kpiCharts = effectiveCharts.filter(isKpiChart);
 
     if (kpiCharts.length === 0) return null;
 
-    // 问题3 修复：KPI 卡片列宽随数量自适应，避免单卡片只占 1/4 导致右侧大片空白
+    // 3.3：列宽按"所在行卡片数"计算，末行不足时该行均分整行（n=1 占满、n≥5 末行无空白）
     const kpiCount = kpiCharts.length;
-    const kpiSpan = kpiCount >= 4 ? { xs: 24, sm: 12, lg: 6 }
-                  : kpiCount === 3 ? { xs: 24, sm: 12, lg: 8 }
-                  : kpiCount === 2 ? { xs: 24, sm: 12, lg: 12 }
-                  : { xs: 24, sm: 24, lg: 24 };  // 单卡片占满整行
 
     return (
       <div className="kpi-layer">
         <Row gutter={[16, 16]}>
           {kpiCharts.map((chart: ChartConfig, index: number) => {
             const kv = deriveKpi(chart);
+            const kpiSpan = kpiSpanFor(index, kpiCount);
             return (
             <Col {...kpiSpan} key={`kpi-${index}`}>
               <KPICard
@@ -1123,7 +1146,8 @@ const DashboardPage: React.FC = () => {
   // 渲染图表层（非KPI）
   const renderChartLayer = () => {
     if (!config) return null;
-    const nonKpiCharts = effectiveCharts.filter(c => c.chart_type !== 'kpi' && c.chart_type !== 'table');
+    // 3.3：与 KPI 层用同一归一化判定，避免 type='kpi' 的卡片漏进图表层被当普通图渲染
+    const nonKpiCharts = effectiveCharts.filter(c => !isKpiChart(c) && c.chart_type !== 'table');
 
     if (nonKpiCharts.length === 0) return null;
 
