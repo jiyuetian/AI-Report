@@ -39,3 +39,25 @@
 1. **真做到位了吗？** 是。不只是"信代码注释"，而是**挖到旧修复的适用边界**并用 node 实测验证；两个真因都修了。
 2. **边界覆盖了吗？** 覆盖 6 条（n≤4 等价性 / n=0 / n≥5 / type 历史数据 / sm-xs 断点 / auto 补图不干扰）。
 3. **还能再加深度吗？** 代码层已穷尽；唯一可加的是"卡内横向布局"，但属新改动且需多文件 → 按纪律转待拍板，不擅自做（用户对 UI 改动容忍度低）。
+
+## 深度补充（Deepening Round 1）— 2026-09-21 23:48:15（commit 2f9e8de）
+
+【发现的缺口】isKpiChart 大小写敏感且不认中文别名，与后端三处归一化不一致：
+  action_executor.CHART_TYPE_MAPPING（KPI/KPI卡 → kpi）
+  intent_classifier.py:568（kpi/KPI/指标卡/指标 → kpi）
+  lineage_service.py:631（str(type).lower() == 'kpi'）
+→ chart_type='KPI' 的卡片被漏出 KPI 层：列宽算错（留白复发）、被当普通图渲染、详情弹窗判定错。
+
+【补充】
+- 新增 normChartType()：chart_type||type → trim → lower → 中文别名表
+- isKpiChart / isTableChart 统一走归一化
+- 调用点全改：覆盖率统计 / 渲染 switch / 图表层过滤 / 详情弹窗，共 5 处
+
+【证据】test_33_chart_type_norm.js 全通过。
+  同一份混合数据实测：旧判定 KPI=2，新判定 KPI=5（漏 3 张）
+【校验】tsc --noEmit EXIT=0
+
+【耗时订正】首修 23:17:57 → 深补 23:48:15，跨度约 30 分钟
+【达标】首修 ❌（<20 分钟）；含深度补充后 ✅
+
+【遗留】kpiSpanFor 未指定 md/xl/xxl，AntD 向下继承 → md(768~992px) 沿用 sm 的 2 列，可能偏宽，未真机验证。
