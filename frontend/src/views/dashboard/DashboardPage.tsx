@@ -115,6 +115,8 @@ interface DashboardConfig {
   generated_by?: 'llm' | 'rule_engine' | 'hybrid' | string;
   generation_mode?: 'ai' | 'rule' | 'hybrid' | string;
   ai_participated?: boolean;
+  // 2.3：目标生成是否由 AI 参与（S2 阶段），用于"目标区"小标展示
+  s2_generated_by?: 'llm' | 'rule' | string;
 }
 
 // ======== 稳健图表数据解析 helper（弱化 LLM 字段映射不准的影响）========
@@ -607,6 +609,9 @@ const DashboardPage: React.FC = () => {
         : config?.generated_by
           ? 'rule'
           : '';
+
+  // 2.3：目标生成方式（S2），供"目标区"小标展示
+  const s2Gen = config?.s2_generated_by ?? '';
 
   // 按图表来源数据集取数：a 数据 → 图表1/2/3，b 数据 → 图表4/5/6，各取各的，互不影响。
   // ① 优先用图表自带的 dataset_id（S3 生成时写入，最可靠）
@@ -1287,6 +1292,7 @@ const DashboardPage: React.FC = () => {
           id={urlId}
           title={title}
           generationMode={genMode}
+          s2GeneratedBy={s2Gen}
           onRename={setTitle}
           // 问题3修复：版本回退成功后由 DashboardOps 触发，重载看板详情使界面立即生效
           onConfigReload={reloadConfig}

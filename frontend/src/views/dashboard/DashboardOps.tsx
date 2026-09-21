@@ -17,6 +17,7 @@ interface DashboardOpsProps {
   onRename?: (next: string) => void
   onDelete?: () => void
   generationMode?: 'ai' | 'rule' | string  // 问题1：看板生成方式（绿标/灰标）
+  s2GeneratedBy?: 'llm' | 'rule' | string  // 2.3：目标生成方式（"目标区"小标）
   onConfigReload?: () => void  // 问题3修复：版本回退成功后触发看板详情重载，界面立即生效
 }
 
@@ -46,7 +47,7 @@ const mockHistory = [
   { id: 'h4', title: '季度不良率目标达成', time: '08-10 09:22', summary: '按季度拆解不良率目标与实际达成对比' },
 ]
 
-export default function DashboardOps({ id, title, onRename, onDelete, generationMode, onConfigReload }: DashboardOpsProps) {
+export default function DashboardOps({ id, title, onRename, onDelete, generationMode, s2GeneratedBy, onConfigReload }: DashboardOpsProps) {
   const nav = useNavigate()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
@@ -320,12 +321,19 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
           <Tooltip title="点击编辑标题">
             <h1 className="dash-ops-title" onClick={() => { setDraft(title); setEditing(true) }}>
               {title} <EditOutlined className="dash-ops-title-edit" />
-              {/* 问题1修复：生成方式徽标——绿标「AI 生成」/ 灰标「本次为规则生成」 */}
+              {/* 问题1修复：生成方式徽标——绿标「AI 参与生成」/ 灰标「规则兜底生成」 */}
               {generationMode === 'ai' && (
-                <Tag color="green" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>AI 生成</Tag>
+                <Tag color="green" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>AI 参与生成</Tag>
               )}
               {generationMode === 'rule' && (
-                <Tag color="default" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>本次为规则生成</Tag>
+                <Tag color="default" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>规则兜底生成</Tag>
+              )}
+              {/* 2.3：目标生成方式小标——证明「目标也由 AI 参与」 */}
+              {s2GeneratedBy === 'llm' && (
+                <Tag color="geekblue" style={{ marginLeft: 6, fontSize: 12, verticalAlign: 'middle' }}>目标·AI</Tag>
+              )}
+              {s2GeneratedBy === 'rule' && (
+                <Tag color="default" style={{ marginLeft: 6, fontSize: 12, verticalAlign: 'middle' }}>目标·规则</Tag>
               )}
             </h1>
           </Tooltip>
