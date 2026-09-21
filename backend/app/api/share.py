@@ -5,10 +5,11 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.share_service import ShareService
 
 router = APIRouter(prefix="/shares", tags=["Share"])
@@ -140,14 +141,14 @@ async def revoke_share(
 @router.get("/my/list")
 async def list_my_shares(
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user),
 ):
-    """获取我创建的分享列表"""
+    """获取我创建的分享列表（G3：需登录）"""
     from sqlalchemy import select
     from app.models.share import ShareLink
     
     result = await db.execute(
-        select(ShareLink).where(ShareLink.created_by == user_id)
+        select(ShareLink).where(ShareLink.created_by == current_user["user_id"])
             .order_by(ShareLink.created_at.desc())
     )
     shares = result.scalars().all()

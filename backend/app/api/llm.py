@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import require_admin
 from app.core.llm_gateway import (
     LLMGateway, LLMRequest, LLMResponse,
     LLMConfigManager, RateLimiter, rate_limiter,
@@ -242,9 +243,9 @@ async def get_usage(user_id: str):
 
 
 @router.get("/config")
-async def get_llm_config():
+async def get_llm_config(current_user: Dict = Depends(require_admin)):
     """
-    获取LLM配置信息
+    获取LLM配置信息（G3：仅管理员，避免泄露内网地址/密钥状态）
     """
     from app.core.config import settings
     from app.core.llm_gateway import MAX_RETRIES, TIMEOUT_SECONDS, CONCURRENCY_LIMIT

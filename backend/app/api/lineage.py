@@ -9,7 +9,10 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.lineage_service import LineageService
+from app.models.dataset import Dataset
+from app.api.datasets import _assert_dataset_access
 
 router = APIRouter(prefix="/lineage", tags=["Lineage"])
 
@@ -150,9 +153,11 @@ async def build_lineage(
 @router.get("/graph/{dataset_id}", response_model=LineageGraphResponse)
 async def get_lineage_graph(
     dataset_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
 ):
-    """获取血缘图谱（用于前端展示）"""
+    """获取血缘图谱（用于前端展示）（G3：需登录 + 数据集归属校验）"""
+    await _assert_dataset_access(db, dataset_id, current_user)
     graph = await LineageService.get_lineage_graph(db, dataset_id)
     
     if not graph["nodes"]:
@@ -205,9 +210,11 @@ async def get_impact_analysis(
 @router.get("/stats/{dataset_id}")
 async def get_lineage_stats(
     dataset_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
 ):
-    """获取血缘统计信息"""
+    """获取血缘统计信息（G3：需登录 + 数据集归属校验）"""
+    await _assert_dataset_access(db, dataset_id, current_user)
     graph = await LineageService.get_lineage_graph(db, dataset_id)
     
     layer_counts = {layer: len(nodes) for layer, nodes in graph["layers"].items()}

@@ -10,7 +10,10 @@ from app.core.duckdb_manager import get_duckdb
 from app.core.quality_checker import QualityChecker
 from app.core.ai_quality_checker import AIQualityChecker
 from app.core.database import get_db, async_session_factory
+from app.core.security import get_current_user
 from app.models.quality import QualityIssue, CleanRule
+from app.models.dataset import Dataset
+from app.api.datasets import _assert_dataset_access
 
 router = APIRouter(prefix="/quality", tags=["Quality"])
 
@@ -256,8 +259,13 @@ async def get_ai_check_result(dataset_id: str):
 
 
 @router.get("/{dataset_id}/issues")
-async def get_quality_issues(dataset_id: str, sql_db: AsyncSession = Depends(get_db)):
-    """获取质检问题列表"""
+async def get_quality_issues(
+    dataset_id: str,
+    sql_db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """获取质检问题列表（G3：需登录 + 数据集归属校验）"""
+    await _assert_dataset_access(sql_db, dataset_id, current_user)
     result = await sql_db.execute(
         select(QualityIssue).where(
             QualityIssue.dataset_id == dataset_id,

@@ -79,7 +79,10 @@ class DatasetCreateRequest(BaseModel):
 
 
 @router.get("", response_model=dict)
-async def list_datasets(db: AsyncSession = Depends(get_db)):
+async def list_datasets(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
     """
     数据集列表（按创建时间倒序）。
     2026-09-17 新增：血缘页需要定位「用户当前这份数据」的 dataset_id，

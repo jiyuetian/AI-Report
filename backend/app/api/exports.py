@@ -5,11 +5,12 @@ PDF/Excel/PNG 同步导出 + 水印 + 异步导出（>5s转异步，通知+7天�
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.export_service import ExportService, ExportFormat
 
 router = APIRouter(prefix="/exports", tags=["Exports"])
@@ -160,9 +161,9 @@ async def get_export_status(
 @router.get("/my/list")
 async def list_my_exports(
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user),
 ):
-    """获取我的导出历史"""
+    """获取我的导出历史（G3：需登录）"""
     return {
         "exports": [
             {

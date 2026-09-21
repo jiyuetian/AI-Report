@@ -1,7 +1,14 @@
 """策略大脑配置API - M1-15"""
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.security import get_current_user, require_admin
+from app.core.database import get_db
+from app.models.dataset import Dataset
+from app.api.datasets import _assert_dataset_access
 
 router = APIRouter(prefix="/brain", tags=["Brain"])
 
@@ -27,8 +34,8 @@ class ThresholdUpdateRequest(BaseModel):
 
 
 @router.get("/configs")
-async def get_brain_configs():
-    """获取所有策略大脑配置"""
+async def get_brain_configs(current_user: Dict = Depends(require_admin)):
+    """获取所有策略大脑配置（G3：仅管理员）"""
     return {
         "configs": _brain_configs,
         "version": "1.0.0",
@@ -37,8 +44,8 @@ async def get_brain_configs():
 
 
 @router.get("/configs/{category}")
-async def get_category_config(category: str):
-    """获取指定类别配置"""
+async def get_category_config(category: str, current_user: Dict = Depends(require_admin)):
+    """获取指定类别配置（G3：仅管理员）"""
     if category not in _brain_configs:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -93,8 +100,8 @@ async def update_threshold(request: ThresholdUpdateRequest):
 
 
 @router.get("/configs/{category}/history")
-async def get_config_history(category: str):
-    """获取配置变更历史"""
+async def get_config_history(category: str, current_user: Dict = Depends(require_admin)):
+    """获取配置变更历史（G3：仅管理员）"""
     # TODO: 从数据库查询历史
     return {
         "category": category,
@@ -104,8 +111,13 @@ async def get_config_history(category: str):
 
 # M1-15: 处理报告导出
 @router.get("/report/{dataset_id}")
-async def get_processing_report(dataset_id: str):
-    """获取数据处理报告"""
+async def get_processing_report(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """获取数据处理报告（G3：需登录 + 数据集归属校验）"""
+    await _assert_dataset_access(db, dataset_id, current_user)
     # TODO: 从数据库查询报告
     return {
         "dataset_id": dataset_id,

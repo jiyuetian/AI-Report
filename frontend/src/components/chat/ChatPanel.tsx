@@ -16,6 +16,7 @@ import {
   PictureOutlined, ThunderboltFilled, CloseOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
+import { authHeaders } from '../../utils/request';
 import './ChatPanel.css';
 
 const { Text, Title } = Typography;
@@ -122,8 +123,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const loadHistory = async () => {
     if (!dashboardId) return;
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，按设计不带 token
-      const res = await fetch(`/api/v1/chat/sessions/latest?dashboard_id=${encodeURIComponent(dashboardId)}`);
+      // G3 联动：/chat/sessions/latest 现已强制鉴权，裸 fetch 不带 token 会 401 → 走 authHeaders()
+      const res = await fetch(`/api/v1/chat/sessions/latest?dashboard_id=${encodeURIComponent(dashboardId)}`, { headers: authHeaders() });
       if (!res.ok) return;
       const data = await res.json();
       if (data.success && data.session_id && data.messages?.length > 0) {

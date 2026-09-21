@@ -13,6 +13,7 @@ import asyncio
 from datetime import datetime
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.intent_classifier import classify_intent, IntentType
 from app.core.action_executor import ActionExecutor, ActionType
 from app.core.moderation import check_moderation, ContentModerator, BoundaryType
@@ -378,9 +379,10 @@ async def create_session(
 @router.get("/sessions/latest", response_model=Dict)
 async def get_latest_session_with_messages(
     dashboard_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
 ):
-    """获取指定看板最近一次有消息的会话及其消息（用于前端恢复对话历史）"""
+    """获取指定看板最近一次有消息的会话及其消息（用于前端恢复对话历史）（G3：需登录）"""
     result = await db.execute(
         select(ChatSession)
         .where(ChatSession.dashboard_id == dashboard_id)
@@ -412,9 +414,10 @@ async def get_latest_session_with_messages(
 async def get_chat_history(
     session_id: str,
     limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
 ):
-    """获取对话历史"""
+    """获取对话历史（G3 同类扩展：需登录，避免未授权枚举会话消息）"""
     result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
