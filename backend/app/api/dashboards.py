@@ -25,6 +25,27 @@ from app.core.validators import sanitize_text
 router = APIRouter(prefix="/dashboards", tags=["Dashboards"])
 
 
+def _assert_dashboard_access(dashboard, current_user: Optional[Dict]) -> None:
+    """G2.2 横向越权：看板归属校验。
+
+    策略与既有 delete_dashboard（本文件 320-329）保持一致：
+    - 创建者（created_by == user_id）放行
+    - legacy 匿名数据（created_by in anonymous/current）放行，避免历史看板全部不可见
+    - 超管（is_superuser）放行
+    - 其余一律 404（不泄露看板是否存在）
+    分享路径（current_user is None 且 share_code 已在上游校验）不受影响。
+    """
+    if current_user is None:
+        return
+    if dashboard.created_by == current_user.get("user_id"):
+        return
+    if dashboard.created_by in ("anonymous", "current"):
+        return
+    if current_user.get("is_superuser"):
+        return
+    raise HTTPException(status_code=404, detail="看板不存在")
+
+
 class CreateDashboardRequest(BaseModel):
     """创建看板请求"""
     name: str = Field(..., min_length=1, max_length=200)
@@ -205,6 +226,12 @@ async def get_dashboard_appendix(
     全部取自真实管线元数据（DuckDB 清洗层实测 + clean_rules + 图表SQL + 血缘埋点），
     确定性拼装、可复跑复现，不依赖模型自述。
     """
+    # G2.2：附录含看板全量元数据，须与详情同级做归属校验
+    _res = await db.execute(select(Dashboard).where(Dashboard.id == dashboard_id))
+    _dash = _res.scalar_one_or_none()
+    if not _dash:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "看板不存在"})
+    _assert_dashboard_access(_dash, current_user)
     from app.core.appendix_service import build_appendix
     try:
         result = await build_appendix(db, dashboard_id)
@@ -249,6 +276,8 @@ async def get_dashboard_detail(
     
     if not dashboard:
         raise HTTPException(status_code=404, detail="看板不存在")
+    # G2.2：已登录用户仅可访问自己的看板（分享路径已在上游校验 share_code 后放行）
+    _assert_dashboard_access(dashboard, current_user)
     
     # 获取关联数据源信息
     datasets_info = []
@@ -449,6 +478,8 @@ async def update_dashboard(
     
     if not dashboard:
         raise HTTPException(status_code=404, detail="看板不存在")
+    # G2.2：仅创建者/超管可更新
+    _assert_dashboard_access(dashboard, current_user)
     
     if request.name is not None:
         dashboard.name = request.name
