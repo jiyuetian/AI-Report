@@ -250,7 +250,8 @@ class S3LLMEnhancer:
         grain: str,
         previous_error: Optional[str] = None,
         semantics: Optional[Dict[str, Any]] = None,
-        derived_metrics: Optional[Dict[str, Any]] = None
+        derived_metrics: Optional[Dict[str, Any]] = None,
+        field_profiles: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """构建LLM Prompt"""
 
@@ -275,18 +276,56 @@ class S3LLMEnhancer:
             FieldType.TEXT: "文本标识(一般不宜作分析维度)",
         }
 
+        # 2.5 P0：字段画像索引（归一化匹配，复用与 D2 同套去空格/全角/大小写）
+        _profile_index: Dict[str, Dict[str, Any]] = {}
+        if field_profiles:
+            for _fp in field_profiles:
+                if not isinstance(_fp, dict):
+                    continue
+                _nm = str(_fp.get("name") or _fp.get("column") or "").strip()
+                if not _nm:
+                    continue
+                _profile_index[_nm] = _fp
+                _profile_index[_nm.replace(" ", "").replace("\u3000", "")] = _fp
+
+        def _lookup_profile(field: str) -> Optional[Dict[str, Any]]:
+            _key = str(field or "").strip()
+            return _profile_index.get(_key) or _profile_index.get(_key.replace(" ", "").replace("\u3000", ""))
+
         def _desc(f: str) -> str:
             t = field_types.get(f, FieldType.TEXT)
             base = type_label.get(t, "文本")
             m = meta.get(f, {})
             role = m.get("business_role") or ""
             hint = m.get("chart_hint") or ""
-            parts = [base]
+            card = m.get("cardinality") or ""
+            extras = []
             if role:
-                parts.append(role)
+                extras.append(role)
             if hint:
-                parts.append(f"建议:{hint}")
-            return "，".join(parts) if len(parts) > 1 else base
+                extras.append(f"建议:{hint}")
+            # 2.5 P0：真实画像（distinct/空值率/取值样例/高基数）——来自 S3 调用前 duckdb 实算
+            prof = _lookup_profile(f)
+            prof_parts = []
+            if prof:
+                _dc = prof.get("distinct_count")
+                if _dc is not None:
+                    prof_parts.append(f"distinct={_dc}")
+                _nr = prof.get("null_rate")
+                if _nr is not None:
+                    try:
+                        prof_parts.append(f"空值率{round(float(_nr) * 100)}%")
+                    except (TypeError, ValueError):
+                        pass
+                if card == "high":
+                    prof_parts.append("⚠️高基数，禁止作为分类维度")
+                elif prof.get("sample_values"):
+                    _sv = prof["sample_values"][:5]
+                    if _sv:
+                        prof_parts.append("取值:" + "/".join(str(v) for v in _sv))
+            if prof_parts:
+                extras.append(" | ".join(prof_parts))
+            return "，".join([base] + extras) if extras else base
 
         fields_desc = "\n".join(f"  - {f}（{_desc(f)}）" for f in fields)
         # 2026-09-17：把「已验证派生指标」的加工公式标进字段描述，
@@ -384,7 +423,8 @@ class S3LLMEnhancer:
         goals: List[Dict],
         grain: str = "detail",
         semantics: Optional[Dict[str, Any]] = None,
-        derived_metrics: Optional[Dict[str, Any]] = None
+        derived_metrics: Optional[Dict[str, Any]] = None,
+        field_profiles: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         生成图表配置（带Schema自愈 + 字段语义增强）
@@ -412,7 +452,7 @@ class S3LLMEnhancer:
             
             # 构建Prompt（带错误回写 + 语义标注 + 派生指标口径）
             prompt = self._build_prompt(theme, fields, goals, grain, last_error,
-                                        semantics, self.derived_metrics)
+                                        semantics, self.derived_metrics, field_profiles)
             
             # 调用LLM
             response = await llm_chat(
@@ -589,14 +629,15 @@ async def generate_charts_with_llm(
     goals: List[Dict],
     grain: str = "detail",
     semantics: Optional[Dict[str, Any]] = None,
-    derived_metrics: Optional[Dict[str, Any]] = None
+    derived_metrics: Optional[Dict[str, Any]] = None,
+    field_profiles: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     便捷函数：LLM生成图表（带自愈 + 字段语义增强 + 派生指标反哺）
     """
     enhancer = S3LLMEnhancer()
     return await enhancer.generate_with_self_healing(
-        db, theme, fields, goals, grain, semantics, derived_metrics
+        db, theme, fields, goals, grain, semantics, derived_metrics, field_profiles
     )
 
 

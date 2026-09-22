@@ -7,7 +7,8 @@ import json
 import os
 import traceback
 import uuid
-from typing import AsyncGenerator, Dict, Any, Optional
+import re
+from typing import AsyncGenerator, Dict, Any, Optional, List
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -211,7 +212,7 @@ def _resume_run_choice(run_id: str, choice: str) -> bool:
 
 
 async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
-                            max_rounds: int = 3, derived_metrics=None):
+                            max_rounds: int = 3, derived_metrics=None, field_profiles=None):
     """用户选择"等 AI 恢复"后：带退避重试 S3 的 LLM 图表生成。
 
     某一轮成功（generated_by=='llm'）即返回 (result, ai_failed=False)；
@@ -226,7 +227,7 @@ async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
         try:
             res = await generate_charts_with_llm(
                 db=db, theme=theme_tag, fields=fields, goals=goals, grain=grain,
-                derived_metrics=derived_metrics or {}
+                derived_metrics=derived_metrics or {}, field_profiles=field_profiles
             )
         except Exception as e:
             res = {"charts": [], "generated_by": "rule_engine", "fallback_reason": _short_err(e)}
@@ -483,6 +484,64 @@ async def get_dataset_info(db: AsyncSession, dataset_id: str) -> Dict[str, Any]:
     }
 
 
+def _is_sensitive_field(f: str) -> bool:
+    """2.5 P0 前置防御：敏感字段不注入取值样例（V4 红线前置），distinct 计数仍保留。"""
+    return bool(re.search(r"(身份证|手机号|手机|电话|姓名|名称|地址|邮箱|邮件|证件|编号)", f or "", re.IGNORECASE))
+
+
+def _compute_field_profiles(duck, table_name: str, fields: List[str],
+                            sample_data: Optional[List[Dict]] = None) -> Optional[List[Dict[str, Any]]]:
+    """S3 调用前算真实 distinct + 空值率（2.5 P0：L2 画像升级）。
+
+    一次查询算所有字段的 COUNT(DISTINCT) 与空值数；失败返回 None，不阻断生成。
+    列名来自数据集自有 schema（已校验），按白名单正则再过滤一次防注入。
+    """
+    if duck is None or not getattr(duck, "table_exists", lambda t: False)(table_name):
+        return None
+    safe = [f for f in fields if re.match(r"^[A-Za-z0-9_\u4e00-\u9fff]+$", f)]
+    if not safe:
+        return None
+    try:
+        parts = ["COUNT(*) AS _total"]
+        for f in safe:
+            q = '"' + f.replace('"', '""') + '"'
+            parts.append(f"COUNT(DISTINCT {q})")
+            parts.append(f"SUM(CASE WHEN {q} IS NULL THEN 1 ELSE 0 END)")
+        row = duck.conn.execute(f'SELECT {", ".join(parts)} FROM "{table_name}"').fetchone()
+        if not row:
+            return None
+        total = row[0] or 0
+        profiles: List[Dict[str, Any]] = []
+        idx = 1
+        for f in safe:
+            d = row[idx]
+            n = row[idx + 1]
+            idx += 2
+            profiles.append({
+                "name": f,
+                "distinct_count": int(d) if d is not None else None,
+                "null_rate": round(n / total, 4) if (total and n is not None) else 0.0,
+            })
+        # 取值样例：从 sample_data 取（敏感字段跳过，V4 前置防御）
+        if sample_data:
+            for p in profiles:
+                if _is_sensitive_field(p["name"]):
+                    continue
+                vals: List[str] = []
+                for r in sample_data:
+                    v = r.get(p["name"])
+                    if v is not None and str(v) not in vals:
+                        vals.append(str(v))
+                    if len(vals) >= 5:
+                        break
+                if vals:
+                    p["sample_values"] = vals
+        return profiles
+    except Exception as e:
+        print(f"[Brain] 字段画像计算失败(不阻断): {e}")
+        return None
+
+
 async def brain_run_pipeline(
     run_id: str,
     dataset_id: str,
@@ -733,6 +792,11 @@ async def brain_run_pipeline(
             s3_result = {"charts": [], "generated_by": "rule_engine"}
             s3_ai_failed = False
             s3_ai_reason = None
+            # 2.5 P0：S3 调用前算真实字段画像（distinct/空值率/取值样例），喂给 LLM 出图决策
+            _s3_table = f"ds_{dataset_id.replace('-', '_')}"
+            field_profiles = _compute_field_profiles(
+                get_duckdb(), _s3_table, fields, dataset_info.get("sample_data")
+            )
             try:
                 s3_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S3", {
                     "theme": theme_tag, "fields": fields, "goals": goals
@@ -764,6 +828,7 @@ async def brain_run_pipeline(
                                 goals=goals,
                                 grain=grain,
                                 derived_metrics=derived_metrics,
+                                field_profiles=field_profiles,
                             ),
                             timeout=settings.BRAIN_S3_LLM_TIMEOUT,
                         )
@@ -816,7 +881,7 @@ async def brain_run_pipeline(
                 if choice == "wait_retry":
                     s3_result, s3_ai_failed = await _retry_s3_with_ai(
                         run_id, db, theme_tag, fields, goals, grain, s3_ai_reason,
-                        derived_metrics=derived_metrics
+                        derived_metrics=derived_metrics, field_profiles=field_profiles
                     )
 
             charts = s3_result.get("charts", [])

@@ -77,8 +77,11 @@
 - [✓] 2.2 Prompt 中心可编辑性
 - [✓] 2.3 AI 能力补齐（s2 默认 LLM + 标记对齐，commit `ed72f47`）
 - [✓] 2.4 路演 AI 展示徽标（commit `3676b66`，待本机截图）
-- [✓] 2.5 AI 自主推理语义（方案已出 `defect_fix_evidence/final_fixes/plan_25_26_semantic_and_template.md`）
+- [✓] 2.5 AI 自主推理语义（方案 `defect_fix_evidence/final_fixes/plan_25_26_semantic_and_template.md`）
+  - [x] 2.5 P0 落地（L2 字段画像升级：distinct/空值率/高基数注入，commit 见下；证据 `ev_25_p0.md`）
+  - [ ] 2.5 P1-P4（样本注入/field_semantics 持久化/业务词典/纠正写回，待做）
 - [✓] 2.6 分析模板库（方案已出，同文件）
+  - [ ] 2.6 P0 落地（模板表 + 匹配函数）← 下一步
 
 ### 第 3 层：UI 体验
 - [✓] 3.1 上传页布局（已落地：Dragger 收缩 + 队列收缩，`1bdc645`+`fee2792`，tsc 通过；源码 `UploadPage.tsx` 含 `shouldCollapse`/`queueCollapsed`）
