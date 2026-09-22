@@ -72,3 +72,23 @@ tests/_*.png
 
 # 浏览器截图调试产物（勿入库）
 dashboard_*.png
+
+# === 大扫除（2026-09-22）残留防护：诊断/证据/临时脚本勿入库 ===
+# 证据目录（根级重复副本 + docs 副本均忽略，避免误 git add）
+defect_fix_evidence/
+# 一次性诊断文档
+docs/NEW_ISSUES_*.md
+# 根级临时扫描/构建产物
+_scan_health.json
+_tsc_out.txt
+_*.py
+_*.txt
+_*.json
+# 后端一次性诊断脚本与备份（已归档/移出项目）
+backend/.env.bak*
+backend/.env.bak_xunfei
+backend/magic1.dll
+backend/probe_out.txt
+backend/.backend.pid
+backend/verify_n1_*.py
+backend/scripts/_*.py
