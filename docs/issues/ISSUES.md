@@ -22,12 +22,13 @@
 
 | 严重度 | 数量 | 说明 |
 |--------|------|------|
-| P0 | 2 | 导出假成功+跳页、横向越权归属过滤 |
+| P0 | 3 | 导出假成功+跳页、横向越权归属过滤(ISS-003)、**无鉴权端点可操作任意看板(ISS-025)** |
 | P1 | 8 | 鉴权端点对齐、owner 来源、上传净化、前端守卫认知债、限流兜底、字段截断、双库误配监控、依赖漏洞 |
-| P2 | 5 | 出站超时/重试、LLM 网关稳定性、schema 迁移覆盖、历史注入、性能 |
+| P2 | 6 | 出站超时/重试、LLM 网关稳定性、schema 迁移覆盖、历史注入、性能、**AI 对话实体抽取(ISS-022)** |
 | P3 | 4 | 调试脚本归位、文档去重、局部命名 spot-check、诊断残留出库 |
 
-> 合计 **19** 条在债；历史已闭环 **6** 条见附表。
+> 合计 **21** 条在债；历史已闭环 **8** 条见附表（本夜新增闭环 ISS-023/024）。
+> 鉴权面全量审计见同目录 `AUTH_AUDIT.md`（提交 `e62282b`）。
 
 ---
 
@@ -56,6 +57,10 @@
 | ISS-019 | 生成看板限流静默兜底 + 多字段截断 | P0→P1 | 稳定/前后端 | `backend/app/api/brain_run_sse.py`、`action_executor` | 限流无提示直接丢弃；多字段被截断且 LLM 字段匹配失败 | 用户无感知失败 / 图表缺字段 | 限流已加静默兜底（任务 234）+ 多 key 容错（235）；字段截断+匹配（236）待处理 | M | 前后端 | 部分已处理 |
 | ISS-020 | 导出 PDF/Excel/PNG 假成功 + 跳页 | P0 | 功能/前后端 | `backend/app/api/exports.py`、前端导出组件 | 导出在无真实产物时返回「成功」并跳页 | 用户以为已导出实则无文件 | 导出前校验产物存在；无产物时诚实占位/报错不跳页（item4）。高风险档，先实测复现再改 | M | 前后端 | 待处理 |
 | ISS-021 | GitHub Dependabot：default 分支 1 个 high 级依赖漏洞 | P1 | 安全/依赖 | `main` 分支依赖树（Dependabot alert #1，仓库 Security/Dependabot） | 某依赖版本存在已知 CVE（`push` 时 GitHub 回显「1 vulnerability (1 high)」） | 供应链漏洞，可能被利用；`p0-security-fixes` 同源依赖可能同样受影响 | 查 Dependabot alert #1 详情 → `pip audit` / `npm audit` 定位 → 升级到修复版本 → 验证后端/前端构建。注意：在本人工作分支也需同步升级 | M | 后端/前端 | 待核查(Dependabot) |
+| ISS-022 | AI 对话删图：图表名实体抽取失败，误拒删除 | P2 | AI/后端 | `backend/app/api/chat.py`（意图分类后实体抽取）、`action_planner/action_executor` | 意图已正确识别为 `delete_chart`(conf 75)，但实体抽取把「名为数据明细」「删除数据明细」整串当图名，匹配不到裸图名 → 安全拒绝删除 | 用户说「删掉数据明细图」无效果 | 实体抽取改为：先用现有看板图表标题做**受控词典匹配**（最长优先），再回退 LLM；命中不到时给出候选列表让用户选，而非直接拒 | M | 后端 | 待处理(阶段9) |
+| ISS-023 | ~~`/dashboards/my` 未按 created_by 过滤（横向越权）~~ | P0 | 安全/后端 | `backend/app/api/dashboards.py` `list_my_dashboards` | `_OWNERS` 固定含 legacy `anonymous`/`current`，**任何登录用户**都能看到 pre-auth 演示看板 | 任意用户可枚举他人看板，并借 ISS-024 删除 | legacy 仅超管可见；普通用户严格 `created_by/updated_by == 自身uid` | S | 后端 | **已闭环(2541347)** |
+| ISS-024 | ~~DELETE `/dashboards/{id}` legacy 特判导致删除越权~~ | P0 | 安全/后端 | `backend/app/api/dashboards.py` `delete_dashboard` | `is_legacy = created_by in (anonymous,current)` 无条件放行删除 | **已造成真实事故**：误删真实演示看板 `risk_demo_v2_02` 两次，后从 09-18 备份外科恢复 | 去掉 legacy 特判；仅创建者本人 or 超管可删，其余 403 | S | 后端 | **已闭环(2541347)** |
+| ISS-025 | 一批端点**完全无鉴权**，可操作任意看板 | P0 | 安全/后端 | `versions.py`、`share.py`、`chat.py`、`exports.py`、`tokens.py` 等 | 未注入 `get_current_user`，且无对象级归属校验；实探（不带 token）14/25 端点直抵 handler | `versions/rollback/{id}` 可回滚任意看板、`shares/create` 可为任意看板建分享外发、`chat/message` 可对任意看板改图 —— 与 ISS-023/024 同一攻击面 | 统一补 `get_current_user` + 复用 `_assert_dashboard_access` 做对象归属校验；内部/测试端点按环境开关关闭。清单与实测见 `AUTH_AUDIT.md` 第 3 节 | L | 后端 | 待处理 |
 
 ---
 
@@ -78,6 +83,8 @@
 | — | 13 个未认证端点补鉴权（G3） | 提交 231 |
 | — | 报告页 XSS 净化（G4） | 提交 232 |
 | — | 分身库归档 20 个（阶段 1.3） | 阶段 1.3 |
+| ISS-023 | `/dashboards/my` 归属过滤（legacy 仅超管可见） | `2541347` |
+| ISS-024 | DELETE 看板 legacy 越权（仅创建者/超管可删） | `2541347` |
 
 ---
 
