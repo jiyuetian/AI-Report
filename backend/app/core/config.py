@@ -1,5 +1,6 @@
 """应用配置"""
 import os
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -7,6 +8,13 @@ from functools import lru_cache
 # 基于项目根目录的 .env 绝对路径
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _ENV_PATH = os.path.join(_PROJECT_ROOT, ".env")
+
+# 业务数据仓库（DuckDB）唯一正确位置 —— 基于 backend 根的绝对路径。
+# 0.3 环境隔离历史教训：DUCKDB_PATH 曾为相对路径 "./data/duckdb/aibi.db"，
+# 依赖进程 cwd 解析；一旦绕过 run_backend.py（它 chdir 到 backend 根）从别处起服务，
+# DuckDB 会对不存在的路径【静默新建空库】，表现为所有看板「该图表无可绘制数据」，
+# 且排查极难。故此处统一按 backend 根解析为绝对路径，彻底摆脱 cwd 依赖。
+_DEFAULT_DUCKDB_PATH = os.path.normpath(os.path.join(_PROJECT_ROOT, "data", "duckdb", "aibi.db"))
 
 
 class Settings(BaseSettings):
@@ -58,8 +66,19 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./data/uploads"
     EXPORT_DIR: str = "./data/exports"
 
-    # DuckDB
-    DUCKDB_PATH: str = "./data/duckdb/aibi.db"
+    # DuckDB（业务数据仓库，图表数值来源）
+    DUCKDB_PATH: str = _DEFAULT_DUCKDB_PATH
+
+    @field_validator("DUCKDB_PATH")
+    @classmethod
+    def _resolve_duckdb_path(cls, v: str) -> str:
+        """相对路径一律按 backend 根解析为绝对路径，杜绝 cwd 漂移导致连错库/静默建空库。"""
+        v = (v or "").strip()
+        if not v:
+            return _DEFAULT_DUCKDB_PATH
+        if os.path.isabs(v):
+            return os.path.normpath(v)
+        return os.path.normpath(os.path.join(_PROJECT_ROOT, v))
 
     # 安全
     SECRET_KEY: str = "your-secret-key-here"

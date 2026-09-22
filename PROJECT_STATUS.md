@@ -105,6 +105,13 @@
   - 修复：`backend/scripts/migrate_duckdb_tables.py`（ATTACH 旧库 → `CREATE TABLE AS SELECT`），迁移 26 张表（含 `_cleaned/_agg/_norm` 变体）**OK=26 FAIL=0**
   - 复验：16 个有图看板中 13 个 `chart-data` 由 404 → **200**（含两个历史看板 `dash_1fe8fd3e_f81d8b` / `dash_04d68399_50adf8`）
   - ⚠️ 残留：`ds_4920434e_23e0_...`（演示测试数据集）在**所有** duckdb 分身库里都不存在 → 3 个看板（`dash_4920434e_fbed47/_16d735/_a7796e`）仍 404，只能重传或废弃；另 `dash_4bece390_3619ff` 的「收入负债比分布」用了 S3 占位列名 `category`（非真实字段），单独缺陷
+    ④ **是否根治：数据层面已根治（表已并入主库）；配置层已于本轮根治（见 ⑤）**
+    ⑤ **根治 4 条已落地（2026-09-22 晚，真跑验证）**：
+      - **【1】`run_backend.py` 告警文案**：删除"请显式 export DUCKDB_PATH=qa_aibi.db"误导告警；改为仅在**显式指定非规范仓库**时告警，基准用 `config._DEFAULT_DUCKDB_PATH`（不能用 `settings.DUCKDB_PATH`——它会被同名 env 覆盖导致告警失效，本轮实现时踩到并修正）
+      - **【2】`.env.example`**：`DUCKDB_PATH` 由 `qa_aibi.db` 改回 `aibi.db` 并附历史坑注释（该文件未被 git 跟踪，改动仅在本机磁盘生效，不入 diff）
+      - **【3】`config.py` 绝对路径化**：新增 `_DEFAULT_DUCKDB_PATH = backend/data/duckdb/aibi.db`（基于 `_PROJECT_ROOT`），加 `field_validator` 把任意相对路径按 backend 根解析为绝对路径 → 摆脱 cwd 依赖（实证 `settings.DUCKDB_PATH` 为绝对路径、`is_abs=True`）
+      - **【4】启动校验 fail-fast（关键）**：`run_backend.py` 新增 `_validate_duckdb()` —— 库文件不存在 → `[DUCKDB-FAIL]` ×3 + `sys.exit(1)`；存在但 `ds_*` 表数=0 → `[DUCKDB-WARN]` 不阻断；正常 → `[DUCKDB-OK] …（ds_* 表 488 张）`
+      - 真跑验证：①正常启动 → 打绝对路径 + `[DUCKDB-OK] 488 张` + health 200 ②改名 `aibi.db` → `EXIT_CODE=1`、`[DUCKDB-FAIL]`、8000 未监听、**未静默创建空库** ③恢复 → 启动正常、`chart-data` 200 ④`DUCKDB_PATH=qa_aibi.db` → `[0.3-WARN]` 正确触发
 - [✓] **P0-3 上传页三个 toast 反复弹**（方案 A+B+C 全做）
   - 真跑 API 验证（沙箱无可用浏览器，UI 截图需你本机确认）：`GET /admin/templates`=200（5 system + 2 ai 待确认）、`POST /admin/templates`=200（落库含 4 个 goal_skeleton）、`PATCH /admin/templates/{id}`=200（批准↔还原双向生效）、`DELETE`=200、`GET /quality/{ds}/issues`=200（5 条已存质检结果 = 恢复时读的数据源）
   - 附带修复：`PATCH /admin/templates/{id}` 原 500 —— `await db.commit()` 后 ORM 属性被 expire，异步上下文再 `to_dict()` 触发惰性加载失败；修为 commit 后先 `await db.refresh(tpl)`
@@ -238,13 +245,14 @@
 ## 三、关键事实（怕它忘）
 
 1. **DuckDB 真实数据（图表读取的 `ds_*` 数据集表）在 `backend/data/duckdb/aibi.db`**（67MB / 458 表，实测每行有数据）—— `DUCKDB_PATH=./data/duckdb/aibi.db`(config.py:62) 指向它，路由正确
-2. **元数据（users / dashboards=18 / brain_traces）在 `backend/data/qa_aibi.db`**（757KB）
+2. **元数据（users / dashboards / brain_traces / analysis_template）在 `backend/data/aibi.db`**（6.4MB，SQLite；由 `DATABASE_URL`/`SQLITE_DATABASE_URL` 指向）—— 注意与 `data/duckdb/aibi.db`（DuckDB 业务仓库）同名但不同文件、不同目录
+2.5. ⚠️ **`data/qa_aibi.db` 与 `data/duckdb/qa_aibi.db` 均为历史遗留库**：前者是旧元数据库副本，后者曾装 36 张 ds_* 业务表（P0-2 双库错配源头，表已迁入 duckdb/aibi.db）。两者都**不再被后端连接**，仅留作备份，清理归第 5 层
 3. ⚠️ 命名易混：断点文件旧版"数据在 qa_aibi.db"是**写反的**——`qa_aibi.db` 实为元数据库，`aibi.db`(duckdb/) 才是数据仓库。已实测纠正。
 3. **路由修复命令**：`cd backend && DUCKDB_PATH="./data/duckdb/aibi.db" <py312> run_backend.py`（端口 8000，HOST 127.0.0.1）
 4. **跑后端用系统 Python 3.12**：`C:/Users/Asus009/AppData/Local/Programs/Python/Python312/python.exe`（非 workbuddy venv）
 5. **git-bash shim 缺** `ls/cat/head/tail/grep/dirname/cd` → 用 python -c / Read / Glob / Write / Bash(python -c)
 6. **所有 API 挂在 `/api/v1` 前缀**（`/health`=404，正确是 `/api/v1/health`）
-7. **沙箱无浏览器**：UI 视觉验证需用户本机开 `http://127.0.0.1:8000/dashboard/...`；我以 tsc(EXIT=0) + 代码 diff + 真实 API 数据页作证据
+7. ~~沙箱无浏览器~~ → **已订正（2026-09-22 晚）：沙箱可真实截图**。方案 = Python312 的 `playwright` + 系统 Edge（`executable_path=C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`，`headless=True`）；前端守卫需同时注入 `localStorage['token']` 与 `localStorage['user']={roles:['admin']}`，否则 `/admin` 会跳 403。脚本 `backend/scripts/_ui_shots.py`，产物 `defect_fix_evidence/final_fixes/ui_shots_20260922/`（4 张真实截图）。注：agent-browser（node）在本机无 Chromium、驱动 Edge 会挂死，不要用
 8. **夜间长跑纪律教训**：体感耗时严重失真，一律以 git 提交时间戳为真实耗时依据（已两次订正任务卡）
 
 ---

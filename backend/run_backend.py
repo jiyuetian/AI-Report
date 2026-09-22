@@ -63,16 +63,60 @@ def _cleanup_pidfile():
         pass
 
 
+def _validate_duckdb(duck_path: str) -> bool:
+    """启动前校验业务数据仓库（DuckDB）：文件不存在 → fail-fast 拒绝启动。
+
+    背景：DuckDB 对不存在的路径会【静默新建空库】且无任何报错，症状是所有看板
+    显示「该图表无可绘制数据」，排查成本极高。故启动时必须把"连错库/库缺失"
+    这类问题拦在起服务之前。
+    """
+    if not os.path.exists(duck_path):
+        print(f"[DUCKDB-FAIL] 业务数据仓库不存在：{duck_path}")
+        print("[DUCKDB-FAIL] 拒绝启动：否则 DuckDB 会在该路径静默新建空库，所有看板将显示「该图表无可绘制数据」。")
+        print("[DUCKDB-FAIL] 处理：①确认 DUCKDB_PATH/.env 指向正确仓库 ②从备份恢复 data/duckdb/aibi.db "
+              "③确属全新环境请手动创建库后再启动。")
+        return False
+    try:
+        import duckdb
+        con = duckdb.connect(duck_path, read_only=True)
+        n = con.execute("select count(*) from duckdb_tables() where table_name like 'ds_%'").fetchone()[0]
+        total = con.execute("select count(*) from duckdb_tables()").fetchone()[0]
+        con.close()
+        if n == 0:
+            print(f"[DUCKDB-WARN] 库文件存在但业务表 ds_* 数为 0（总表 {total}）：{duck_path}")
+            print("[DUCKDB-WARN] 极可能是错库/空库；若确属全新空环境可忽略。")
+        else:
+            print(f"[DUCKDB-OK] 业务数据仓库就绪：{duck_path}（ds_* 表 {n} 张 / 总表 {total}）")
+    except Exception as e:
+        # 只读打开失败（如被别的进程独占）只告警不阻断，避免误伤正常启动
+        print(f"[DUCKDB-WARN] 无法只读打开仓库做完整性校验（不阻断启动）：{e}")
+    return True
+
+
 def main():
     # 0.3 环境隔离：启动即明确打印后端绑定的库，杜绝"默认指向错误库"类路由 bug。
     # DUCKDB_PATH 指向业务数据（图表数值来源）；DATABASE_URL 指向元数据（用户/看板/版本）。
-    _duck = os.environ.get("DUCKDB_PATH") or "None(将用配置默认 ./data/duckdb/aibi.db)"
-    _meta = os.environ.get("DATABASE_URL") or "None(将用配置默认 sqlite+aiosqlite:///./data/aibi.db)"
-    if not os.environ.get("DUCKDB_PATH"):
-        # 未显式指定业务库 → 极可能指向元数据库而非真实数据，明确告警
-        print("[0.3-WARN] DUCKDB_PATH 未显式设置！将回退到默认 ./data/duckdb/aibi.db（元数据库，非业务数据）。"
-              " 生产/演示请显式 export DUCKDB_PATH=./data/duckdb/qa_aibi.db")
+    from app.core.config import settings, _DEFAULT_DUCKDB_PATH
+    _duck = settings.DUCKDB_PATH          # 业务数据仓库（已由 config 解析为绝对路径）
+    _meta = os.environ.get("DATABASE_URL") or settings.SQLITE_DATABASE_URL  # 元数据库
+
+    # 只在「显式指定了非规范仓库」时告警。历史坑：此处曾建议 export 到 qa_aibi.db，
+    # 导致有人照做后新数据集进旧库、老看板读不到表（P0-2 双库错配）。
+    # 注意：基准必须是 config 的规范默认 _DEFAULT_DUCKDB_PATH，不能用 settings.DUCKDB_PATH
+    # —— 后者会被同名环境变量覆盖，导致"真的指到旧库"时反而比不出来、告警失效。
+    _explicit = os.environ.get("DUCKDB_PATH")
+    if _explicit:
+        _explicit_abs = _explicit if os.path.isabs(_explicit) else os.path.normpath(
+            os.path.join(BACKEND_DIR, _explicit))
+        if os.path.normpath(_explicit_abs) != os.path.normpath(_DEFAULT_DUCKDB_PATH):
+            print(f"[0.3-WARN] DUCKDB_PATH 显式指向非默认仓库：{_explicit_abs}")
+            print(f"[0.3-WARN] 业务数据仓库默认为 {_DEFAULT_DUCKDB_PATH}；"
+                  "除非你明确知道在做分库，否则请勿改（历史坑：指到 qa_aibi.db 会导致老看板图表全空）。")
     print(f"[0.3] 后端绑定 -> DuckDB(业务数据)={_duck}  MetaDB(元数据)={_meta}")
+
+    # 启动校验 fail-fast：库缺失直接拒绝启动，避免静默建空库
+    if not _validate_duckdb(_duck):
+        sys.exit(1)
 
     # B5-1：pidfile 检测——若已有同进程存活，拒绝重复启动
     old_pid = _read_pid(PIDFILE)
