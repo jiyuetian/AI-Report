@@ -229,8 +229,12 @@ class ActionExecutor:
         return any(t in ftype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL", "NUMBER", "DEC"))
 
     @staticmethod
-    def _build_chart(chart_type: str, title: str, dim: str, metric: str, dataset_id: str, seq: int) -> Dict[str, Any]:
-        """按图型把维度/指标字段映射到正确的 echarts 字段名（不再写死 category/value）。"""
+    def _build_chart(chart_type: str, title: str, dim: str, metric: str, dataset_id: str, seq: int, aggregation: str = None) -> Dict[str, Any]:
+        """按图型把维度/指标字段映射到正确的 echarts 字段名（不再写死 category/value）。
+
+        2026-09-22 N1-D2：aggregation 透传到 chart.config.aggregation，
+        KPI 卡的 deriveKpi 据此走 AVG 而非默认 SUM（"平均值"必须真算均值）。
+        """
         chart = {
             "id": f"chart_{seq}",
             "chart_type": chart_type,
@@ -251,6 +255,9 @@ class ActionExecutor:
         else:  # bar / line / table
             chart["x_field"] = dim
             chart["y_field"] = metric
+        # N1-D2：聚合口径（avg/sum/max/min/count）写入 config，前端 deriveKpi 读取
+        if aggregation:
+            chart["config"]["aggregation"] = aggregation
         return chart
 
     @staticmethod
@@ -331,8 +338,13 @@ class ActionExecutor:
                     skipped += 1
                     continue
                 title = title or f"{dim or '数据'}分布"
+                # N1-D3'：同标题+同图型已存在则跳过，避免纠正类重复指令叠加成翻倍卡片
+                if any(c.get("title") == title and c.get("chart_type") == ct
+                       for c in current_config.get("charts", [])):
+                    skipped += 1
+                    continue
                 seq = existing + len(new_charts) + 1
-                new_charts.append(ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq))
+                new_charts.append(ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq, spec.get("aggregation")))
         else:
             # 兼容旧逻辑：单图，字段用 params 真实字段或画像兜底
             # M6-03：若请求中完全解析不出真实字段（如用户提到的字段在数据集里不存在），
@@ -354,7 +366,7 @@ class ActionExecutor:
             )
             if existing < limit:
                 seq = existing + 1
-                new_charts.append(ActionExecutor._build_chart(chart_type, title, dim, metric, dataset_id, seq))
+                new_charts.append(ActionExecutor._build_chart(chart_type, title, dim, metric, dataset_id, seq, params.get("aggregation")))
 
         if "charts" not in current_config:
             current_config["charts"] = []
@@ -368,6 +380,16 @@ class ActionExecutor:
             current_config["charts"].append(c)
 
         if not new_charts:
+            # N1-D3'：若全因"已存在"被去重跳过（skipped>0），视为成功而非报错
+            if skipped > 0:
+                return {
+                    "success": True,
+                    "action_type": "add_chart",
+                    "changes": [],
+                    "new_config": current_config,
+                    "render_updates": [],
+                    "message": "这些图表已存在，未重复添加。",
+                }
             return {
                 "success": False,
                 "error": "看板图表数已达上限(50)，无法继续新增",

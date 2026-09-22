@@ -349,7 +349,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
     ? '看板生成完成'
     : isError
       ? (phase === 'cancelled' ? '任务已取消' : '看板生成失败')
-      : 'AI 正在为你生成看板…';
+      : '正在为你生成看板…';
   const heroSub = isComplete
     ? '正在为你打开看板，也可点击下方按钮直接查看'
     : isError
@@ -414,7 +414,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
                       color={genModeLive === 'ai' ? 'green' : 'default'}
                       style={{ marginLeft: 8 }}
                     >
-                      {genModeLive === 'ai' ? 'AI 增强生成中' : '规则引擎生成中'}
+                      {genModeLive === 'ai' ? '智能增强生成中' : '规则引擎生成中'}
                     </Tag>
                   )}
                 </span>
@@ -424,7 +424,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           {/* M2（拍板）：完成态持久徽标 —— 一眼区分 AI 生成 / 规则兜底生成 */}
           {isComplete && (
             dashboardAiParticipated ? (
-              <Tag color="green" style={{ marginLeft: 8 }}>AI 生成</Tag>
+              <Tag color="green" style={{ marginLeft: 8 }}>已生成</Tag>
             ) : (
               <Tag color="default" style={{ marginLeft: 8 }}>本次为规则生成</Tag>
             )

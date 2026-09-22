@@ -54,9 +54,9 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 // 演示占位屏：用于原型中仅作演示、还没落到独立 React 页的屏（多表/出图loading/异常集/状态演示等）
 const DEMO_TITLES: Record<string, { title: string; desc: string; ico: string }> = {
-  quality: { title: '数据预览与质检', desc: 'AI 已完成字段识别与六类质量校验（演示屏，可在「数据上传」流程中体验完整质检）', ico: '🔍' },
+  quality: { title: '数据预览与质检', desc: '系统已完成字段识别与六类质量校验（演示屏，可在「数据上传」流程中体验完整质检）', ico: '🔍' },
   multitable: { title: '多表接入与关联', desc: '多表关联能力研发中，敬请期待', ico: '🔗' },
-  loading: { title: 'AI 出图 Loading', desc: '上传数据后全屏 AI 生成看板动画（演示）', ico: '✨' },
+  loading: { title: '智能出图 Loading', desc: '上传数据后全屏 AI 生成看板动画（演示）', ico: '✨' },
   fix: { title: '数据修复 / 异常全集', desc: '六类质量异常的处理与修复清单（演示）', ico: '🛡️' },
   ops: { title: '看板操作弹窗集', desc: '看板上的换图 / 新增 / 筛选 / 归因 / 改标题等操作弹窗集合（演示）', ico: '🧰' },
   fixresult: { title: '修复执行与二次质检', desc: '修复执行与二次质检门禁（演示）', ico: '🔧' },

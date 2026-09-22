@@ -323,14 +323,14 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
               {title} <EditOutlined className="dash-ops-title-edit" />
               {/* 问题1修复：生成方式徽标——绿标「AI 参与生成」/ 灰标「规则兜底生成」 */}
               {generationMode === 'ai' && (
-                <Tag color="green" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>AI 参与生成</Tag>
+                <Tag color="green" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>智能参与生成</Tag>
               )}
               {generationMode === 'rule' && (
                 <Tag color="default" style={{ marginLeft: 8, fontSize: 12, verticalAlign: 'middle' }}>规则兜底生成</Tag>
               )}
               {/* 2.3：目标生成方式小标——证明「目标也由 AI 参与」 */}
               {s2GeneratedBy === 'llm' && (
-                <Tag color="geekblue" style={{ marginLeft: 6, fontSize: 12, verticalAlign: 'middle' }}>目标·AI</Tag>
+                <Tag color="geekblue" style={{ marginLeft: 6, fontSize: 12, verticalAlign: 'middle' }}>目标·智能</Tag>
               )}
               {s2GeneratedBy === 'rule' && (
                 <Tag color="default" style={{ marginLeft: 6, fontSize: 12, verticalAlign: 'middle' }}>目标·规则</Tag>

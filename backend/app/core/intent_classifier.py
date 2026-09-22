@@ -41,6 +41,8 @@ _DEFAULT_SYSTEM_PROMPT = """你是一个自然语言意图分类器，请将用�
   }
 }
 
+"注意：纠正类消息（'不是 A 是 B'/'我指的是…'）仍按原始意图分类，不要改成 unknown；"
+"若原意图是加图/换图，继续判为 add_chart/change_chart。\n"
 只返回 JSON，不解释。"""
 
 
@@ -137,6 +139,10 @@ class IntentClassifier:
             # → 识别为加图（用户「加上每个：A，B，C 的平均值汇总」此前无图型词/指标词，被漏判为 unknown）。
             # 用 .{0,80}? 跨逗号匹配字段列举；必须含动作动词(新增/添加/加/插入/来个/来一张)与聚合词(平均值/均值/平均/汇总)。
             r"(新增|添加|加|插入|来个|来一张).{0,80}?(平均值|均值|平均|汇总|平均汇总)",
+            # 2026-09-22 N1-D1：纠正/泛指类新增（无动作动词，靠泛指量词+聚合词识别）。
+            # 「我指的是每一项的平均值」此前无动作动词 → 落 UNKNOWN/LLM 臆造 4 张 bar；
+            # 现用泛指量词(每一项/每个/各/所有/全部/各项) + 聚合词(平均/均值/汇总)直接判 ADD_CHART。
+            r"(每一项|每一个|每个|各个|各|所有|全部|这些|那些|各项)\s*[^，。；]{0,15}?(平均值|均值|平均|汇总|平均汇总)",
         ],
         IntentType.DELETE_CHART: [
             r"(删除|移除|去掉|删掉|删了).{0,20}(图|图表|这个|那个|第.{1,2}个)",
@@ -636,10 +642,17 @@ class IntentClassifier:
             "2. 每张图必须选择真实存在的 dimension_field（分类/文本字段）和 metric_field（数值字段）。\n"
             "3. chart_type 取值：pie(饼图)/bar(柱图)/line(折线图)/scatter(散点图)/table(表格)/kpi(指标卡)。\n"
             "4. title 简洁准确（如'产品销售分布'），不要用'新增'前缀。\n"
-            "5. 只输出 JSON 数组，不要任何解释。\n\n"
+            "5. 只输出 JSON 数组，不要任何解释。\n"
+            "6. 泛指展开：当用户说'每一项/每个/所有 X'或'各项/各指标'时，遍历 field_profiles 中"
+            "**所有匹配 X 的数值字段**，逐个产出一张图（不要只出 1 张，也不要合并成 1 张）。\n"
+            "7. 聚合口径：当用户说'平均值/均值/平均'时，该图必须带 \"aggregation\":\"avg\""
+            "（KPI 卡显示均值而非求和）；未提聚合词默认 \"sum\"。\n"
+            "8. 纠正理解：当用户说'不是 A 是 B'或'我指的是…'等纠正时，先判断这仅是改参数"
+            "（口径/图型/字段），若是，只返回参数修正后的图表配置，不要重新生成整套不相关的图表。"
+            "你是主导，可以自由决定图型、数量和顺序，不要被任何规则限制。\n\n"
             "输出示例：\n"
-            '[{"title":"产品销售分布","chart_type":"pie","dimension_field":"产品名称","metric_field":"销售金额"},'
-            '{"title":"产品数量分布","chart_type":"pie","dimension_field":"产品名称","metric_field":"数量"}]'
+            '[{"title":"产品销售分布","chart_type":"pie","dimension_field":"产品名称","metric_field":"销售金额","aggregation":"sum"},'
+            '{"title":"各产品平均值","chart_type":"kpi","dimension_field":"","metric_field":"销售金额","aggregation":"avg"}]'
         )
         user_prompt = f"用户要求：{message}\n请输出图表配置 JSON 数组。"
         try:
@@ -669,11 +682,13 @@ class IntentClassifier:
                 dim = cls._match_field(item.get("dimension_field") or "", field_profiles, "dim")
                 metric = cls._match_field(item.get("metric_field") or "", field_profiles, "metric")
                 title = (item.get("title") or "").strip() or f"{dim or '数据'}分布"
+                agg = item.get("aggregation") or None
                 charts.append({
                     "title": title,
                     "chart_type": ct,
                     "dimension_field": dim,
                     "metric_field": metric,
+                    "aggregation": agg,
                 })
             return charts if charts else None
         except Exception:
@@ -681,8 +696,33 @@ class IntentClassifier:
 
     @classmethod
     def _rule_extract_add_charts(cls, message, field_profiles):
-        """规则兜底：顿号拆分多图 + 维度/指标关键词匹配字段画像。"""
+        """规则兜底：顿号拆分多图 + 维度/指标关键词匹配字段画像。
+
+        2026-09-22 N1-D1 泛指展开：消息含泛指量词(每一项/每个/各/所有/全部/各项)
+        且含聚合词(平均值/均值/平均/汇总)时，遍历数据集**所有数值字段**，
+        逐个产出一张 KPI 卡(aggregation=avg)——即"各项平均值"=每个指标各出一张均值卡。
+        早于逐子句拆分，避免只命中单个点名字段而漏掉"等"的其余字段。
+        """
         import re
+        # ---- N1-D1 泛指展开（早于逐子句拆分）----
+        _GEN = re.compile(r"(每一项|每一个|每个|各个|各|所有|全部|这些|那些|各项|各指标|各字段|各维度)")
+        _AGG = re.compile(r"(平均值|均值|平均|汇总|平均汇总)")
+        if _GEN.search(message) and _AGG.search(message):
+            nums = [fp for fp in field_profiles if cls._is_numeric_profile(fp)]
+            expanded = []
+            for fp in nums:
+                nm = fp.get("name") or fp.get("column") or ""
+                if not nm:
+                    continue
+                expanded.append({
+                    "title": f"{nm}平均值",
+                    "chart_type": cls._normalize_chart_type("kpi"),
+                    "dimension_field": "",
+                    "metric_field": nm,
+                    "aggregation": "avg",
+                })
+            if expanded:
+                return expanded
         parts = re.split(r'[、，,；;与及和]+', message)
         parts = [p.strip() for p in parts if p.strip()]
         dim_keywords = ["产品", "地区", "区域", "省份", "城市", "类型", "类别", "分类",
@@ -744,6 +784,7 @@ class IntentClassifier:
                     "chart_type": cls._normalize_chart_type(ct or "pie"),
                     "dimension_field": dim,
                     "metric_field": metric,
+                    "aggregation": "avg" if is_avg else None,
                 })
         # 问题2 修复（Change C）：上述按子句拆图全空时，兜底——若消息含聚合/统称词
         # （平均值/均值/平均/汇总/每个/所有/各）且列举了真实字段名，则按「每个字段的均值」生成一张图。
@@ -764,6 +805,7 @@ class IntentClassifier:
                             "chart_type": cls._normalize_chart_type("kpi" if is_avg else "bar"),
                             "dimension_field": "",
                             "metric_field": nm,
+                            "aggregation": "avg" if is_avg else None,
                         })
         return charts if charts else None
 

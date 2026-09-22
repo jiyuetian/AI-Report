@@ -792,7 +792,7 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
               disabled={checking || (applyingPlan && planMode !== 'all')}
               onClick={() => { setPlanMode('all'); applyRecommendedPlan(false) }}
             >
-              一键 AI 修复全部问题（{totalIssues}项） →
+              一键修复全部问题（{totalIssues}项） →
             </Button>
           )}
         </Space>

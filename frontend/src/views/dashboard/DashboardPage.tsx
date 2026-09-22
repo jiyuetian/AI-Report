@@ -1278,7 +1278,7 @@ const DashboardPage: React.FC = () => {
             <BulbOutlined />
           </div>
           <div className="analysis-text-content">
-            <div className="analysis-text-title">AI 分析报告</div>
+            <div className="analysis-text-title">分析报告</div>
             <div className="analysis-text-body">
               {paragraphs.map((p: string, i: number) => (
                 <p key={i} style={{ margin: i === 0 ? 0 : '12px 0 0' }}>{p}</p>
