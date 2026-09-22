@@ -5,7 +5,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeftOutlined, EditOutlined, ShareAltOutlined, ExportOutlined, HistoryOutlined,
-  ApartmentOutlined, DeleteOutlined, MoreOutlined, CopyOutlined, DownloadOutlined, RollbackOutlined, CheckOutlined, FileTextOutlined,
+  ApartmentOutlined, DeleteOutlined, MoreOutlined, CopyOutlined, DownloadOutlined, RollbackOutlined, CheckOutlined, FileTextOutlined, FileAddOutlined,
 } from '@ant-design/icons'
 
 import './DashboardOps.css'
@@ -74,6 +74,12 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
   const [inclData, setInclData] = useState(true)
   const [inclNote, setInclNote] = useState(true)
   const [exportLoading, setExportLoading] = useState(false)
+  // 保存为模板（2.6 P2）
+  const [tplOpen, setTplOpen] = useState(false)
+  const [tplName, setTplName] = useState('')
+  const [tplDesc, setTplDesc] = useState('')
+  const [tplApproved, setTplApproved] = useState(false)
+  const [tplLoading, setTplLoading] = useState(false)
   // 版本
   const [versions, setVersions] = useState<VersionItem[]>([])
   const [versionsLoading, setVersionsLoading] = useState(false)
@@ -263,6 +269,43 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
     }
   }
 
+  // 2.6 P2：保存当前看板为分析模板（POST /admin/templates）
+  // 后端从看板 config 提炼 base_goals、从主数据集字段画像提炼 match_features；
+  // 默认 approved=False（待管理后台确认才参与匹配），可按开关立即可用
+  const saveTemplate = async () => {
+    const nm = tplName.trim()
+    if (!nm) {
+      message.warning('请填写模板名称')
+      return
+    }
+    if (!id) {
+      message.warning('当前看板无有效 ID，无法保存为模板')
+      return
+    }
+    setTplLoading(true)
+    try {
+      await http.post<any>('/admin/templates', {
+        dashboard_id: id,
+        name: nm,
+        description: tplDesc.trim(),
+        approved: tplApproved,
+      })
+      message.success(
+        tplApproved
+          ? '已保存并批准为模板（立即可被命中套用）'
+          : '已保存为模板（待管理后台确认后生效）'
+      )
+      setTplOpen(false)
+      setTplName('')
+      setTplDesc('')
+      setTplApproved(false)
+    } catch (err: any) {
+      message.error(`保存模板失败: ${err?.message || '网络错误'}`)
+    } finally {
+      setTplLoading(false)
+    }
+  }
+
   // 操作菜单仅收纳低频项（对话历史/删除）；编辑/分享/导出/版本/血缘全部平铺（2026-09-18 对齐原型）
   const menuItems = {
     items: [
@@ -354,6 +397,10 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
             血缘
           </Button>
           <Button icon={<FileTextOutlined />} onClick={() => id && nav(`/report?report_id=&dashboard_id=${id}`)}>报告</Button>
+          <Button
+            icon={<FileAddOutlined />}
+            onClick={() => { setTplName(title); setTplDesc(''); setTplApproved(false); setTplOpen(true) }}
+          >保存为模板</Button>
           <Dropdown menu={menuItems} trigger={['click']}>
             <Button icon={<MoreOutlined />} />
           </Dropdown>
@@ -474,6 +521,50 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
             </List.Item>
           )}
         />
+      </Modal>
+
+      {/* 2.6 P2 保存为模板 */}
+      <Modal
+        title="保存为模板"
+        open={tplOpen}
+        onCancel={() => setTplOpen(false)}
+        footer={[
+          <Button key="c" onClick={() => setTplOpen(false)}>取消</Button>,
+          <Button key="o" type="primary" onClick={saveTemplate} loading={tplLoading}>保存</Button>,
+        ]}
+        width={520}
+      >
+        <Divider style={{ marginTop: 0 }} />
+        <div style={{ marginBottom: 12 }}>
+          <b>模板名称</b>
+          <Input
+            style={{ marginTop: 8 }}
+            value={tplName}
+            maxLength={120}
+            onChange={e => setTplName(e.target.value)}
+            placeholder="如：担保风控·标准六图"
+          />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <b>模板描述</b>
+          <Input.TextArea
+            style={{ marginTop: 8 }}
+            rows={3}
+            value={tplDesc}
+            onChange={e => setTplDesc(e.target.value)}
+            placeholder="说明该模板适用的业务场景与命中条件"
+          />
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <Space>
+            <b>立即批准生效</b>
+            <Switch checked={tplApproved} onChange={setTplApproved} />
+          </Space>
+          <div style={{ fontSize: 12, color: 'rgba(0,0,0,.45)', marginTop: 4 }}>
+            默认关闭：保存为「待确认」候选（approved=False），需在管理后台确认后才参与匹配套用，避免污染候选。
+            开启则保存后立即可被命中。
+          </div>
+        </div>
       </Modal>
 
       {/* D04 删除确认 */}

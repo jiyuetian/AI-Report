@@ -768,7 +768,7 @@ async def brain_run_pipeline(
                 # 让前端在 S3-S5（AI 阶段）加载中即可显示「AI 增强生成中 / 规则引擎生成中」，
                 # 不必等到完成态。与最终 payload 的 generation_mode 同源。
                 _RUN_STATUS.setdefault(run_id, {})["generation_mode"] = "ai" if s2_generated_by == "llm" else "rule"
-                print(f"[Brain] S2 生成方式: {s2_generated_by}（{goals_count} 个目标）")
+                print(f"[Brain] S2 生成方式: {s2_generated_by}（{len(goals)} 个目标）")
                 await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals, "generated_by": s2_generated_by}), "S2")
                 goals_count = len(goals)
                 progress.stage_status = "completed"
@@ -777,6 +777,15 @@ async def brain_run_pipeline(
                 progress.detail = {"goals": goals, "count": goals_count}
                 yield progress.to_event()
                 print(f"[Brain] S2完成: {goals_count}个目标")
+                # 2.6 P1：AI 自动沉淀候选模板（approved=False，待管理后台确认）
+                try:
+                    from app.core.brain_modules.s2_goal_generator import propose_template_candidate
+                    await propose_template_candidate(
+                        db=db, theme=theme_tag, fields=fields,
+                        field_profiles=s2_field_profiles, goals=goals,
+                    )
+                except Exception as _e:
+                    print(f"[Brain] S2 模板沉淀异常(忽略): {_e}")
             except Exception as e:
                 msg = f"第2步 分析目标生成失败：{_short_err(e)}。已跳过目标生成，图表推荐将基于默认策略继续。"
                 progress.stage_status = "failed"

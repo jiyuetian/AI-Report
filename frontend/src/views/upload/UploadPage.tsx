@@ -56,6 +56,19 @@ function markGenDone(fid: string, dashboardId: string) {
   } catch { /* localStorage 满时静默忽略 */ }
 }
 
+// 用户主动「取消生成看板」的标记（fid -> true）。
+// 语义（方案 C）：上传 + 质检已完成 → 数据集是稳定资产；「生成看板」是独立可选动作。
+// 取消只结束"生成"这一个动作，数据集保留、不再当作"未完成任务"反复提示。
+const GEN_CANCELED_KEY = 'upload_gen_canceled_map'
+function readGenCanceledMap(): Record<string, boolean> {
+  try { return JSON.parse(localStorage.getItem(GEN_CANCELED_KEY) || '{}') } catch { return {} }
+}
+function markGenCanceled(fid: string) {
+  try {
+    localStorage.setItem(GEN_CANCELED_KEY, JSON.stringify({ ...readGenCanceledMap(), [fid]: true }))
+  } catch { /* localStorage 满时静默忽略 */ }
+}
+
 export default function UploadPage() {
   const [fileList, setFileList] = useState<UploadItem[]>([])
   const [uploading, setUploading] = useState(false)
@@ -123,6 +136,9 @@ export default function UploadPage() {
   const SESSION_KEY = 'upload_session'
   const [abandonModalOpen, setAbandonModalOpen] = useState(false)
   const [sessionRestored, setSessionRestored] = useState(false)
+  // 从会话恢复出来的文件（非本次新上传）：其质检结果已在后端落地，
+  // 恢复时直接读取，不自动重跑一次质检（方案 B）
+  const [restoredFileIds, setRestoredFileIds] = useState<Record<string, boolean>>({})
   // 一次性守卫：防止 effect 重复触发导致恢复流程并发执行、toast 弹两次
   const restoreStartedRef = useRef(false)
   // 任务结束标记：任一文件看板生成完成即视为"本次上传任务结束"，
@@ -239,7 +255,19 @@ export default function UploadPage() {
         setActiveFileId(Object.keys(nextPreviewMap)[0] || null)
       }
       setSessionRestored(true)
-      message.info('检测到未完成的上传任务，已恢复其中未生成看板的部分')
+
+      // 标记为"从会话恢复而来"：质检面板据此直接读后端已存结果，不自动重跑（方案 B）
+      const restoredIds: Record<string, boolean> = {}
+      nextFileList.forEach((f: UploadItem) => { if (f.fileId) restoredIds[f.fileId] = true })
+      setRestoredFileIds(restoredIds)
+
+      // 恢复提示（方案 A + C）：
+      // 已建数据集 = 上传+质检已完成，是"可继续生成看板"的稳定资产 → 静默恢复，不弹 toast；
+      // 只有尚未建数据集（真的只传了一半）才提示"未完成的上传任务"。
+      const hasReadyAsset = nextFileList.some((f: UploadItem) => !!f.fileId && !!nextDatasetMap[f.fileId])
+      if (!hasReadyAsset) {
+        message.info('检测到未完成的上传任务，已恢复其中未生成看板的部分')
+      }
     } catch (e) {
       localStorage.removeItem(SESSION_KEY)
     }
@@ -1328,6 +1356,7 @@ export default function UploadPage() {
                     fileId={activeFileId}
                     fileName={previewMap[activeFileId]?.fileName}
                     datasetId={datasetMap[activeFileId]}
+                    autoCheck={!restoredFileIds[activeFileId]}
                     onProceed={() => setLoadingModalOpen(true)}
                     onStatusChange={(status) => {
                       setQcStatusMap(prev => ({ ...prev, [activeFileId]: status }))
@@ -1454,6 +1483,9 @@ export default function UploadPage() {
       <Modal
         open={loadingModalOpen}
         onCancel={() => {
+          // 方案 C：取消只结束"生成看板"这一个动作，上传+质检产物保留、会话不作废
+          const cancelFid = activeFileId || Object.keys(datasetMap)[0] || ''
+          if (cancelFid) markGenCanceled(cancelFid)
           setLoadingModalOpen(false)
           setLoadingComplete(false)
         }}
@@ -1472,6 +1504,10 @@ export default function UploadPage() {
           datasetId={datasetMap[activeFileId || ''] || ''}
           datasetName={activeFileId ? (previewMap[activeFileId]?.fileName || '数据集') : '数据集'}
           onCancel={() => {
+            // 方案 C：同上——LoadingPage 内已调后端 /cancel 并清 brain_run_{dsId}，
+            // 这里再打"已取消生成"标记，恢复时按"可继续"处理，不再当未完成任务告警
+            const cancelFid = activeFileId || Object.keys(datasetMap)[0] || ''
+            if (cancelFid) markGenCanceled(cancelFid)
             setLoadingModalOpen(false)
             setLoadingComplete(false)
           }}

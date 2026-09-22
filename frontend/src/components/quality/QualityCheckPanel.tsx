@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons'
 // Phase 5：SkillPanel 薄壳收口（展示本面板由哪些后端 skill 驱动，暗色自动继承）
 import SkillPanel from '../skills/SkillPanel'
+import { authHeaders } from '../../utils/request'
 
 // 后端返回的单个问题结构
 export interface ApiQualityIssue {
@@ -70,6 +71,11 @@ interface QualityCheckPanelProps {
   datasetId?: string
   onProceed?: () => void
   onStatusChange?: (status: QualityCheckStatus) => void
+  /**
+   * 是否在 datasetId 就绪后自动跑一次质检（默认 true = 新上传的数据集）。
+   * 传 false = 恢复的历史数据集：直接读取后端已存质检结果，不重跑、不弹 toast。
+   */
+  autoCheck?: boolean
 }
 
 // 质检状态摘要（供父组件读取，用于多报表状态标记）
@@ -152,7 +158,9 @@ function groupIssuesByType(apiIssues: ApiQualityIssue[]): GroupedCheckResult[] {
   return result
 }
 
-export default function QualityCheckPanel({ fileId, fileName, datasetId, onProceed, onStatusChange }: QualityCheckPanelProps) {
+export default function QualityCheckPanel({
+  fileId, fileName, datasetId, onProceed, onStatusChange, autoCheck = true,
+}: QualityCheckPanelProps) {
   const [state, setState] = useState<CheckState>(() => getStateForFile(fileId, groupIssuesByType([])))
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState(false)
@@ -258,15 +266,9 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
     setState(existing)
   }, [fileId])
   
-  // 当datasetId就绪时自动执行质检
-  useEffect(() => {
-    if (datasetId) {
-      const timer = setTimeout(() => {
-        runCheck()
-      }, 500)
-      return () => clearTimeout(timer)
-    }
-  }, [datasetId])
+  // 一次性守卫：同一 datasetId 只自动处理一次，避免切 tab / StrictMode 重复触发
+  const autoHandledRef = useRef<string>('')
+  // 注：真正的自动质检 effect 定义在 runCheck / loadExisting 之后（声明顺序要求）
   
   // 统计阻断项
   const blockingChecks = state.checks.filter(c => c.blocking)
@@ -293,7 +295,9 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
   
   // 重新质检 — 规则检测秒回，AI补充检测后台异步合并
   // 返回本次检测分组后的结果（供批量修复后判断是否可继续流转），失败返回 null
-  const runCheck = useCallback(async (): Promise<GroupedCheckResult[] | null> => {
+  const runCheck = useCallback(async (opts?: { silent?: boolean }): Promise<GroupedCheckResult[] | null> => {
+    // silent=true：自动/恢复场景，不弹任何 toast，只更新面板状态
+    const silent = opts?.silent === true
     if (!datasetId) {
       message.warning('数据集未创建，请等待预览完成')
       return null
@@ -302,7 +306,10 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
     runningRef.current = true
     setChecking(true)
     setAiStatus('running')
-    message.loading({ content: '正在进行规则质检（秒级），AI补充检测后台进行中...', key: 'qc', duration: 0 })
+    // 静默模式不弹 toast；非静默也只给 8 秒兜底时长，避免异常路径下永久卡住
+    if (!silent) {
+      message.loading({ content: '正在进行规则质检（秒级），AI补充检测后台进行中...', key: 'qc', duration: 8 })
+    }
     // 规则检测很快，仅保留45秒兜底超时，避免按钮卡在loading
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 45000)
@@ -317,7 +324,7 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       const data = await response.json()
 
       if (!response.ok) {
-        message.destroy('qc')
+        if (!silent) message.destroy('qc')
         message.error(data.detail?.message || '质检失败')
         setAiStatus('failed')
         return null
@@ -336,13 +343,15 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       stateRef.current = newState
       setChecked(true)
 
-      message.destroy('qc')
-      message.success(`规则质检完成（${fileName || fileId}），AI补充检测后台进行中`)
+      if (!silent) {
+        message.destroy('qc')
+        message.success(`规则质检完成（${fileName || fileId}），AI补充检测后台进行中`)
+      }
       // 启动后台轮询，AI结果就绪后自动合并进面板
       pollAiResult(datasetId)
       return grouped
     } catch (error: any) {
-      message.destroy('qc')
+      if (!silent) message.destroy('qc')
       if (error?.name === 'AbortError') {
         message.error('质检超时，请重试')
       } else {
@@ -356,6 +365,59 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       runningRef.current = false
     }
   }, [fileId, fileName, datasetId, pollAiResult])
+
+  // 读取后端已存储的质检结果（恢复历史数据集时用：不重跑规则检测、不弹 toast）
+  // 返回问题条数；无已存结果 / 请求失败返回 null，由调用方决定是否兜底跑一次
+  const loadExisting = useCallback(async (): Promise<number | null> => {
+    if (!datasetId) return null
+    try {
+      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 GET /quality/{id}/issues，已带 authHeaders()
+      const res = await fetch(`${API_BASE}/quality/${datasetId}/issues`, { headers: authHeaders() })
+      if (!res.ok) return null
+      const data = await res.json()
+      const raw = (data?.issues || []) as any[]
+      if (!Array.isArray(raw)) return null
+      const apiIssues: ApiQualityIssue[] = raw.map((i: any) => ({
+        type: i.type || 'unknown',
+        severity: (i.severity === 'blocking' ? 'blocking' : 'warning') as 'blocking' | 'warning',
+        column: i.field_name || i.column || '',
+        row_count: Number(i.affect_rows ?? i.row_count ?? 0),
+        message: i.message || '',
+        detail: i.detail || '',
+        sample_values: i.sample_values || [],
+        rule: i.rule || '',
+        source: (i.source === 'ai' ? 'ai' : 'rule') as 'rule' | 'ai',
+        repair_options: i.repair_options || [],
+      }))
+      const newState: CheckState = { checks: groupIssuesByType(apiIssues), fixedKeys: new Set() }
+      updateState(newState)
+      stateRef.current = newState
+      setChecked(true)
+      return apiIssues.length
+    } catch {
+      return null
+    }
+  }, [datasetId, updateState])
+
+  // 自动质检：只对「新上传」的数据集跑一次；恢复的历史数据集直接读已存结果（不重跑、不弹 toast）
+  useEffect(() => {
+    if (!datasetId) return
+    if (autoHandledRef.current === datasetId) return
+    autoHandledRef.current = datasetId
+
+    if (autoCheck === false) {
+      loadExisting().then(n => {
+        // 后端没有任何已存记录（例如修复上线前的数据集）→ 静默兜底跑一次
+        if (n === null) runCheck({ silent: true })
+      })
+      return
+    }
+
+    const timer = setTimeout(() => {
+      runCheck()
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [datasetId, autoCheck, loadExisting, runCheck])
   
   const openFix = (checkKey: string, issue: ApiQualityIssue) => {
     setFixModal({ open: true, checkKey, issue })
@@ -548,7 +610,7 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
       extra={
         <Space>
           <Button size="small" onClick={resetAll}>重置</Button>
-          <Button icon={<ReloadOutlined />} loading={checking} onClick={runCheck}>重新质检</Button>
+          <Button icon={<ReloadOutlined />} loading={checking} onClick={() => runCheck()}>重新质检</Button>
         </Space>
       }
       style={{ marginTop: 0 }}
@@ -781,7 +843,7 @@ export default function QualityCheckPanel({ fileId, fileName, datasetId, onProce
               }
             }}
           >
-            {hasBlockingErrors ? '仅处理必拦项，继续' : '无必拦项，直接继续'}
+            {hasBlockingErrors ? '仅处理必拦项，继续' : '生成看板'}
           </Button>
           {totalIssues > 0 && (
             <Button

@@ -19,6 +19,9 @@ from app.models.audit import AuditLog
 from app.models.share import ShareLink
 from app.models.export import ExportTask
 from app.models.brain import BrainTraceSummary
+from pydantic import BaseModel, Field
+from app.models.analysis_template import AnalysisTemplate
+from app.core.brain_modules.s2_goal_generator import _build_dataset_profile
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -217,3 +220,158 @@ async def admin_update_user(
 
     await db.commit()
     return {"success": True, "updated": changed}
+
+
+# ============================================================================
+# 2.6 收尾 · 分析模板管理（P2：保存为模板入口；C2：模板沉淀确认）
+# ============================================================================
+
+class SaveTemplateRequest(BaseModel):
+    dashboard_id: str
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = ""
+    approved: bool = False  # 用户保存默认 False（防污染，待管理后台确认）
+
+
+@router.post("/templates")
+async def admin_create_template(
+    payload: SaveTemplateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """保存当前看板为分析模板（P2）。
+
+    从看板 config 提炼 base_goals（当前图表目标），从主数据集字段画像提炼
+    match_features（字段画像特征，不绑列名）。默认 approved=False（防污染）。
+    """
+    import json
+    res = await db.execute(select(Dashboard).where(Dashboard.id == payload.dashboard_id))
+    dash = res.scalar_one_or_none()
+    if not dash:
+        raise HTTPException(status_code=404, detail="看板不存在")
+
+    config = dash.config or {}
+    charts = config.get("charts") or []
+    theme = config.get("theme") or ""
+
+    # 主数据集字段画像（优先 profile_json.columns，回退 schema_json.columns）
+    columns = []
+    dataset_id = dash.primary_dataset_id
+    if dataset_id:
+        dres = await db.execute(select(Dataset).where(Dataset.id == dataset_id))
+        ds = dres.scalar_one_or_none()
+        if ds:
+            for src in (ds.profile_json, ds.schema_json):
+                if not src:
+                    continue
+                obj = src
+                if isinstance(obj, str):
+                    try:
+                        obj = json.loads(obj)
+                    except Exception:
+                        obj = None
+                if isinstance(obj, dict) and obj.get("columns"):
+                    columns = obj["columns"]
+                    break
+    fields = [c.get("name") or c.get("column") for c in columns if c.get("name") or c.get("column")]
+
+    # match_features：基于字段画像特征（与 S2 匹配同源，不绑列名）
+    try:
+        profile = _build_dataset_profile(fields, theme, field_profiles=columns) if fields else {}
+    except Exception:
+        profile = {}
+    must_have = sorted(set(profile.get("type_buckets") or [])) if profile else []
+    match_features = {
+        "must_have_types": must_have,
+        "min_fields": len(fields),
+        "theme_hint": theme or "",
+    }
+    # 去掉空 theme_hint，避免硬约束把自身锁死（空 theme 不能当正则）
+    if not match_features["theme_hint"]:
+        match_features.pop("theme_hint", None)
+
+    # base_goals：从当前图表提炼
+    base_goals = []
+    goal_skeleton = []
+    for i, c in enumerate(charts):
+        ctype = c.get("chart_type") or c.get("type") or "分析"
+        title = c.get("title") or f"图表{i+1}"
+        base_goals.append({
+            "goal_id": f"UG{i+1}",
+            "title": title,
+            "type": ctype,
+            "priority": 5,
+            "expected_charts": [ctype] if ctype != "分析" else ["bar"],
+        })
+        goal_skeleton.append({"type": ctype, "title": title})
+
+    tpl = AnalysisTemplate(
+        name=payload.name,
+        description=payload.description or f"由看板「{dash.name}」保存（共 {len(charts)} 个图表）",
+        match_features=match_features,
+        base_goals=base_goals,
+        goal_skeleton=goal_skeleton,
+        approved=payload.approved,
+        source="user",
+    )
+    db.add(tpl)
+    await db.commit()
+    await db.refresh(tpl)
+    return {"success": True, "template": tpl.to_dict()}
+
+
+@router.get("/templates")
+async def admin_list_templates(
+    source: Optional[str] = Query(None),
+    approved: Optional[bool] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """列出分析模板（管理后台「分析模板」Tab 用）。可按 source/approved 过滤。"""
+    stmt = select(AnalysisTemplate).order_by(desc(AnalysisTemplate.created_at))
+    if source:
+        stmt = stmt.where(AnalysisTemplate.source == source)
+    if approved is not None:
+        stmt = stmt.where(AnalysisTemplate.approved == approved)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {"total": len(rows), "templates": [t.to_dict() for t in rows]}
+
+
+@router.patch("/templates/{template_id}")
+async def admin_update_template(
+    template_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """批准/编辑模板：approved=True 使其生效；也可改 name/description。"""
+    res = await db.execute(select(AnalysisTemplate).where(AnalysisTemplate.id == template_id))
+    tpl = res.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    if "approved" in payload and isinstance(payload["approved"], bool):
+        tpl.approved = payload["approved"]
+    if "name" in payload and isinstance(payload["name"], str):
+        tpl.name = payload["name"]
+    if "description" in payload and isinstance(payload["description"], str):
+        tpl.description = payload["description"]
+    await db.commit()
+    # commit 后 ORM 属性被 expire，异步上下文里再 to_dict() 会触发惰性加载失败（500）→ 先 refresh
+    await db.refresh(tpl)
+    return {"success": True, "template": tpl.to_dict()}
+
+
+@router.delete("/templates/{template_id}")
+async def admin_delete_template(
+    template_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """删除模板（含未确认的 AI 候选）。"""
+    res = await db.execute(select(AnalysisTemplate).where(AnalysisTemplate.id == template_id))
+    tpl = res.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    await db.delete(tpl)
+    await db.commit()
+    return {"success": True}

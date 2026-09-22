@@ -8,14 +8,14 @@ import { AppThemeContext } from '../../themeContext';
 import {
   Card, Tabs, Statistic, Row, Col, Table, Tag, Button,
   Progress, List, Badge, Timeline, Alert, Spin, Empty,
-  Input, InputNumber, Switch, Modal, message, Typography
+  Input, InputNumber, Switch, Modal, message, Typography, Select
 } from 'antd';
 import {
   DashboardOutlined, UserOutlined, TeamOutlined,
   WalletOutlined, FileTextOutlined, SettingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, WarningOutlined,
   CheckCircleOutlined, ClockCircleOutlined, ThunderboltOutlined,
-  ReloadOutlined, SyncOutlined
+  ReloadOutlined, SyncOutlined, ProfileOutlined
 } from '@ant-design/icons';
 import './AdminPage.css';
 import PromptCenter from './PromptCenter';
@@ -622,6 +622,99 @@ const SettingsTab: React.FC = () => {
   );
 };
 
+// 分析模板管理（2.6 收尾 · C2 模板沉淀确认）—— 列出模板，确认/删除待批准候选
+const TemplatesTab: React.FC = () => {
+  const [loading, setLoading] = useState(true);
+  const [tpls, setTpls] = useState<any[]>([]);
+  const [pendingOnly, setPendingOnly] = useState<boolean>(true); // 默认看待确认候选
+  const [acting, setActing] = useState<string | null>(null); // 当前正在操作的模板 id
+
+  const loadTpls = useCallback(() => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (pendingOnly) params.set('approved', 'false');
+    http.get<any>(`/admin/templates?${params.toString()}`)
+      .then((d) => setTpls(d.templates || []))
+      .catch(() => setTpls([]))
+      .finally(() => setLoading(false));
+  }, [pendingOnly]);
+
+  useEffect(() => { loadTpls(); }, [loadTpls]);
+
+  const approve = async (t: any) => {
+    setActing(t.id);
+    try {
+      await http.patch(`/admin/templates/${t.id}`, { approved: true });
+      message.success(`已批准模板「${t.name}」，立即可被命中套用`);
+      loadTpls();
+    } catch (err: any) {
+      message.error(`批准失败: ${err?.message || '网络错误'}`);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const remove = async (t: any) => {
+    setActing(t.id);
+    try {
+      await http.delete(`/admin/templates/${t.id}`);
+      message.success(`已删除模板「${t.name}」`);
+      loadTpls();
+    } catch (err: any) {
+      message.error(`删除失败: ${err?.message || '网络错误'}`);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const tplColumns = [
+    { title: '名称', dataIndex: 'name', key: 'name' },
+    { title: '来源', dataIndex: 'source', key: 'source', render: (s: string) => (
+      <Tag color={s === 'system' ? 'blue' : s === 'ai' ? 'purple' : 'cyan'}>{s}</Tag>
+    ) },
+    { title: '状态', dataIndex: 'approved', key: 'approved', render: (a: boolean) => (
+      a ? <Badge status="success" text="已批准" /> : <Badge status="warning" text="待确认" />
+    ) },
+    { title: '套用次数', dataIndex: 'usage_count', key: 'usage_count', render: (v: number) => v ?? 0 },
+    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true, render: (v: string) => v || '-' },
+    { title: '操作', key: 'action', render: (_: any, t: any) => (
+      <Button.Group>
+        {!t.approved && (
+          <Button size="small" type="primary" loading={acting === t.id} onClick={() => approve(t)}>批准</Button>
+        )}
+        <Button size="small" danger disabled={acting === t.id} onClick={() => remove(t)}>删除</Button>
+      </Button.Group>
+    ) },
+  ];
+
+  return (
+    <Card>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="AI 生成看板后会自动沉淀候选模板（approved=False）；你从看板「保存为模板」的也进入此区。在此「批准」后才会参与匹配套用，避免污染候选。"
+      />
+      <div className="tab-toolbar">
+        <span>筛选：</span>
+        <Select
+          value={pendingOnly ? 'pending' : 'all'}
+          onChange={(v: string) => setPendingOnly(v === 'pending')}
+          style={{ width: 160 }}
+          options={[
+            { value: 'pending', label: '仅看待确认候选' },
+            { value: 'all', label: '全部模板' },
+          ]}
+        />
+        <Button icon={<ReloadOutlined />} onClick={loadTpls}>刷新</Button>
+      </div>
+      {loading ? <Spin tip="加载模板..." /> : (
+        <Table columns={tplColumns} dataSource={tpls} rowKey="id" locale={{ emptyText: '暂无模板' }} />
+      )}
+    </Card>
+  );
+};
+
 // 主页面
 const AdminPage: React.FC = () => {
   return (
@@ -642,6 +735,7 @@ const AdminPage: React.FC = () => {
           { key: 'quota', label: <span><WalletOutlined /> 配额</span>, children: <QuotaTab /> },
           { key: 'audit', label: <span><FileTextOutlined /> 审计</span>, children: <AuditTab /> },
           { key: 'prompts', label: <span><ThunderboltOutlined /> Prompt 中心</span>, children: <PromptCenter /> },
+          { key: 'templates', label: <span><ProfileOutlined /> 分析模板</span>, children: <TemplatesTab /> },
           { key: 'settings', label: <span><SettingOutlined /> 设置</span>, children: <SettingsTab /> },
         ]}
       />

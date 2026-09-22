@@ -11,6 +11,7 @@ import json
 from app.core.brain_config_manager import BrainConfigManager
 from app.core.llm_gateway import llm_chat
 from app.core.prompt_loader import load_prompt
+from app.models.analysis_template import AnalysisTemplate
 
 
 @dataclass
@@ -493,6 +494,14 @@ def _score_template(match_features: Dict[str, Any], profile: Dict[str, Any]) -> 
 
     score = 0.0
 
+    # 主题硬约束（2.6 收尾）：声明了 theme_hint 必须命中，否则整体不命中。
+    # 避免"通用型" match_features（must_have_types + min_fields）跨主题误套用，污染候选目标。
+    _th = match_features.get("theme_hint")
+    if _th:
+        import re as _re
+        if not _re.search(_th, (profile.get("theme") or ""), _re.IGNORECASE):
+            return 0.0
+
     # 字段类型桶
     mht = match_features.get("must_have_types") or []
     if mht:
@@ -558,3 +567,63 @@ async def match_templates(db, profile: Dict[str, Any]) -> List["AnalysisTemplate
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [t for _, t in scored]
+
+
+async def propose_template_candidate(
+    db,
+    theme: str,
+    fields: List[str],
+    field_profiles: Optional[List[Dict[str, Any]]],
+    goals: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """2.6 P1：AI 自动沉淀候选模板。
+
+    - 从本次 dataset profile + S2 goals 提炼可复用模板
+    - approved=False（待管理后台确认，防污染）
+    - 去重：相同 match_features 签名（任意来源）不重复写入
+    - 任何异常忽略，不影响主链路（S2 之后的可选增强）
+    """
+    try:
+        if not goals or len(goals) < 3:
+            return None
+        profile = _build_dataset_profile(fields, theme, field_profiles)
+        mf = {
+            "must_have_types": sorted(set(profile.get("type_buckets") or [])),
+            "min_fields": profile.get("field_count") or len(fields or []),
+            "theme_hint": theme or "",
+        }
+        if not mf["theme_hint"]:
+            mf.pop("theme_hint", None)
+        sig = json.dumps(mf, sort_keys=True, ensure_ascii=False)
+
+        # 去重：同 match_features 签名（任意来源）已存在则跳过
+        from sqlalchemy import select as _select
+        existing = (await db.execute(_select(AnalysisTemplate))).scalars().all()
+        for t in existing:
+            tf = t.match_features
+            if isinstance(tf, str):
+                try:
+                    tf = json.loads(tf)
+                except Exception:
+                    tf = {}
+            if json.dumps(tf, sort_keys=True, ensure_ascii=False) == sig:
+                return None
+
+        base_goals = [g for g in goals[:6]]
+        goal_skeleton = [{"type": g.get("type"), "title": g.get("title")} for g in base_goals]
+        tpl = AnalysisTemplate(
+            name=f"{(theme or '通用')}分析模板候选",
+            description=f"由 S2 自动沉淀（theme={theme}, {len(base_goals)} 个目标，待确认）",
+            match_features=mf,
+            base_goals=base_goals,
+            goal_skeleton=goal_skeleton,
+            approved=False,
+            source="ai",
+        )
+        db.add(tpl)
+        await db.commit()
+        print(f"[S2] 模板沉淀候选已写入（source=ai, approved=False）：{tpl.name}")
+        return tpl.to_dict()
+    except Exception as e:
+        print(f"[S2] 模板沉淀异常(忽略): {e}")
+        return None

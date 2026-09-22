@@ -34,6 +34,7 @@
   - ~~N2 去 9 处 AI 字样~~ → 已改（commit `ff37323`，tsc 0）
   - ~~N3 KPI 右侧留白~~ → 已定论：旧 dist 重构建即可，无需改代码
   - ~~2.6 P0 模板表 + 匹配函数~~ → 已落地（commit `44c8649`，真跑 verify_26_template.py ALL_PASS）
+  - **2.6 收尾三件（本轮）**：种子模板 5 个 / 保存为模板入口（P2）/ AI 自动沉淀（P1）+ 管理后台「分析模板」Tab → 全部完成（真跑 `verify_26_e2e.py` ALL_PASS）
   - 第 8 层 A-N 落地（O/P/Q 已出方案）
   - 第 4 层 路演准备
 
@@ -87,6 +88,31 @@
     - 新增 `AnalysisTemplate` 模型（字段画像特征匹配，不绑列名）+ alembic 迁移 `002`；`match_templates(profile)` 仅 `approved=True` 参与、特征交集打分降序返回
     - 集成 `s2_goal_generator`：`_apply_templates` 在 L227 后并入命中模板的 `base_goals`（`generated_by='template'`），LLM/规则两路径均生效，不破坏规则兜底；S2 前算 `field_profiles` 传入（便宜规则构建 profile，不触发含 AI 的 `build_semantics`）
     - 真实跑 `backend/verify_26_template.py` ALL_PASS：T1 命中 / T2 不命中 / T3 未批准门禁排除 / T4 并入集成
+  - [✓] **2.6 收尾三件（2026-09-22，本轮，真实落库 + 真跑）**
+    - [✓] **件1 种子模板 5 个**：`担保风控标准六图` / `客户画像分析` / `贷款借据明细分析` / `销售经营分析` / `地区分布分析`；`approved=True, source='system'`；通过 alembic `002` 幂等 INSERT + `scripts/seed_templates.py` 真实落入 `data/aibi.db`；`match_features` 仅用 `must_have_types+min_fields+theme_hint`（规避生产环境恒空维度）；`_score_template` 加 `theme_hint` 硬约束防跨主题误命中
+    - [✓] **件2（P2）管理后台「保存为模板」入口**：看板操作栏 `DashboardOps.tsx` 新增按钮 + 弹窗（模板名/描述/是否批准默认 False），`POST /admin/templates`；后端 `admin_create_template` 从看板 config 提炼 `base_goals`（图表→goal）、从主数据集字段画像提炼 `match_features`，落库 `approved=False, source='user'`（防污染，待确认）
+    - [✓] **件3（P1）AI 自动沉淀候选**：`brain_run_sse.py` S2 完成后调 `propose_template_candidate`（`s2_goal_generator.py`）；`goals<3` 跳过；按 `match_features` JSON 签名去重；落库 `approved=False, source='ai'`；管理后台新增「分析模板」Tab（`AdminPage.tsx`：GET 列表 / PATCH 批准 / DELETE 删除，默认看待确认候选）
+    - 真跑验证 `backend/scripts/verify_26_e2e.py` ALL_PASS：①#274 保存落库 `approved=False, source='user'` ②#277 AI 沉淀首次落库、二次同签名去重不重复 ③#278 新数据集→命中种子模板→目标并入含模板目标（总担保金额/抵押率分布/大额担保风险预警）
+    - [✓] **遗留 bug 修复：`AnalysisTemplate` 未在 `s2_goal_generator.py` 顶层 import**（`propose_template_candidate` 内引用 → `NameError` 被静默吞掉，AI 沉淀从未真正落库）。已在模块顶层补 `from app.models.analysis_template import AnalysisTemplate`；真跑 3 次 `brain/run` 验证：日志 `[S2] 模板沉淀候选已写入（source=ai, approved=False）` ×2（数据概览 / 担保风控两个不同 match_features 签名），`name 'AnalysisTemplate' is not defined` 出现 **0 次**，`analysis_template` 表 `source='ai'` 真实新增 2 行
+
+### 第 3.9 层：本轮三个 P0（2026-09-22 晚，真跑验证）
+- [✓] **P0-1 `goals_count` 前向引用崩溃**（`brain_run_sse.py`）
+  - 根因：第 771 行 `print(f"...（{goals_count} 个目标）")` 在 773 行 `goals_count = len(goals)` **之前**执行 → 每次 S2 必然 `UnboundLocalError`，被 except 吞掉后 S2 降级
+  - 修复：print 内联改为 `len(goals)`；真跑 `brain/run` → 日志 `[Brain] S2 生成方式: rule（12 个目标）` / `S2完成: 12个目标` → S3 → S4+S5 → `dash_1fe8fd3e_0a9459` 落地，全程不崩
+- [✓] **P0-2 历史看板"该图表无可绘制数据"** —— 结论：**DuckDB 双库路由错配，不是表丢了**
+  - 证据链：①`GET /datasets/{id}/chart-data` 对 6 个看板返回 `404 {"code":"TABLE_NOT_FOUND"}`；②元数据 36 个 dataset 中有 10 个的 `duckdb_table` 在后端当前库里查无此表；③这些表**全都在 `backend/data/duckdb/qa_aibi.db`**（36 表）里，且行数与元数据 `row_count` 完全一致（1fe8fd3e=12 / 04d68399=20 / 3716856d=12 / 9d7fe32f=12 / e8c94106=12 / cb0a9738=12 / 7aa4410e=6 / 5bd315e3=10）
+  - 根因：历史数据集建表时 `DUCKDB_PATH` 指向 `qa_aibi.db`，0.1 路由修复后统一到 `aibi.db`，老表留在旧库 → 读不到
+  - 修复：`backend/scripts/migrate_duckdb_tables.py`（ATTACH 旧库 → `CREATE TABLE AS SELECT`），迁移 26 张表（含 `_cleaned/_agg/_norm` 变体）**OK=26 FAIL=0**
+  - 复验：16 个有图看板中 13 个 `chart-data` 由 404 → **200**（含两个历史看板 `dash_1fe8fd3e_f81d8b` / `dash_04d68399_50adf8`）
+  - ⚠️ 残留：`ds_4920434e_23e0_...`（演示测试数据集）在**所有** duckdb 分身库里都不存在 → 3 个看板（`dash_4920434e_fbed47/_16d735/_a7796e`）仍 404，只能重传或废弃；另 `dash_4bece390_3619ff` 的「收入负债比分布」用了 S3 占位列名 `category`（非真实字段），单独缺陷
+- [✓] **P0-3 上传页三个 toast 反复弹**（方案 A+B+C 全做）
+  - 真跑 API 验证（沙箱无可用浏览器，UI 截图需你本机确认）：`GET /admin/templates`=200（5 system + 2 ai 待确认）、`POST /admin/templates`=200（落库含 4 个 goal_skeleton）、`PATCH /admin/templates/{id}`=200（批准↔还原双向生效）、`DELETE`=200、`GET /quality/{ds}/issues`=200（5 条已存质检结果 = 恢复时读的数据源）
+  - 附带修复：`PATCH /admin/templates/{id}` 原 500 —— `await db.commit()` 后 ORM 属性被 expire，异步上下文再 `to_dict()` 触发惰性加载失败；修为 commit 后先 `await db.refresh(tpl)`
+  - 根因：`LoadingPage.handleCancel` 调了后端 `/cancel` 并清了 `brain_run_{dsId}`，但**没清 `upload_session`** → 每次进页面 `restoreSession` 都当"未完成任务"恢复并弹 toast；`QualityCheckPanel` 挂载 500ms 后又无条件自动跑一遍质检并弹持久 loading
+  - A（`UploadPage.tsx`）：`restoreSession` 按语义分流——已建数据集（上传+质检已完成=稳定资产）**静默恢复不弹 toast**；只有真·未建数据集才提示"未完成的上传任务"
+  - B（`QualityCheckPanel.tsx`）：新增 `autoCheck` prop；`autoCheck=false`（恢复的文件）走 `loadExisting()` 读后端已存质检结果（`GET /quality/{id}/issues`），不重跑、不弹 toast；`runCheck({silent:true})` 静默兜底；`message.loading(duration:0)` → `duration:8` 兜底；底部按钮「无必拦项，直接继续」→「**生成看板**」
+  - C（语义）：新增 `upload_gen_canceled_map` 墓碑，取消生成时打标；上传+质检产物保留、会话不作废，`upload_session` 的"任务"语义收窄为"上传中/未建数据集"
+  - `tsc --noEmit` EXIT=0
 
 ### 第 3 层：UI 体验
 - [✓] 3.1 上传页布局（已落地：Dragger 收缩 + 队列收缩，`1bdc645`+`fee2792`，tsc 通过；源码 `UploadPage.tsx` 含 `shouldCollapse`/`queueCollapsed`）
@@ -234,3 +260,4 @@
 7. **3.2 方案 C + 3.2a-e 验证** —— `270446d`；方案 `night3/plans/B_32_loading_page_plan_c.md`；现状验证 `defect_fix_evidence/final_fixes/verify_32_current_state.py` 真跑（规则引擎 16 字段 P95≈68ms，最坏卡死 300s=5min）
 8. **O/P/Q 三方案** —— `4ddfc05`；`night3/plans/O_P_ai_participation_monitoring.md` / `P_ai_result_check.md` / `Q_ai_context_injection.md`；P 方案附可运行复现脚本 `repro_P_field_norm_bug.py`
 9. **H3/H4/H5** —— `b300078`；路线图/反方观点/工单拆解，均在 `night3/plans/`
+10. **2.6 收尾三件** —— 本轮（未提交，待用户看 diff）；种子模板 5 个真实落库 `data/aibi.db` + 管理后台「保存为模板」入口（前端 `DashboardOps` 按钮+弹窗 → `POST /admin/templates`）+ AI 自动沉淀候选（`propose_template_candidate`，`approved=False, source='ai'` 去重落库）+ 管理后台「分析模板」Tab（`AdminPage`）；真跑 `scripts/verify_26_e2e.py` ALL_PASS；前端 `tsc --noEmit` EXIT=0
