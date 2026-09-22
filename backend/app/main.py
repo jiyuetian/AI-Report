@@ -94,7 +94,9 @@ async def lifespan(app: FastAPI):
     # 打印 LLM 配置确认
     from app.core.config import settings
     import os
-    _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
+    # 与 app.core.config._ENV_PATH 对齐：真实 .env 位于 backend/ 根（config 的 _PROJECT_ROOT 即 backend/），
+    # 而非仓库根。此前此处多算一级目录误查仓库根/.env，导致真实 backend/.env 已加载时仍打印「.env 已加载: False」。
+    _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     _env_exists = os.path.exists(_env_path)
     print(f"[config] .env 已加载: {_env_exists}, LLM_BASE_URL={settings.LLM_BASE_URL}, LLM_MODEL={settings.LLM_MODEL or '(空,使用默认)'}")
     
