@@ -699,6 +699,10 @@ async def brain_run_pipeline(
                 # 2.3-B：标记 S2 目标生成是否由 LLM 参与（对齐 S3 的 ai_participated）
                 s2_generated_by = "llm" if any(g.get("generated_by") == "llm" for g in goals) else "rule"
                 ctx.shared["s2_generated_by"] = s2_generated_by
+                # 3.2c：S2 一结束就能判定本次生成方式，提前写入状态缓存，
+                # 让前端在 S3-S5（AI 阶段）加载中即可显示「AI 增强生成中 / 规则引擎生成中」，
+                # 不必等到完成态。与最终 payload 的 generation_mode 同源。
+                _RUN_STATUS.setdefault(run_id, {})["generation_mode"] = "ai" if s2_generated_by == "llm" else "rule"
                 print(f"[Brain] S2 生成方式: {s2_generated_by}（{goals_count} 个目标）")
                 await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals, "generated_by": s2_generated_by}), "S2")
                 goals_count = len(goals)
@@ -1333,6 +1337,7 @@ async def get_run_status(
             "lineage_built": cache.get("lineage_built", False),
             "stage_errors": cache.get("stage_errors") or {},
             "ai_awaiting": cache.get("ai_awaiting"),
+            "generation_mode": cache.get("generation_mode"),
             "finished": cache.get("finished", False)
         }
     # 兜底：从DB读取（服务重启后查询已持久化的运行痕迹）

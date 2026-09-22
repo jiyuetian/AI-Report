@@ -68,6 +68,12 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
   // 任务开始时间：用于按实测进度速率估算剩余时间（对齐原型"预计还需 N 秒"）
   const startRef = useRef<number>(Date.now());
   const [etaText, setEtaText] = useState('预计还需片刻');
+  // 3.2a：ETA 平滑（EMA） + 进度卡住检测（长 AI 阶段进度长时间不推进时给诚实提示）
+  const etaEmaRef = useRef<number | null>(null);
+  const lastPctRef = useRef<number>(0);
+  const lastPctTsRef = useRef<number>(Date.now());
+  // 3.2c：加载中提前显示的生成方式（后端 S2 结束后即下发 generation_mode）
+  const [genModeLive, setGenModeLive] = useState<string | null>(null);
 
   const clearPoll = () => {
     if (pollRef.current) {
@@ -82,17 +88,35 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
     const status = data.status || '';
     const msg = data.message || '';
     const pct = Number(data.progress) || 0;
+    // 3.2c：后端 S2 后下发 generation_mode（"ai" / "rule"），加载中即可知本次生成方式
+    if (data.generation_mode) setGenModeLive(data.generation_mode);
 
     const stageIdx = STAGES.findIndex(s => s.key === stage);
     if (stageIdx >= 0) setCurrentStageIdx(stageIdx);
     setProgress(pct);
-    // 按实测进度速率估算剩余时间：eta = 已耗时 × 剩余进度 ÷ 已完成进度
+    // 3.2a：时间预估——用 EMA 平滑瞬时 rate（避免 2.5s 轮询间跳动），
+    // 并检测"进度长时间未推进"（典型为 S3/S4b 等 AI 长阶段）：此时 rate 估算会失真，
+    // 改为诚实提示"AI 阶段处理中，请稍候"，而不是给一个误导性的小数字。
     if (pct > 0 && pct < 100) {
-      const elapsed = (Date.now() - startRef.current) / 1000;
-      const eta = Math.round((elapsed * (100 - pct)) / pct);
-      setEtaText(eta >= 1 ? `预计还需 ${eta} 秒` : '即将完成');
+      const now = Date.now();
+      const elapsed = (now - startRef.current) / 1000;
+      const inst = (elapsed * (100 - pct)) / pct; // 瞬时 eta（秒）
+      const ema = etaEmaRef.current == null ? inst : etaEmaRef.current * 0.6 + inst * 0.4;
+      etaEmaRef.current = ema;
+      const prevTs = lastPctTsRef.current;
+      const prevPct = lastPctRef.current;
+      const stuck = pct === prevPct && (now - prevTs) > 10000;
+      lastPctTsRef.current = now;
+      lastPctRef.current = pct;
+      if (stuck && elapsed > 15) {
+        setEtaText('AI 阶段处理中，请稍候');
+      } else {
+        const v = Math.round(ema);
+        setEtaText(v >= 1 ? `预计还需约 ${v} 秒` : '即将完成');
+      }
     } else if (pct >= 100) {
       setEtaText('即将完成');
+      etaEmaRef.current = null;
     }
     if (stageIdx >= 0 && msg) {
       setDetails(prev => {
@@ -192,6 +216,11 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
     setProgress(0);
     setCurrentStageIdx(0);
     setDetails(STAGES.map(() => '等待中...'));
+    // 3.2a / 3.2c：新任务重置 ETA 平滑状态与加载中生成方式徽标
+    setGenModeLive(null);
+    etaEmaRef.current = null;
+    lastPctRef.current = 0;
+    lastPctTsRef.current = Date.now();
     try {
       // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 POST /brain/run，已带 authHeaders()
       const res = await fetch(`${API_BASE}/brain/run`, {
@@ -377,7 +406,19 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           <Text type="secondary" style={{ fontSize: 13 }}>
             {isError
               ? (phase === 'cancelled' ? '任务已取消' : '看板生成失败')
-              : (isComplete ? '看板生成完成！' : `${etaText} · 已自动重试 ${retryCount} 次`)}
+              : (isComplete ? '看板生成完成！' : (
+                <span>
+                  {`正在：${STAGES[currentStageIdx]?.name}（第 ${currentStageIdx + 1}/5 步） · ${etaText}${retryCount > 0 ? ` · 已自动重试 ${retryCount} 次` : ''}`}
+                  {genModeLive && (
+                    <Tag
+                      color={genModeLive === 'ai' ? 'green' : 'default'}
+                      style={{ marginLeft: 8 }}
+                    >
+                      {genModeLive === 'ai' ? 'AI 增强生成中' : '规则引擎生成中'}
+                    </Tag>
+                  )}
+                </span>
+              ))}
           </Text>
           <Text strong style={{ fontSize: 15, color: '#1677ff' }}>{progress}%</Text>
           {/* M2（拍板）：完成态持久徽标 —— 一眼区分 AI 生成 / 规则兜底生成 */}

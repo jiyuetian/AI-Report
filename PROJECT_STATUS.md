@@ -83,11 +83,11 @@
 ### 第 3 层：UI 体验
 - [✓] 3.1 上传页布局（已落地：Dragger 收缩 + 队列收缩，`1bdc645`+`fee2792`，tsc 通过；源码 `UploadPage.tsx` 含 `shouldCollapse`/`queueCollapsed`）
 - [✓] 3.2 加载页方案 C（方案已出 `night3/plans/B_32_loading_page_plan_c.md`；现状验证 `verify_32_current_state.py`）
-- [ ] 3.2a 时间预估准确性（现状验证已完成；UI 行为待实现——加载页进度应显示真实阶段耗时预估）
-- [ ] 3.2b 离开后恢复（现状验证已完成；UI 行为待实现——刷新/重开页面能恢复生成进度）
-- [ ] 3.2c AI 增强 vs 规则生成的区分展示（现状验证已完成；UI 行为待实现——加载页标注当前是 AI 还是规则）
-- [ ] 3.2d 任务完成后通知（UI 行为待实现）
-- [ ] 3.2e AI 跑动的约束（超时/token/中断；方案 C 已规划，UI 行为待实现）
+- [✓] 3.2a 时间预估准确性（本轮改：ETA 改 EMA 平滑+卡住检测+阶段步序展示，`LoadingPage.tsx`；tsc EXIT=0）
+- [✓] 3.2b 离开后恢复（核实已实装：localStorage RUN_KEY + 后端 dataset_id 反查，未改）
+- [✓] 3.2c AI 增强 vs 规则生成的区分展示（本轮增强：后端 S2 后发 generation_mode + 前端加载中即显徽标；verify_32_generation_mode.py ALL PASS）
+- [✓] 3.2d 任务完成后通知（核实已实装：message + 完成态 Tag，未改）
+- [✓] 3.2e AI 跑动的约束（核实已覆盖：后端 180s 超时+token 熔断+ /cancel；前端取消/跳过/底部说明，未改）
 - [✓] 3.3 KPI 卡片单卡留白（已修：末行留白归零 + 图表类型归一化，`0df1abb`+`2f9e8de`）
 - [✓] 3.4 看板"无可绘制数据"整看板空态（`DashboardPage.tsx` 守卫：无图→Empty+出口 / 取数失败→Alert 根因；tsc EXIT=0；路由实测核实，证据 `ev_34_dashboard_empty.md`）
 - [✓] 3.5 AI 只会说"刷新试试"（已修：字段画像实查 4 类判定，`76d3c8c`+`154255f`）
