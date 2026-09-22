@@ -89,7 +89,7 @@
 - [ ] 3.2d 任务完成后通知（UI 行为待实现）
 - [ ] 3.2e AI 跑动的约束（超时/token/中断；方案 C 已规划，UI 行为待实现）
 - [✓] 3.3 KPI 卡片单卡留白（已修：末行留白归零 + 图表类型归一化，`0df1abb`+`2f9e8de`）
-- [ ] 3.4 看板"无可绘制数据"（空态 UI + 路由修复后验证）
+- [✓] 3.4 看板"无可绘制数据"整看板空态（`DashboardPage.tsx` 守卫：无图→Empty+出口 / 取数失败→Alert 根因；tsc EXIT=0；路由实测核实，证据 `ev_34_dashboard_empty.md`）
 - [✓] 3.5 AI 只会说"刷新试试"（已修：字段画像实查 4 类判定，`76d3c8c`+`154255f`）
 - [✓] 3.6 管理后台设置页占位项（已修：LLM 网关实时四态，其余标"即将上线"，`f4cacf5`+`3170f3b`）
 - [✓] 3.7 版本"预览/对比"空壳（已修：假删除改禁用+标注，全仓假动作扫描清零，`96050cd`+`6d24556`）
@@ -187,8 +187,9 @@
 
 ## 三、关键事实（怕它忘）
 
-1. **数据在 qa_aibi.db** —— 不是丢了，是路由错
-2. **元数据在 aibi.db，DuckDB 数据表在 qa_aibi.db**
+1. **DuckDB 真实数据（图表读取的 `ds_*` 数据集表）在 `backend/data/duckdb/aibi.db`**（67MB / 458 表，实测每行有数据）—— `DUCKDB_PATH=./data/duckdb/aibi.db`(config.py:62) 指向它，路由正确
+2. **元数据（users / dashboards=18 / brain_traces）在 `backend/data/qa_aibi.db`**（757KB）
+3. ⚠️ 命名易混：断点文件旧版"数据在 qa_aibi.db"是**写反的**——`qa_aibi.db` 实为元数据库，`aibi.db`(duckdb/) 才是数据仓库。已实测纠正。
 3. **路由修复命令**：`cd backend && DUCKDB_PATH="./data/duckdb/qa_aibi.db" <py312> run_backend.py`（端口 8000，HOST 127.0.0.1）
 4. **跑后端用系统 Python 3.12**：`C:/Users/Asus009/AppData/Local/Programs/Python/Python312/python.exe`（非 workbuddy venv）
 5. **git-bash shim 缺** `ls/cat/head/tail/grep/dirname/cd` → 用 python -c / Read / Glob / Write / Bash(python -c)

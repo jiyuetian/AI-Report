@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Row, Col, Card, Statistic, Badge, Spin, Empty, Table, message, Typography, Breadcrumb, Modal, Descriptions, Button, Space } from 'antd';
+import { Row, Col, Card, Statistic, Badge, Spin, Empty, Table, message, Typography, Breadcrumb, Modal, Descriptions, Alert, Button, Space } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { WarningOutlined, RiseOutlined, FallOutlined, ArrowLeftOutlined, BulbOutlined } from '@ant-design/icons';
 import { http } from '../../utils/request';
@@ -1350,6 +1350,32 @@ const DashboardPage: React.FC = () => {
           // 这里不再置空 config，避免跳转前闪屏"看板不存在"
           onDelete={() => {}}
         />
+
+        {/* 3.4 整看板空态：config 已加载但无任何可绘制图表 / 数据源为空时，
+            给出明确原因与出口，避免用户只看到头部 + 一片空白。
+            - effectiveCharts 为空 → 该看板暂无图表（真·无图）
+            - 有图但 chartData 为空 → 根因提示（数据集未加载/为空），避免每张图各自报"无可绘制数据"造成困惑 */}
+        {effectiveCharts.length === 0 ? (
+          <Card className="dashboard-empty-state" style={{ marginTop: 16 }} bordered={false}>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="该看板暂无图表"
+            >
+              <Space>
+                <Button type="primary" onClick={() => { window.location.href = '/upload'; }}>上传数据重新生成</Button>
+                <Button onClick={() => { window.location.href = '/dashboards'; }}>查看其他看板</Button>
+              </Space>
+            </Empty>
+          </Card>
+        ) : (!chartData ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 16 }}
+            message="本看板图表的数据集暂未加载到数据"
+            description="底层数据集可能为空、已被清理，或数据路由未指向正确的数据仓库。图表将显示为空，建议检查数据路由后重新生成看板。"
+          />
+        ) : null)}
 
         {/* L1 KPI层 */}
         {renderKPILayer()}
