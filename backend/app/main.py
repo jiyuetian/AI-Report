@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
         from app.models import (
             User, File, Dataset, QualityIssue, CleanRule,
             Chart, Dashboard, ChatSession, ChatMessage, TokenQuota, TokenApplication,
-            AuditLog, Prompt, TokenBlacklist
+            AuditLog, Prompt, TokenBlacklist, AnalysisTemplate
         )
         
         # 迁移：datasets.duckdb_table 放宽为可空（文档型数据集不建表）

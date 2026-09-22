@@ -216,7 +216,8 @@ class S2GoalGenerator:
         theme: str,
         fields: List[str],
         grain: str = "detail",
-        sample_data: Optional[List[Dict]] = None
+        sample_data: Optional[List[Dict]] = None,
+        field_profiles: Optional[List[Dict[str, Any]]] = None
     ) -> List[AnalysisGoal]:
         """
         基于LLM增强生成
@@ -225,6 +226,8 @@ class S2GoalGenerator:
         """
         # 1. 先基于规则生成
         base_goals = self.generate_goals_rule_based(theme, fields, grain)
+        # 2.6 P0：并入命中 approved 模板（按字段画像特征，不绑列名；不破坏下方规则兜底）
+        base_goals = await self._apply_templates(db, base_goals, theme, fields, grain, field_profiles)
         
         # 2. 构建Prompt（外置被控提示词优先 prompts/s2_goal_generator.md，缺失回退内置默认）
         base_goals_json = json.dumps([g.to_dict() for g in base_goals], ensure_ascii=False, indent=2)
@@ -319,7 +322,8 @@ class S2GoalGenerator:
         fields: List[str],
         grain: str = "detail",
         use_llm: bool = False,
-        sample_data: Optional[List[Dict]] = None
+        sample_data: Optional[List[Dict]] = None,
+        field_profiles: Optional[List[Dict[str, Any]]] = None
     ) -> List[AnalysisGoal]:
         """
         目标生成入口
@@ -333,11 +337,55 @@ class S2GoalGenerator:
         if use_llm and theme != "未知":
             # LLM增强
             return await self.generate_goals_llm_enhanced(
-                db, theme, fields, grain, sample_data
+                db, theme, fields, grain, sample_data, field_profiles
             )
         else:
             # 纯规则（更快，更可控）
-            return self.generate_goals_rule_based(theme, fields, grain)
+            goals = self.generate_goals_rule_based(theme, fields, grain)
+            # 2.6 P0：规则路径同样并入命中模板
+            return await self._apply_templates(db, goals, theme, fields, grain, field_profiles)
+
+
+    async def _apply_templates(
+        self,
+        db: AsyncSession,
+        base_goals: List[AnalysisGoal],
+        theme: str,
+        fields: List[str],
+        grain: str,
+        field_profiles: Optional[List[Dict[str, Any]]]
+    ) -> List[AnalysisGoal]:
+        """
+        2.6 P0：模板匹配并入候选（不破坏规则兜底）。
+
+        - 按字段画像特征（不绑列名）对 approved 模板做交集打分
+        - 命中则把 base_goals 并入候选，generated_by='template'
+        - 任何异常都忽略，原样返回 base_goals（零影响）
+        """
+        try:
+            profile = _build_dataset_profile(fields, theme, field_profiles)
+            matched = await match_templates(db, profile)
+        except Exception as e:
+            print(f"[S2] 模板匹配异常(忽略): {e}")
+            return base_goals
+        if not matched:
+            return base_goals
+        for t in matched:
+            tg = t.base_goals if isinstance(t.base_goals, list) else []
+            for g in tg:
+                if isinstance(g, dict) and g.get("title"):
+                    base_goals.append(AnalysisGoal(
+                        goal_id=g.get("goal_id", f"T{len(base_goals) + 1}"),
+                        title=g.get("title"),
+                        description=g.get("description", ""),
+                        type=g.get("type", "分析"),
+                        priority=g.get("priority", 4),
+                        expected_charts=g.get("expected_charts", []),
+                        generated_by="template",
+                    ))
+        merged = sum(len(t.base_goals or []) for t in matched)
+        print(f"[S2] 模板命中 {len(matched)} 个，并入 {merged} 个候选目标")
+        return base_goals
 
 
 # 便捷函数
@@ -346,7 +394,8 @@ async def generate_analysis_goals(
     theme: str,
     fields: List[str],
     grain: str = "detail",
-    use_llm: bool = False
+    use_llm: bool = False,
+    field_profiles: Optional[List[Dict[str, Any]]] = None
 ) -> List[Dict]:
     """
     便捷目标生成函数
@@ -364,5 +413,148 @@ async def generate_analysis_goals(
         ]
     """
     generator = S2GoalGenerator()
-    goals = await generator.generate(db, theme, fields, grain, use_llm)
+    goals = await generator.generate(db, theme, fields, grain, use_llm, field_profiles=field_profiles)
     return [g.to_dict() for g in goals]
+
+
+# ============================================================================
+# 2.6 P0：分析模板匹配（按字段画像特征，不绑列名）
+# ============================================================================
+
+def _build_dataset_profile(
+    fields: List[str],
+    theme: str,
+    field_profiles: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """
+    构建数据集字段画像 profile（供 match_templates 打分）。
+
+    设计原则：
+    - 不触发 AI（build_semantics 含 LLM 调用，S2 不该触发）→ 用便宜规则推导
+    - type_buckets：FieldAnalyzer.infer_field_type（纯规则）逐个推断
+    - cardinality_buckets：由 2.5 的 field_profiles(distinct_count) 推 low/mid/high
+    - recommended_aggs：由 type 映射（NUMBER→sum/avg，CATEGORY/GEO/DATE→count）
+    - business_roles：需 AI 标注，S2 不触发 → 生产环境留空；
+      测试或后续接入 field_semantics 后可填充，模板的 semantic_hints 才会生效
+    """
+    type_buckets: List[str] = []
+    try:
+        from app.core.brain_modules.schema_enricher import FieldAnalyzer
+        type_buckets = [FieldAnalyzer.infer_field_type(f).name for f in fields]
+    except Exception as e:
+        print(f"[S2] 字段类型推断失败(降级空): {e}")
+
+    cardinality_buckets: List[str] = []
+    if field_profiles:
+        for p in field_profiles:
+            dc = p.get("distinct_count")
+            if dc is None:
+                cardinality_buckets.append("unknown")
+            elif dc <= 20:
+                cardinality_buckets.append("low")
+            elif dc <= 200:
+                cardinality_buckets.append("mid")
+            else:
+                cardinality_buckets.append("high")
+
+    recommended_aggs: List[str] = []
+    for t in set(type_buckets):
+        if t == "NUMBER":
+            recommended_aggs += ["sum", "avg"]
+        elif t in ("CATEGORY", "GEO"):
+            recommended_aggs += ["count"]
+        elif t == "DATE":
+            recommended_aggs += ["count"]
+
+    return {
+        "type_buckets": type_buckets,
+        "business_roles": [],
+        "recommended_aggs": recommended_aggs,
+        "cardinality_buckets": cardinality_buckets,
+        "field_count": len(fields),
+        "theme": theme,
+    }
+
+
+def _score_template(match_features: Dict[str, Any], profile: Dict[str, Any]) -> float:
+    """
+    单模板打分：与 profile 做特征交集，返回 0~N 的得分（0 = 不命中）。
+
+    各特征组等权；声明了某个组就按「命中比例」计分；全部未命中 → 0。
+    match_features 支持的键：
+      - must_have_types:   要求的字段类型桶（CATEGORY/NUMBER/DATE/TEXT/GEO）集合
+      - semantic_hints:    要求的 business_role / recommended_agg 提示集合
+      - min_fields:        要求的最少字段数
+      - theme_hint:        主题正则（re.search，忽略大小写）
+      - cardinality_need:  要求至少存在一个的 cardinality 桶（low/mid/high）
+    """
+    if not match_features or not isinstance(match_features, dict):
+        return 0.0
+
+    score = 0.0
+
+    # 字段类型桶
+    mht = match_features.get("must_have_types") or []
+    if mht:
+        have = set(profile.get("type_buckets") or [])
+        hit = len(set(mht) & have)
+        score += (hit / len(mht)) if hit else 0.0
+
+    # 语义提示（business_role / recommended_agg）
+    hints = match_features.get("semantic_hints") or []
+    if hints:
+        have = set(profile.get("business_roles") or []) | set(profile.get("recommended_aggs") or [])
+        hit = len(set(hints) & have)
+        score += (hit / len(hints)) if hit else 0.0
+
+    # 最少字段数
+    mf_min = match_features.get("min_fields")
+    if mf_min:
+        if (profile.get("field_count") or 0) >= int(mf_min):
+            score += 1.0
+
+    # 主题正则
+    th = match_features.get("theme_hint")
+    if th:
+        import re
+        if re.search(th, profile.get("theme") or "", re.IGNORECASE):
+            score += 1.0
+
+    # 基数列要求
+    cn = match_features.get("cardinality_need") or []
+    if cn:
+        have = set(profile.get("cardinality_buckets") or [])
+        if set(cn) & have:
+            score += 1.0
+
+    return score
+
+
+async def match_templates(db, profile: Dict[str, Any]) -> List["AnalysisTemplate"]:
+    """
+    2.6 P0：匹配分析模板。
+
+    - 仅 approved=True 参与（未确认模板不套用，防污染）
+    - 按 match_features 与 profile 做特征交集打分
+    - 返回得分>0 的模板，降序（最匹配在前）
+    """
+    from app.models.analysis_template import AnalysisTemplate
+    from sqlalchemy import select
+
+    result = await db.execute(select(AnalysisTemplate).where(AnalysisTemplate.approved == True))  # noqa: E712
+    rows = result.scalars().all()
+
+    scored = []
+    for t in rows:
+        mf = t.match_features
+        if isinstance(mf, str):
+            try:
+                mf = json.loads(mf)
+            except Exception:
+                mf = {}
+        s = _score_template(mf or {}, profile)
+        if s > 0:
+            scored.append((s, t))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [t for _, t in scored]

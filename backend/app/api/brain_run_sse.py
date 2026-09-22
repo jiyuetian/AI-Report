@@ -744,6 +744,11 @@ async def brain_run_pipeline(
                 s2_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S2", {
                     "theme": theme_tag, "fields": fields
                 }), "S2")
+                # 2.6 P0：S2 前算字段画像，供模板匹配（按字段画像特征，不绑列名；失败返回 None 不阻断）
+                _s2_table = f"ds_{dataset_id.replace('-', '_')}"
+                s2_field_profiles = _compute_field_profiles(
+                    get_duckdb(), _s2_table, fields, dataset_info.get("sample_data")
+                )
                 goals = await _exec_skill(
                     "understand:goal", ctx,
                     lambda: generate_analysis_goals(
@@ -751,7 +756,8 @@ async def brain_run_pipeline(
                         theme=theme_tag,
                         fields=fields,
                         grain=grain,
-                        use_llm=bool(settings.BRAIN_S2_USE_LLM) and not llm_offline  # PRD 4.8：默认规则引擎降本，可开 LLM；与 skill 主路径(brain_skills.py:77)守卫一致
+                        use_llm=bool(settings.BRAIN_S2_USE_LLM) and not llm_offline,  # PRD 4.8：默认规则引擎降本，可开 LLM；与 skill 主路径(brain_skills.py:77)守卫一致
+                        field_profiles=s2_field_profiles
                     ),
                 )
                 ctx.shared["goals"] = goals
