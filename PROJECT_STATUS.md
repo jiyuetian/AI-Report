@@ -29,9 +29,11 @@
   - 3.7 版本假动作扫描清零（`96050cd` + `6d24556`）
   - 第 8 层 O/P/Q 三份核心方案（`night3/plans/O_P_ai_participation_monitoring.md` 等）
 - **这一轮做什么（真实待办）**：
-  - 3.2a-e 加载页 UI 行为（现状已验证，UI 未实现）
-  - 3.4 看板"无可绘制数据"空态
-  - 2.5 / 2.6 方案（AI 自主推理语义 / 分析模板库）
+  - ~~3.2a-e 加载页 UI 行为 / 3.4 看板空态~~ → 已落地（前几轮）
+  - ~~N1 对话执行器泛指展开+聚合口径~~ → 已修（commit `ff37323`，真实跑 ALL_PASS）
+  - ~~N2 去 9 处 AI 字样~~ → 已改（commit `ff37323`，tsc 0）
+  - ~~N3 KPI 右侧留白~~ → 已定论：旧 dist 重构建即可，无需改代码
+  - **2.6 P0 模板表 + 匹配函数（仍欠，下一步）** — 见第 2 层 2.6
   - 第 8 层 A-N 落地（O/P/Q 已出方案）
   - 第 4 层 路演准备
 
@@ -40,7 +42,7 @@
 ## 二、待办清单
 
 ### 第 0 层：环境治理
-- [✓] 0.1 路由修复（DUCKDB_PATH=qa_aibi.db）
+- [✓] 0.1 路由修复（DUCKDB_PATH=aibi.db）
 - [✓] 0.2 多实例防护（run_backend.py B5 守卫）
 - [ ] 0.3 环境隔离（⚠️ 部分完成：告警做了，物理隔离留第 6 层）
 - [ ] 0.4 启动方式统一
@@ -96,6 +98,22 @@
 - [✓] 3.5 AI 只会说"刷新试试"（已修：字段画像实查 4 类判定，`76d3c8c`+`154255f`）
 - [✓] 3.6 管理后台设置页占位项（已修：LLM 网关实时四态，其余标"即将上线"，`f4cacf5`+`3170f3b`）
 - [✓] 3.7 版本"预览/对比"空壳（已修：假删除改禁用+标注，全仓假动作扫描清零，`96050cd`+`6d24556`）
+
+### 第 3.8 层：对话执行器修正 + UI 文案 + KPI 复查（本轮 N1/N2/N3）
+- [✓] **N1 对话执行器"乱做"修复**（2026-09-22，方案用户拍板：增强理解而非锁死 LLM，commit `ff37323`）
+  - D1 泛指展开：规则路径 `_rule_extract_add_charts` 增"每一项/每个/各/所有/全部/各项 + 聚合词"→遍历所有数值字段逐产 KPI 卡；LLM prompt 同步加泛指/聚合/纠正三条指引
+  - D2 聚合口径落地：意图含"平均/均值/汇总" → `config.aggregation='avg'`（`_build_chart` 透传 + `action_executor` 实装），前端 `deriveKpi` 据此算均值而非默认 SUM
+  - D3' 纠正去重（替代原"锁死 LLM"）：同标题+同图型已存在则跳过，避免纠正类指令翻倍；**不限制 LLM 改图型/数量/顺序**
+  - 附带修复：`action_planner._SPLIT_PATTERN` 的 `\b并\b` 中文词边界失效 → 无逗号"删A图并新增B图"无法分句（删除被吞）；改为去 `\b` 直接按中连词语义切分
+  - 真实跑验证 `backend/verify_n1_realrun.py` ALL_PASS：①5张KPI(avg) ②纠正仍5张不翻倍 ③复合正确分句 ④AI主导指令3张混合图型不被锁
+- [✓] **N2 去掉9处用户可见"AI"字样**（2026-09-22，按用户拍板表，commit `ff37323`）
+  - LoadingPage:352/417/427、QualityCheckPanel:795、DashboardOps:326/333、DashboardPage:1281、App.tsx:57/59
+  - 改动：AI正在→正在 / AI增强生成中→智能增强生成中 / AI生成→已生成 / 一键AI修复→一键修复 / AI参与生成→智能参与生成 / 目标·AI→目标·智能 / AI分析报告→分析报告 / AI已完成字段识别→系统已完成字段识别 / AI出图Loading→智能出图Loading(含desc)
+  - `tsc EXIT=0`；UI 截图需用户本机 `npm run build` 后查看（沙箱无浏览器，见关键事实#7）
+- [✓] **N3 KPI 右侧留白复查**（2026-09-22，仅验证不改代码）
+  - 结论：源码 `kpiSpanFor` 对任意卡片数均铺满整行（1→24/2→12/3→8/5→[6,6,6,6,24]），`.kpi-card`/KPICard 无定宽 → **当前代码不可复现该现象**
+  - 根因 = 部署的 `frontend/dist` 构建于 2026-09-19，**早于** 3.3 的 `kpiSpanFor` 修复（2026-09-22）→ 旧公式 1/4 宽 = 截图右侧留白。
+  - **2026-09-22 已 `npm run build` 重新构建 dist（14:34，tsc+vite build 0 错误）**：旧 09-19 包被替换、含 3.3 修复。**结论：旧包已重构建，无需改代码。**
 
 ### 第 4 层：路演准备
 - [ ] 4.1 演示脚本（5 分钟 + 10 分钟）
@@ -193,7 +211,7 @@
 1. **DuckDB 真实数据（图表读取的 `ds_*` 数据集表）在 `backend/data/duckdb/aibi.db`**（67MB / 458 表，实测每行有数据）—— `DUCKDB_PATH=./data/duckdb/aibi.db`(config.py:62) 指向它，路由正确
 2. **元数据（users / dashboards=18 / brain_traces）在 `backend/data/qa_aibi.db`**（757KB）
 3. ⚠️ 命名易混：断点文件旧版"数据在 qa_aibi.db"是**写反的**——`qa_aibi.db` 实为元数据库，`aibi.db`(duckdb/) 才是数据仓库。已实测纠正。
-3. **路由修复命令**：`cd backend && DUCKDB_PATH="./data/duckdb/qa_aibi.db" <py312> run_backend.py`（端口 8000，HOST 127.0.0.1）
+3. **路由修复命令**：`cd backend && DUCKDB_PATH="./data/duckdb/aibi.db" <py312> run_backend.py`（端口 8000，HOST 127.0.0.1）
 4. **跑后端用系统 Python 3.12**：`C:/Users/Asus009/AppData/Local/Programs/Python/Python312/python.exe`（非 workbuddy venv）
 5. **git-bash shim 缺** `ls/cat/head/tail/grep/dirname/cd` → 用 python -c / Read / Glob / Write / Bash(python -c)
 6. **所有 API 挂在 `/api/v1` 前缀**（`/health`=404，正确是 `/api/v1/health`）
