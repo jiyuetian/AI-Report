@@ -33,7 +33,7 @@
   - ~~N1 对话执行器泛指展开+聚合口径~~ → 已修（commit `ff37323`，真实跑 ALL_PASS）
   - ~~N2 去 9 处 AI 字样~~ → 已改（commit `ff37323`，tsc 0）
   - ~~N3 KPI 右侧留白~~ → 已定论：旧 dist 重构建即可，无需改代码
-  - **2.6 P0 模板表 + 匹配函数（仍欠，下一步）** — 见第 2 层 2.6
+  - ~~2.6 P0 模板表 + 匹配函数~~ → 已落地（commit `44c8649`，真跑 verify_26_template.py ALL_PASS）
   - 第 8 层 A-N 落地（O/P/Q 已出方案）
   - 第 4 层 路演准备
 
@@ -83,7 +83,10 @@
   - [x] 2.5 P0 落地（L2 字段画像升级：distinct/空值率/高基数注入，commit 见下；证据 `ev_25_p0.md`）
   - [ ] 2.5 P1-P4（样本注入/field_semantics 持久化/业务词典/纠正写回，待做）
 - [✓] 2.6 分析模板库（方案已出，同文件）
-  - [ ] 2.6 P0 落地（模板表 + 匹配函数）← 下一步
+  - [✓] 2.6 P0 落地（模板表 + 匹配函数，commit `44c8649`）
+    - 新增 `AnalysisTemplate` 模型（字段画像特征匹配，不绑列名）+ alembic 迁移 `002`；`match_templates(profile)` 仅 `approved=True` 参与、特征交集打分降序返回
+    - 集成 `s2_goal_generator`：`_apply_templates` 在 L227 后并入命中模板的 `base_goals`（`generated_by='template'`），LLM/规则两路径均生效，不破坏规则兜底；S2 前算 `field_profiles` 传入（便宜规则构建 profile，不触发含 AI 的 `build_semantics`）
+    - 真实跑 `backend/verify_26_template.py` ALL_PASS：T1 命中 / T2 不命中 / T3 未批准门禁排除 / T4 并入集成
 
 ### 第 3 层：UI 体验
 - [✓] 3.1 上传页布局（已落地：Dragger 收缩 + 队列收缩，`1bdc645`+`fee2792`，tsc 通过；源码 `UploadPage.tsx` 含 `shouldCollapse`/`queueCollapsed`）
