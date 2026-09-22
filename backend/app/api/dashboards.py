@@ -75,9 +75,14 @@ async def list_my_dashboards(
     我的看板列表（M4-06）。D2-6 修复：基于服务端登录身份过滤，禁止信任客户端 user_id 参数。
     """
     uid = current_user["user_id"]
-    # 兼容 pre-auth 演示数据（owner 为 'anonymous'/'current'）对任何已登录用户可见；
-    # 其余仅显示当前登录用户自己创建的看板。
-    _OWNERS = ("anonymous", "current", uid)
+    # P0-1 横向越权修复（G2）：pre-auth 演示数据（owner 为 'anonymous'/'current'）
+    # 原先对【任何已登录用户】可见 —— 普通用户因此能枚举他人看板，并可借 DELETE 的
+    # legacy 特判删掉他人/演示看板（已造成过真实数据丢失）。
+    # 现改为：legacy 数据仅对超管可见；普通用户严格只看自己创建或更新的看板。
+    if current_user.get("is_superuser"):
+        _OWNERS = ("anonymous", "current", uid)
+    else:
+        _OWNERS = (uid,)
     query = select(Dashboard).where(
         or_(
             Dashboard.created_by.in_(_OWNERS),
@@ -346,12 +351,14 @@ async def delete_dashboard(
             }
         )
     
-    # 检查权限（D2-6 修复：基于服务端登录身份，禁止信任客户端 user_id）
+    # 检查权限（P0-2 横向越权修复）：基于服务端登录身份，禁止信任客户端 user_id。
+    # 原实现对 legacy 匿名数据（created_by in anonymous/current）无条件放行删除，
+    # 导致任何登录用户都能删掉 pre-auth 演示看板（已造成真实数据丢失）。
+    # 现：创建者本人可删；legacy 数据仅超管可删；其余一律 403。
     uid = current_user["user_id"]
     is_owner = dashboard.created_by == uid
-    is_legacy = dashboard.created_by in ("anonymous", "current")
     is_admin = bool(current_user.get("is_superuser"))
-    if not (is_owner or is_legacy or is_admin):
+    if not (is_owner or is_admin):
         raise HTTPException(
             status_code=403,
             detail="只有创建者或管理员可删除看板"
