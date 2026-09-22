@@ -93,7 +93,7 @@
     - [✓] **件2（P2）管理后台「保存为模板」入口**：看板操作栏 `DashboardOps.tsx` 新增按钮 + 弹窗（模板名/描述/是否批准默认 False），`POST /admin/templates`；后端 `admin_create_template` 从看板 config 提炼 `base_goals`（图表→goal）、从主数据集字段画像提炼 `match_features`，落库 `approved=False, source='user'`（防污染，待确认）
     - [✓] **件3（P1）AI 自动沉淀候选**：`brain_run_sse.py` S2 完成后调 `propose_template_candidate`（`s2_goal_generator.py`）；`goals<3` 跳过；按 `match_features` JSON 签名去重；落库 `approved=False, source='ai'`；管理后台新增「分析模板」Tab（`AdminPage.tsx`：GET 列表 / PATCH 批准 / DELETE 删除，默认看待确认候选）
     - 真跑验证 `backend/scripts/verify_26_e2e.py` ALL_PASS：①#274 保存落库 `approved=False, source='user'` ②#277 AI 沉淀首次落库、二次同签名去重不重复 ③#278 新数据集→命中种子模板→目标并入含模板目标（总担保金额/抵押率分布/大额担保风险预警）
-    - [✓] **遗留 bug 修复：`AnalysisTemplate` 未在 `s2_goal_generator.py` 顶层 import**（`propose_template_candidate` 内引用 → `NameError` 被静默吞掉，AI 沉淀从未真正落库）。已在模块顶层补 `from app.models.analysis_template import AnalysisTemplate`；真跑 3 次 `brain/run` 验证：日志 `[S2] 模板沉淀候选已写入（source=ai, approved=False）` ×2（数据概览 / 担保风控两个不同 match_features 签名），`name 'AnalysisTemplate' is not defined` 出现 **0 次**，`analysis_template` 表 `source='ai'` 真实新增 2 行
+  - [✓] **遗留 bug 修复：`AnalysisTemplate` 未在 `s2_goal_generator.py` 顶层 import**（`propose_template_candidate` 内引用 → `NameError` 被静默吞掉，AI 沉淀从未真正落库）。已在模块顶层补 `from app.models.analysis_template import AnalysisTemplate`；真跑 3 次 `brain/run` 验证：日志 `[S2] 模板沉淀候选已写入（source=ai, approved=False）` ×2（数据概览 / 担保风控两个不同 match_features 签名），`name 'AnalysisTemplate' is not defined` 出现 **0 次**，`analysis_template` 表 `source='ai'` 真实新增 2 行；第 4 次同主题跑完模板数不变（同签名去重生效）
 
 ### 第 3.9 层：本轮三个 P0（2026-09-22 晚，真跑验证）
 - [✓] **P0-1 `goals_count` 前向引用崩溃**（`brain_run_sse.py`）
@@ -260,4 +260,4 @@
 7. **3.2 方案 C + 3.2a-e 验证** —— `270446d`；方案 `night3/plans/B_32_loading_page_plan_c.md`；现状验证 `defect_fix_evidence/final_fixes/verify_32_current_state.py` 真跑（规则引擎 16 字段 P95≈68ms，最坏卡死 300s=5min）
 8. **O/P/Q 三方案** —— `4ddfc05`；`night3/plans/O_P_ai_participation_monitoring.md` / `P_ai_result_check.md` / `Q_ai_context_injection.md`；P 方案附可运行复现脚本 `repro_P_field_norm_bug.py`
 9. **H3/H4/H5** —— `b300078`；路线图/反方观点/工单拆解，均在 `night3/plans/`
-10. **2.6 收尾三件** —— 本轮（未提交，待用户看 diff）；种子模板 5 个真实落库 `data/aibi.db` + 管理后台「保存为模板」入口（前端 `DashboardOps` 按钮+弹窗 → `POST /admin/templates`）+ AI 自动沉淀候选（`propose_template_candidate`，`approved=False, source='ai'` 去重落库）+ 管理后台「分析模板」Tab（`AdminPage`）；真跑 `scripts/verify_26_e2e.py` ALL_PASS；前端 `tsc --noEmit` EXIT=0
+10. **2.6 收尾三件 + 三个 P0** —— 已提交 commit `e642f4f`（2026-09-22，13 文件 +1581/-24）；种子模板 5 个真实落库 `data/aibi.db` + 管理后台「保存为模板」入口（前端 `DashboardOps` 按钮+弹窗 → `POST /admin/templates`）+ AI 自动沉淀候选（`propose_template_candidate`，`approved=False, source='ai'` 去重落库）+ 管理后台「分析模板」Tab（`AdminPage`）；真跑 `scripts/verify_26_e2e.py` ALL_PASS；前端 `tsc --noEmit` EXIT=0
