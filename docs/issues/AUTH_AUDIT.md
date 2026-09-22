@@ -236,3 +236,123 @@
 4. 内部/测试端点（`_internal`、`golden`、`loadtest`）建议**按环境开关关闭**，生产不暴露。
 
 > 红线提醒：改 API 契约须同步**全部调用点**（前端 + 其它服务）；一类一 commit、一类一 push，失败即 `git revert`。
+
+
+---
+
+# 附录 A：ISS-025 分类清单（2026-09-23 白天，第 1 步，只查不改）
+
+> 分支 `p0-security-fixes`　基准 `7050ac4`
+> 方法：①OpenAPI 全量扫描（193 个操作）　②静态端点扫描　③前端调用点全量扫描（36 个源文件，24 处裸 fetch）
+> **状态：本附录为分类结论，尚未修改任何后端代码。**
+
+## A0. 先答三个问题
+
+### 问 1：这 14 个，哪些"有意公开"、哪些"真漏"？
+
+| 分类 | 数量 | 端点 |
+|------|------|------|
+| **A 类（有意公开，保持）** | **0** | —— 14 个全是业务端点，没有一个 health/docs/静态资源 |
+| **B 类（真漏，必须加）** | **13** | 见下表 A1 |
+| **C 类（待确认，需拍板）** | **1** | `GET /api/v1/tokens/status` |
+
+**C 类唯一一条的理由**：前端 `ChatPanel.tsx:86` 有明确注释
+`// 非强制鉴权端点 /tokens/status，按设计不带 token（过期 token 会打挂）`。
+这是**历史遗留的事实描述，不是设计决议**。加了鉴权会破坏"配额显示"，但也可能只是前端没同步改。
+**需你拍板**：(a) 加鉴权 + 前端改带 authHeaders（推荐）；(b) 保持公开但改为只返回布尔不返回具体配额。
+
+### 问 2：G3 修了 13 个，为什么这次又冒 14 个？
+
+**结论：不是 G3 漏扫，是"范围本就分批" + "审计口径不同"叠加。**
+
+证据（`75c279a fix(security): G3 13个未认证端点加鉴权`，见 `defect_fix_evidence/fixes/G3_FIX.md`）：
+
+| 维度 | G3（13 个） | 本次 ISS-025（14 个） |
+|------|-------------|----------------------|
+| HTTP 方法 | **13 个全是 GET** | **12 个 POST + 2 个 GET** |
+| 性质 | 读端点（列表/详情/配置） | **写端点为主**（回滚/建分享/改图/扣令牌）+ 2 个读 |
+| 端点集合 | `/datasets`、`/brain/report/{id}`、`/quality/{id}/issues`、`/lineage/graph/{id}`、`/lineage/stats/{id}`、`/llm/config`、`/chat/sessions/latest`、`/brain/configs`×3、`/shares/my/list`、`/exports/my/list` | `/versions/rollback/{id}`、`/shares/create`、`/chat/message`、`/chat/sessions`、`/versions/create`、`/versions/list/{id}`、`/exports/sync`、`/tokens/status`、`/tokens/consume`、`/quality/check`、`/brain/s3/recommend`、`/llm/chat`、`/reports`、`/lineage/build` |
+| **与对方重叠** | **0** | **0** |
+
+**根因三条**：
+1. **G3 是按"既有清单"修，不是全量扫描。** 清单来源是先前的缺陷登记，天然不含本次这 14 个。
+2. **同文件只挑了 GET，漏了同文件的写端点。** 极干净的规律：`quality.py` 修了 `GET /{id}/issues` 没修 `POST /check`；`lineage.py` 修了 `GET /graph` `/stats` 没修 `POST /build`；`share.py` 修了 `GET /my/list` 没修 `POST /create`；`exports.py` 修了 `GET /my/list` 没修 `POST /sync`；`llm.py` 修了 `GET /config` 没修 `POST /chat`；`chat.py` 修了 `GET /sessions/latest` 没修 `POST /message`、`POST /sessions`。
+3. **G3 自己登记过、但明说"不顺手改"。** `G3_FIX.md` 第 5 节原文：
+   > `tokens.py`、`token_applications.py`、`chat.py` 中部分端点仍使用 `current_user: str = "anonymous"` 默认匿名（属鉴权规范化遗留），需在后续统一排查，本次不顺手改。
+   
+   这一条**正对**本次的 `tokens/status`、`tokens/consume`、`chat/message`、`chat/sessions`。
+
+> 所以：G3 没有做错，是**当时就没打算覆盖写端点**；本次是第一次做"全量实探"，把写端点这一半翻出来了。
+
+### 问 3：以后怎么防止"又冒一批"？
+
+**必须先纠正一个规模误判：真实数字不是 14，是 134。**
+
+昨晚只手工实探了 25 个端点，从里面发现 14 个无鉴权。今天用 **OpenAPI 全量扫描**：
+
+```
+总操作数          = 193
+无 security 声明  = 134   ← 这才是真实全貌
+```
+
+按类别拆：
+
+| 类别 | 约数 | 处理 |
+|------|------|------|
+| 设计公开（auth/login/register/captcha/忘记密码/health/root） | 10 | 白名单，永不报警 |
+| `_internal` / `golden` / `loadtest` 测试端点 | 22 | 按 `settings.DEBUG` 环境开关关闭，生产不注册 |
+| **业务端点真漏** | **约 100** | **这才是 ISS-025 的真实工作量** |
+
+**防复发三件套（建议）**：
+1. **CI 扫描脚本** `backend/scripts/auth_scan.py`：起后端 → 拉 `/openapi.json` → 对每个操作判 `security` 是否为空 → 对照白名单 → 输出清单 + 非零退出码。**接进 CI 当门禁**，新增端点不带鉴权直接红。
+2. **前端裸 fetch 扫描** `frontend/scripts/bare_fetch_scan.ts`：扫 `frontend/src` 里所有 `fetch(`（排除 `utils/request.ts` 本体），凡未出现 `authHeaders()` 的报出来。本次已扫出 **24 处裸 fetch**，其中 **4 处在本轮 14 个端点上，必改**。
+3. **白名单机制** `backend/scripts/auth_whitelist.json`：把"设计公开"和"测试端点"显式登记，扫描脚本只对白名单外的报警 —— 避免告警疲劳导致真漏被淹没。
+
+---
+
+## A1. B 类明细（13 个，必须加）— 含前端调用点
+
+> 前端口径：`http.*` / `request()` 封装**自动注入 token**，安全；`fetch(` 裸调用**不带 token**，改后端必崩。
+
+| # | 端点 | 风险 | 前端调用点 | 前端是否带 token | 后端加鉴权后前端会崩？ |
+|---|------|------|-----------|------------------|------------------------|
+| 1 | `POST /api/v1/versions/rollback/{dashboard_id}` | **P0** | `views/dashboard/DashboardOps.tsx:219` (`http.post`) | ✅ 自动带 | 不会 |
+| 2 | `POST /api/v1/shares/create` | **P0** | `DashboardOps.tsx:131`、`views/share/SharePage.tsx:77` (`http.post`) | ✅ 自动带 | 不会 |
+| 3 | `POST /api/v1/chat/message` | **P0** | `components/chat/ChatPanel.tsx:222`（**裸 fetch**） | ❌ **不带** | **会崩 → 必须同步改** |
+| 4 | `POST /api/v1/chat/sessions` | P2 | `ChatPanel.tsx:163`（**裸 fetch**） | ❌ **不带** | **会崩 → 必须同步改** |
+| 5 | `POST /api/v1/versions/create` | P1 | 无（0 处） | — | 不会 |
+| 6 | `GET /api/v1/versions/list/{dashboard_id}` | P1 | `DashboardOps.tsx:100` (`http.get`) | ✅ 自动带 | 不会 |
+| 7 | `POST /api/v1/exports/sync` | P1 | `DashboardOps.tsx:165` (`http.post`) | ✅ 自动带 | 不会 |
+| 8 | `POST /api/v1/quality/check` | P2 | `components/quality/QualityCheckPanel.tsx:318`（**裸 fetch**） | ❌ **不带** | **会崩 → 必须同步改** |
+| 9 | `POST /api/v1/tokens/consume` | P2 | 无（0 处） | — | 不会 |
+| 10 | `POST /api/v1/reports` | P2 | `views/report/ReportPage.tsx:53` (`http.post`) | ✅ 自动带 | 不会 |
+| 11 | `POST /api/v1/lineage/build` | P2 | 无（0 处） | — | 不会 |
+| 12 | `POST /api/v1/brain/s3/recommend` | P2 | 无（0 处） | — | 不会 |
+| 13 | `POST /api/v1/llm/chat` | P2 | 无（0 处） | — | 不会 |
+
+**⚠️ 红线 5 命中清单（后端改完前端必崩，必须同批改）**：`ChatPanel.tsx:222`、`ChatPanel.tsx:163`、`QualityCheckPanel.tsx:318` —— 共 **3 处**。
+（第 14 条 `tokens/status` 在 C 类，若拍板加鉴权则 `ChatPanel.tsx:87` 也要改，变 4 处。）
+
+## A2. 顺带扫出的同类裸 fetch（不在 14 内，但同病，建议同批改）
+
+| 位置 | 端点 | 说明 |
+|------|------|------|
+| `QualityCheckPanel.tsx:220` | `GET /quality/check/ai/{dsId}` | 同类质检读端点 |
+| `QualityCheckPanel.tsx:443` | `POST /quality/fix` | 同类质检写端点 |
+| `QualityCheckPanel.tsx:531` | `POST /quality/fix-batch` | 同类质检批量写 |
+| `components/skills/SkillPanel.tsx:43` | `GET /skills` | 静态扫描也标为无身份依赖 |
+
+> 这 4 处当前端点本身**是否鉴权未在本轮实探范围内**；但只要给它们加鉴权就会 401 白屏。建议同批带上 `authHeaders()`，成本极低。
+
+## A3. 一个已排除的风险（重要）
+
+**担心**：管线端点（`/brain/s3/recommend`、`/quality/check`、`/lineage/build`、`/reports`）是不是被后端自己用 HTTP 调用？若是，加鉴权会断内部链路。
+
+**已排除**：全仓扫描 `backend/app` 下的 `httpx`/`requests` 调用，只有两处出网：
+- `core/llm_gateway.py` → 打外部 LLM 网关（`token.sensenova.cn` / `localhost:8001`）
+- `api/health.py:50` → 打外部 LLM 网关的 `/chat/completions` 探针
+
+**后端不存在自调 `/api/v1/*` 的 HTTP 调用**；模块间是 Python 直接 import（绕过 HTTP 层，不受 `Depends()` 影响）。
+`core/export_service.py:190` 的 `http://127.0.0.1:8000/downloads/...` 只是拼下载 URL 字符串，不是请求。
+
+→ **结论：给管线端点加鉴权不会断内部链路。**
