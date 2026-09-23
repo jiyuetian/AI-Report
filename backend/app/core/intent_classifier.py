@@ -58,6 +58,7 @@ class IntentType(str, Enum):
     ADD_CONCLUSION = "add_conclusion"  # 追加结论/总结（2026-09-18 新增：复合指令「改标题+补结论」必需）
     QUALITY_FIX = "quality_fix"        # 数据质量修复（清洗层）
     CHART_FIX = "chart_fix"            # 图表问题诊断/修复（空图、没数据）
+    SEMANTIC_ACTION = "semantic_action"  # P0-2：规则未命中的看板操作语义，交由 LLM 主导规划动作
     UNKNOWN = "unknown"
 
 
@@ -210,11 +211,55 @@ class IntentClassifier:
                     analysis = cls._extract_params(message, intent_type, context)
                     return intent_type, confidence, analysis
         
-        # 未知意图 → 尝试LLM兜底
+        # 未知意图 → P0-2：规则未命中但消息像"看板操作语义"，改交 LLM 主导规划动作
+        # （不再立刻落 UNKNOWN 走闲聊，解决"答非所问"）。纯闲聊/无操作语义仍交给下方 LLM 兜底 → UNKNOWN。
+        if cls.looks_like_operation(message, context):
+            return IntentType.SEMANTIC_ACTION, 60, {
+                "raw_message": message,
+                "classified_by": "semantic_rule",
+                "extracted_params": {},
+            }
+
+        # 未知意图（非操作语义）→ 尝试LLM兜底
         result = cls._llm_classify(message, context)
         if result:
             return result
         return IntentType.UNKNOWN, 0, {"raw_message": message}
+
+    # ---- P0-2：看板操作语义探测（规则未命中时判断是否该交 LLM 主导）----
+    _OP_VERBS = [
+        "改成", "换成", "变为", "变成", "改一下", "调成", "显示成", "做成", "画成",
+        "新增", "添加", "再加", "加一个", "加一张", "删除", "移除", "去掉", "删掉",
+        "筛选", "过滤", "只看", "下钻", "钻取", "排序", "调整位置", "上移", "下移", "置顶",
+        "隐藏", "显示", "配色", "高亮", "标红", "对比", "占比", "分布", "趋势",
+        "把", "将", "给", "标题改成", "补充结论", "追加结论",
+    ]
+    _OP_NOUNS = [
+        "图", "图表", "饼图", "柱图", "折线图", "线图", "散点图", "表格", "指标", "kpi",
+        "看板", "数据", "字段", "标题", "结论", "总结", "洞察",
+    ]
+
+    @classmethod
+    def looks_like_operation(cls, message: str, context: Dict[str, Any] = None) -> bool:
+        """判断消息是否像"对看板做修改"的语义（而非纯闲聊）。
+
+        需同时具备：① 含操作动词；② 含图名词，或命中上下文里的真实字段名。
+        用于规则未命中时决定交 LLM 主导（SEMANTIC_ACTION），避免误把操作意图当闲聊。
+        """
+        msg = (message or "").strip().lower()
+        if not msg:
+            return False
+        if not any(v in msg for v in cls._OP_VERBS):
+            return False
+        if any(n in msg for n in cls._OP_NOUNS):
+            return True
+        # 命中上下文真实字段名 → 视为在看板数据上做操作
+        fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or (context or {}).get("field_profiles") or []
+        for fp in fps:
+            nm = (fp.get("name") or fp.get("column") or "")
+            if nm and nm.lower() in msg:
+                return True
+        return False
     
     @classmethod
     def _llm_classify(cls, message: str, context: Dict[str, Any] = None) -> Optional[Tuple[IntentType, int, Dict]]:

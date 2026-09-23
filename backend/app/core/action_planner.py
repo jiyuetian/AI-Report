@@ -10,6 +10,7 @@
     并对歧义/矛盾/字段不存在的情况产出 CLARIFY（只澄清，不猜测执行）。
 """
 import re
+import json
 from typing import Any, Dict, List, Optional
 
 from app.core.intent_classifier import classify_intent, IntentType
@@ -179,6 +180,105 @@ def detect_contradictory_grain(message: str) -> Optional[Dict[str, Any]]:
             "options": [{"grain": g, "label": _GRAIN_LABEL.get(g, g)} for g in gs],
         }
     return None
+
+
+# ---------------- P0-2：LLM 主导规划（规则未命中的看板操作语义）----------------
+
+_ALLOWED_SEMANTIC_TYPES = (
+    "change_chart", "add_chart", "delete_chart", "reorder_chart",
+    "filter_drill", "edit_title", "attribution",
+)
+
+# 模块级 LLM 调用封装，便于测试时 monkeypatch（返回解析后的 dict 或 None）
+def _llm_plan_call(system_prompt: str, user_prompt: str, max_tokens: int = 700) -> Optional[Dict[str, Any]]:
+    """调用 LLM 产出动作 JSON。失败/限流返回 None（交由规则降级，不抛异常）。"""
+    try:
+        from app.core.llm_gateway import get_llm_gateway, LLMRequest
+        import concurrent.futures, asyncio
+        request = LLMRequest(
+            prompt=system_prompt + "\n" + user_prompt,
+            json_mode=True,
+            max_tokens=max_tokens,
+            temperature=0.3,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            resp = ex.submit(
+                lambda r: asyncio.run(get_llm_gateway().chat_complete(r)),
+                request,
+            ).result(timeout=40)
+        if not resp or not resp.success or not resp.content:
+            return None
+        return resp.response_json or json.loads(resp.content)
+    except Exception:
+        return None
+
+
+def _plan_with_llm(message: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """P0-2：把规则未命中的看板操作语义交给 LLM 直接规划成单个动作。
+
+    返回：
+      - 合规动作 dict（type/params/intent_type/confidence/classified_by）
+      - {"clarify": reason}  —— LLM 认为信息不足需澄清
+      - None                  —— LLM 失败/产出不合规 → 由调用方降级回规则/UNKNOWN
+    """
+    charts = (context or {}).get("current_config", {}).get("charts", []) or []
+    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or (context or {}).get("field_profiles") or []
+    chart_desc = "\n".join(
+        f"- {c.get('title')}（id={c.get('id')}, 类型={c.get('chart_type')}）" for c in charts
+    ) or "（无）"
+    field_desc = "\n".join(
+        f"- {fp.get('name')}（{'数值' if _is_numeric_profile(fp) else '文本/分类'}）" for fp in fps
+    ) or "（无）"
+
+    system = (
+        "你是 BI 看板对话的执行规划器。用户用自然语言对看板提出修改要求，"
+        "请直接输出要执行的【单个动作】JSON（不要任何解释）。\n"
+        "可用动作类型：" + "/".join(_ALLOWED_SEMANTIC_TYPES) + "。\n"
+        "约束：\n"
+        "1. change_chart：必须给 chart_id 或 title_keyword（从现有图表里选），以及 target_type（pie/bar/line/scatter/table/kpi）。\n"
+        "2. add_chart：必须给 chart_type，以及真实 dimension_field/metric_field（从字段画像选）或 title_keyword。\n"
+        "3. 只能引用真实存在的图表与字段，不得臆造。\n"
+        "4. 若用户意图不清晰或缺少必要信息，输出 {\"need_clarify\": true, \"reason\": \"...\"}。\n\n"
+        f"现有图表：\n{chart_desc}\n\n字段画像：\n{field_desc}\n"
+    )
+    user = f"用户要求：{message}\n请输出动作 JSON。"
+    data = _llm_plan_call(system, user)
+    if not isinstance(data, dict):
+        return None
+    if data.get("need_clarify"):
+        return {"clarify": data.get("reason") or "信息不足，请补充说明具体要做什么。"}
+
+    atype = data.get("type") or data.get("action_type")
+    if atype not in _ALLOWED_SEMANTIC_TYPES:
+        return None
+    params = data.get("params") or {}
+
+    # ---- 合规校验：缺关键参数的不合规产出直接降级回规则 ----
+    if atype == "change_chart":
+        if not (params.get("chart_id") or params.get("title_keyword")) or not params.get("target_type"):
+            return None
+        # chart_id 必须真实存在
+        if params.get("chart_id") and not any(c.get("id") == params["chart_id"] for c in charts):
+            return None
+    if atype == "add_chart":
+        if not (params.get("chart_type") or params.get("title_keyword")):
+            return None
+    if atype in ("filter_drill",) and not (params.get("filter_field") or params.get("filter_value")):
+        return None
+
+    return {
+        "type": atype,
+        "params": params,
+        "clause": message,
+        "intent_type": atype,
+        "confidence": 75,
+        "classified_by": "llm_semantic",
+    }
+
+
+def _is_numeric_profile(fp: Dict[str, Any]) -> bool:
+    ftype = (fp.get("type") or fp.get("dtype") or "").upper()
+    return any(t in ftype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL", "NUMBER", "DEC"))
 
 
 def detect_vague_chart_type(clause: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -413,6 +513,32 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
         itype = result.get("intent_type", "unknown")
         analysis = result.get("analysis", {})
         params = analysis.get("extracted_params", {}) or {}
+
+        # ---- P0-2：规则未命中但属看板操作语义 → 交 LLM 主导规划动作 ----
+        if itype == IntentType.SEMANTIC_ACTION.value:
+            _llm_plan = _plan_with_llm(clause, context)
+            if _llm_plan is None:
+                # LLM 失败/产出不合规 → 降级回规则（落 unparsed，最终走 UNKNOWN 自然回复）
+                unparsed.append(clause)
+                continue
+            if _llm_plan.get("clarify"):
+                actions.append(_clarify_action(
+                    "semantic_clarify", _llm_plan["clarify"], clause, None,
+                    pending={"intent_type": "semantic", "clause": clause},
+                ))
+                if primary is None:
+                    primary = result
+                continue
+            actions.append(_llm_plan)
+            if primary is None:
+                primary = {
+                    "intent_type": _llm_plan["intent_type"],
+                    "confidence": _llm_plan["confidence"],
+                    "analysis": {"raw_message": clause, "extracted_params": _llm_plan.get("params", {})},
+                    "is_confident": True,
+                    "classified_by": "llm_semantic",
+                }
+            continue
 
         if itype == IntentType.UNKNOWN.value or not result.get("is_confident", True):
             unparsed.append(clause)
