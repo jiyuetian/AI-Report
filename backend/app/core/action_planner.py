@@ -13,7 +13,7 @@ import re
 import json
 from typing import Any, Dict, List, Optional
 
-from app.core.intent_classifier import classify_intent, IntentType
+from app.core.intent_classifier import classify_intent, IntentType, IntentClassifier
 
 # ---------------- 分句 ----------------
 # 复合指令的连接词/分隔符
@@ -560,18 +560,35 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
             # 杜绝"无主语兜底改第一张非目标类型图"这种答非所问。
             if not params.get("title_keyword") and not params.get("chart_id"):
                 _charts = (context or {}).get("current_config", {}).get("charts", []) or []
-                if params.get("target_type") and len(_charts) >= 2:
-                    actions.append(_clarify_action(
-                        "which_chart",
-                        "你想改哪一张图？请告诉我图名，或直接回复序号（如「第二张」）。",
-                        clause,
-                        [{"chart_id": c.get("id"), "title": c.get("title"), "chart_type": c.get("chart_type")}
-                         for c in _charts],
-                        pending={"intent_type": "change_chart", "target_type": params.get("target_type")},
-                    ))
-                    if primary is None:
-                        primary = result
-                    continue
+                # 2026-09-23 修复（P0-1 真跑回归）：用户点明了源图型（「把饼图改成柱图」的"饼图"）
+                # 时，源图型本身就是定位线索。看板里该图型唯一 → 目标已明确，直接锁定，
+                # 不再反问"你想改哪一张图"——问了就是答非所问（用户最痛的点）。
+                # 此前只看 title_keyword/chart_id，忽略 source_type，
+                # 导致真实多图看板上 Round 1 被打断成澄清，饼图始终没被改成柱图。
+                _src_raw = params.get("source_type")
+                _src = IntentClassifier._normalize_chart_type(_src_raw) if _src_raw else None
+                if _src:
+                    _src_hits = [c for c in _charts if (c.get("chart_type") or "") == _src]
+                    if len(_src_hits) == 1:
+                        _t = (_src_hits[0].get("title") or "").strip()
+                        if _t:
+                            params["title_keyword"] = _t
+                        elif _src_hits[0].get("id"):
+                            params["chart_id"] = _src_hits[0].get("id")
+                # 命中 0 张（源图型不存在）或 ≥2 张（仍歧义）→ 保持原澄清行为
+                if not params.get("title_keyword") and not params.get("chart_id"):
+                    if params.get("target_type") and len(_charts) >= 2:
+                        actions.append(_clarify_action(
+                            "which_chart",
+                            "你想改哪一张图？请告诉我图名，或直接回复序号（如「第二张」）。",
+                            clause,
+                            [{"chart_id": c.get("id"), "title": c.get("title"), "chart_type": c.get("chart_type")}
+                             for c in _charts],
+                            pending={"intent_type": "change_chart", "target_type": params.get("target_type")},
+                        ))
+                        if primary is None:
+                            primary = result
+                        continue
             vague = detect_vague_chart_type(clause, params)
             if vague:
                 # P0-3：vague_chart_type 也携带 pending（已知图名时下一轮用图型名接住）

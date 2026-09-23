@@ -1033,6 +1033,10 @@ def _build_memory_from_history(history):
 
 def _extract_last_action(response_data, new_config):
     """从执行结果里提取"最近一次成功动作"的图表事实，回写到会话记忆（P0-1）。"""
+    # 2026-09-23 修复（P0-1 真跑记忆纠错）：动作自带的图名是最准的定位线索，
+    # 见下方"兜底1"。changes 里只有 chart_id(null)/from/to，缺图名时必须靠它。
+    _aparams = (response_data.get("action") or {}).get("params") or {}
+    _kw = (_aparams.get("title_keyword") or "").strip()
     for _r in (response_data.get("action_results") or []):
         if not _r.get("success"):
             continue
@@ -1052,7 +1056,17 @@ def _extract_last_action(response_data, new_config):
                 if _cid and _c.get("id") == _cid:
                     _target = _c
                     break
-            # 兜底：change_chart 无 chart_id 时按新图型定位（看板图表可能缺 id）
+            # 兜底1（最准）：change_chart 缺 chart_id 时，用动作自带的图名定位。
+            # 2026-09-23 修复：此前直接按新图型匹配，会命中看板里本来就是该图型的图——
+            # 「把饼图改成柱图」改的是第5张(各品类销售额占比)，
+            # 却被记成第3张(各地区销售额对比，本来就是柱图)，字段也被张冠李戴。
+            if _target is None and _kw and _atype == "change_chart":
+                for _c in new_config.get("charts", []):
+                    _t = (_c.get("title") or "").strip()
+                    if _t and (_t == _kw or _kw in _t or _t in _kw):
+                        _target = _c
+                        break
+            # 兜底2：仍无再按新图型定位（可能命中别的同型图，故降为次兜底）
             if _target is None and _to and _atype == "change_chart":
                 for _c in new_config.get("charts", []):
                     if _c.get("chart_type") == _to:
