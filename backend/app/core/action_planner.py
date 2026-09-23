@@ -70,6 +70,9 @@ _ADD_REPEAT_RE = re.compile(
     r"再来[一一个张]|再加[一一个张]|另一个|也[加来]一个|再给我[一一个张]|复制[一一个张]|多来[一一个张]"
 )
 
+# 澄清循环（P0-3）：中文序号 -> 数字
+_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
 
 def split_clauses(message: str) -> List[str]:
     """把复合指令拆成有序子句。拆不开就原样返回单元素列表（保证单指令行为不变）。"""
@@ -197,14 +200,99 @@ def detect_vague_chart_type(clause: str, params: Dict[str, Any]) -> Optional[Dic
     return None
 
 
-def _clarify_action(reason: str, message: str, clause: str, options=None) -> Dict[str, Any]:
+def _clarify_action(reason: str, message: str, clause: str, options=None, pending=None) -> Dict[str, Any]:
+    """P0-3：clarify 产出携带 pending 载荷（意图类型 + 已确定的部分参数），
+    供下一轮用户给短答案时由 _resolve_pending_clarify 接住，避免"听不懂就报错/落 UNKNOWN"。"""
     return {
         "type": "clarify",
-        "params": {"reason": reason, "message": message, "options": options or []},
+        "params": {"reason": reason, "message": message, "options": options or [], "pending": pending},
         "clause": clause,
         "intent_type": "clarify",
         "confidence": 0,
     }
+
+
+def _resolve_pending_clarify(message: str, pending: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """P0-3 澄清循环承接：用户上一轮被问"改哪张/哪种图/哪个字段/哪种粒度"，本轮给短答案，
+    把短答案解析成完整的待执行动作，避免重新分类时落 UNKNOWN。
+
+    pending 结构（由 chat.py 持久化、下一轮注入 context["pending_clarify"]）：
+        {reason, clause, intent_type, partial_params, options, created_at}
+    """
+    if not pending or not message:
+        return None
+    reason = pending.get("reason")
+    options = pending.get("options") or []
+    if not options:
+        return None
+    msg = (message or "").strip()
+    pp = pending.get("partial_params") or {}
+
+    # 1) 序号选择："第二张" / "第3个" / "两个" / 裸数字
+    _idx = None
+    _m = re.search(r"(?:第\s*)?([0-9]+|[一二两三四五六七八九十]+)\s*(?:个|张|幅|图)?", msg)
+    if _m:
+        _tok = _m.group(1)
+        if _tok.isdigit():
+            _idx = int(_tok)
+        elif _tok in _CN_NUM:
+            _idx = _CN_NUM[_tok]
+
+    # 2) 关键词命中：答案里包含某个选项的图名/图型/字段名/粒度
+    _kw_opt = None
+    for _o in options:
+        _key = _o.get("title") or _o.get("chart_type") or _o.get("label") or _o.get("field") or _o.get("grain") or ""
+        if _key and (_key in msg or msg in _key):
+            _kw_opt = _o
+            break
+
+    _opt = None
+    if _idx is not None and 1 <= _idx <= len(options):
+        _opt = options[_idx - 1]
+    elif _kw_opt:
+        _opt = _kw_opt
+    if not _opt:
+        return None
+
+    # 3) 按 reason 构造待执行动作
+    if reason == "which_chart":
+        return {
+            "type": "change_chart",
+            "params": {"chart_id": _opt.get("chart_id"), "target_type": pp.get("target_type")},
+            "clause": message, "intent_type": "change_chart", "confidence": 85,
+            "classified_by": "pending_clarify",
+        }
+    if reason == "vague_chart_type":
+        return {
+            "type": "change_chart",
+            "params": {"title_keyword": pp.get("title_keyword"), "target_type": _opt.get("chart_type") or _opt.get("label")},
+            "clause": message, "intent_type": "change_chart", "confidence": 85,
+            "classified_by": "pending_clarify",
+        }
+    if reason == "contradictory_grain":
+        return {
+            "type": "filter_drill",
+            "params": {"aggregation": _opt.get("grain") or _opt.get("label")},
+            "clause": message, "intent_type": "filter_drill", "confidence": 85,
+            "classified_by": "pending_clarify",
+        }
+    if reason == "field_not_found":
+        # best-effort：用选中的真实字段替换原 clause 里的坏字段后，复用 planner 再规划一次
+        _bad = pp.get("bad_field")
+        _chosen = _opt.get("field") or _opt.get("label")
+        _new_clause = pp.get("clause") or message
+        if _bad and _chosen and _bad in (_new_clause or ""):
+            _new_clause = (_new_clause or "").replace(_bad, _chosen)
+        try:
+            _re = plan_actions(_new_clause, context)
+            _acts = _re.get("actions") or []
+            if _acts:
+                _acts[0]["classified_by"] = "pending_clarify"
+                return _acts[0]
+        except Exception:
+            return None
+        return None
+    return None
 
 
 def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confidence: int) -> Optional[Dict[str, Any]]:
@@ -281,6 +369,26 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
     clauses = split_clauses(message)
     field_names = _field_names(context)
 
+    # ---- P0-3 澄清循环承接：上一轮被问"改哪张/哪种图/哪个字段"，本轮给短答案 ----
+    # 优先尝试把短答案解析成完整动作，命中则直接短路返回，避免重新分类时落 UNKNOWN 或重复澄清。
+    _pending = (context or {}).get("pending_clarify")
+    if _pending:
+        _resolved = _resolve_pending_clarify(message, _pending, context)
+        if _resolved:
+            return {
+                "is_compound": False,
+                "actions": [_resolved],
+                "clauses": [message],
+                "unparsed_clauses": [],
+                "primary_intent": {
+                    "intent_type": _resolved["intent_type"],
+                    "confidence": _resolved["confidence"],
+                    "analysis": {"raw_message": message, "extracted_params": _resolved.get("params", {})},
+                    "is_confident": True,
+                    "classified_by": "pending_clarify",
+                },
+            }
+
     # ---- 全局歧义：粒度冲突（一句话里同时要两种粒度）----
     contra = detect_contradictory_grain(message)
     if contra:
@@ -321,9 +429,30 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
                         params["title_keyword"] = _tk
                     elif _last.get("chart_id"):
                         params["chart_id"] = _last.get("chart_id")
+            # P0-3：「把图改成饼图」——目标图型已知但没点名哪张图，且看板有多张图，
+            # 必须先澄清"改哪张"（携带 which_chart pending，下一轮用序号/图名接住），
+            # 杜绝"无主语兜底改第一张非目标类型图"这种答非所问。
+            if not params.get("title_keyword") and not params.get("chart_id"):
+                _charts = (context or {}).get("current_config", {}).get("charts", []) or []
+                if params.get("target_type") and len(_charts) >= 2:
+                    actions.append(_clarify_action(
+                        "which_chart",
+                        "你想改哪一张图？请告诉我图名，或直接回复序号（如「第二张」）。",
+                        clause,
+                        [{"chart_id": c.get("id"), "title": c.get("title"), "chart_type": c.get("chart_type")}
+                         for c in _charts],
+                        pending={"intent_type": "change_chart", "target_type": params.get("target_type")},
+                    ))
+                    if primary is None:
+                        primary = result
+                    continue
             vague = detect_vague_chart_type(clause, params)
             if vague:
-                actions.append(_clarify_action(vague["reason"], vague["message"], clause, vague.get("options")))
+                # P0-3：vague_chart_type 也携带 pending（已知图名时下一轮用图型名接住）
+                _vague_pending = None
+                if params.get("title_keyword"):
+                    _vague_pending = {"intent_type": "change_chart", "title_keyword": params.get("title_keyword")}
+                actions.append(_clarify_action(vague["reason"], vague["message"], clause, vague.get("options"), pending=_vague_pending))
                 if primary is None:
                     primary = result
                 continue
@@ -339,6 +468,7 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
                 f"当前可用字段：{avail}。请换成其中一个再试。",
                 clause,
                 [{"field": f, "label": f} for f in field_names[:8]],
+                pending={"intent_type": itype, "bad_field": missing[0], "clause": clause},
             ))
             if primary is None:
                 primary = result

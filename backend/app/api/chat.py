@@ -587,6 +587,9 @@ async def send_message_stream(
     _persisted = (session.context or {}).get("memory") if session else None
     context["memory"] = _persisted if _persisted else _build_memory_from_history(context.get("history", []))
 
+    # P0-3：承接上一轮的澄清（用户上轮被问"改哪张/哪种图"，本轮给短答案时用）
+    context["pending_clarify"] = (session.context or {}).get("pending_clarify") if session else None
+
     # ==== 阶段2: 内容审核（也在流外完成，避免在生成器中使用db）====
     moderation_result = check_moderation(request.message)
     
@@ -929,19 +932,41 @@ async def send_message_stream(
         async with async_session_factory() as stream_db:
             try:
                 # P0-1：动作成功后把"本次改了哪张图/字段/口径"回写到会话记忆，供下一轮指代消解
+                # P0-3：本轮若产出了 clarify（带 pending 载荷），持久化到会话，供下一轮合并承接；
+                #       若本轮成功执行了真实动作（澄清被接住），则清除遗留的 pending_clarify。
                 if response_data.get("action_results"):
                     _last_act = _extract_last_action(response_data, last_new_config)
-                    if _last_act:
-                        _sess = await stream_db.get(ChatSession, session_id)
-                        if _sess is not None:
-                            _sctx = _sess.context or {}
+                    # 扫描本轮动作是否产出了 clarify
+                    _clarify_pending = None
+                    for _a in (plan.get("actions") or []):
+                        if _a.get("type") == "clarify":
+                            _cp = (_a.get("params") or {})
+                            _clarify_pending = {
+                                "reason": _cp.get("reason"),
+                                "clause": _a.get("clause"),
+                                "intent_type": _a.get("intent_type"),
+                                "partial_params": _cp.get("pending") or {},
+                                "options": _cp.get("options") or [],
+                                "created_at": datetime.utcnow().isoformat(),
+                            }
+                            break
+                    _sess = await stream_db.get(ChatSession, session_id)
+                    if _sess is not None:
+                        _sctx = _sess.context or {}
+                        if _last_act:
                             _sctx["memory"] = {
                                 "last_action": _last_act,
                                 "updated_at": datetime.utcnow().isoformat()
                             }
-                            _sess.context = _sctx
-                            from sqlalchemy.orm.attributes import flag_modified as _fm
-                            _fm(_sess, "context")
+                        if _clarify_pending:
+                            _sctx["pending_clarify"] = _clarify_pending
+                        elif _last_act:
+                            # 真实动作成功执行 → 澄清已被接住，清除 pending_clarify
+                            _sctx.pop("pending_clarify", None)
+                        # 既没澄清也没真实动作（闲聊/unknown）→ 保留 pending_clarify 等待下次回答
+                        _sess.context = _sctx
+                        from sqlalchemy.orm.attributes import flag_modified as _fm
+                        _fm(_sess, "context")
                 await save_chat_message(
                     stream_db, session_id, request.message, intent_result, 
                     response_data, current_user
