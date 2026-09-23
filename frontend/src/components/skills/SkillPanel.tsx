@@ -11,6 +11,7 @@
  */
 import React, { useEffect, useState } from 'react'
 import { Tag, Tooltip } from 'antd'
+import { authHeaders } from '../../utils/request'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 
@@ -39,8 +40,8 @@ export default function SkillPanel({ panelKind, tags, title, children, className
   useEffect(() => {
     let alive = true
     const key = (tags || []).join(',')
-    // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /skills，按设计不带 token
-    fetch(`${API_BASE}/skills`)
+    // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /skills，ISS-025 端点已加鉴权，前端必须带 token
+    fetch(`${API_BASE}/skills`, { headers: authHeaders() })
       .then((r) => r.json())
       .then((d: { skills?: SkillMetaLite[] }) => {
         if (!alive) return

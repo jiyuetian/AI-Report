@@ -216,8 +216,8 @@ export default function QualityCheckPanel({
     const timer = setInterval(async () => {
       attempts++
       try {
-        // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，按设计不带 token
-        const res = await fetch(`${API_BASE}/quality/check/ai/${dsId}`)
+        // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
+        const res = await fetch(`${API_BASE}/quality/check/ai/${dsId}`, { headers: authHeaders() })
         const data = await res.json()
         if (data.status === 'done') {
           clearInterval(timer)
@@ -314,10 +314,10 @@ export default function QualityCheckPanel({
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 45000)
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，按设计不带 token
+      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
       const response = await fetch(`${API_BASE}/quality/check`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataset_id: datasetId }),
         signal: ctrl.signal,
       })
@@ -439,10 +439,10 @@ export default function QualityCheckPanel({
     setFixing(true)
     message.loading({ content: '正在应用修复方案，请稍候...', key: 'fix', duration: 0 })
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，按设计不带 token
+      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
       const response = await fetch(`${API_BASE}/quality/fix`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dataset_id: datasetId,
           issue_type: checkKey,
@@ -527,10 +527,10 @@ export default function QualityCheckPanel({
     setApplyingPlan(true)
     message.loading({ content: `正在按推荐方案批量修复 ${plan.length} 项...`, key: 'plan', duration: 0 })
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，按设计不带 token
+      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
       const resp = await fetch(`${API_BASE}/quality/fix-batch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataset_id: datasetId, items: plan }),
       })
       const data = await resp.json().catch(() => ({}))

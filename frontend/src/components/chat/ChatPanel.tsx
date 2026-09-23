@@ -83,8 +83,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   // 获取Token状态
   const fetchTokenStatus = async () => {
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /tokens/status，按设计不带 token（过期 token 会打挂）
-      const res = await fetch('/api/v1/tokens/status');
+      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /tokens/status，ISS-025 端点已加鉴权，前端必须带 token
+      const res = await fetch('/api/v1/tokens/status', { headers: authHeaders() });
       const data = await res.json();
       if (data.quota) {
         setTokenStatus(data.quota);
@@ -159,10 +159,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   // 创建会话
   const createSession = async () => {
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，按设计不带 token
+      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，ISS-025 端点已加鉴权，前端必须带 token
       const res = await fetch('/api/v1/chat/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dashboard_id: dashboardId })
       });
       const data = await res.json();
@@ -218,10 +218,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
     // SSE流式请求
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，按设计不带 token
+      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，ISS-025 端点已加鉴权，前端必须带 token
       const res = await fetch('/api/v1/chat/message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: sid,
           message: content,
