@@ -1,0 +1,23 @@
+# Ruff 基线配置 —— ISS-025 A2「加 lint 规则」交付物
+# 说明：仅提供静态检查基线，尚未接入 CI。
+# 启用：`pip install ruff && ruff check backend`
+# 格式化：`ruff format backend`
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes（捕获未定义/未使用）
+    "W",   # pycodestyle warnings
+    "I",   # isort（import 排序）
+    "B",   # flake8-bugbear（常见 bug 模式）
+    "UP",  # pyupgrade（现代化语法）
+]
+ignore = [
+    "E501",  # 行长由 formatter 处理，不单独报错
+    "B008",  # FastAPI 中 Depends() 作为默认参数是正常用法，非调用即执行
+]
+
+[format]
+quote-style = "double"

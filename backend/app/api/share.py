@@ -32,7 +32,7 @@ class ShareVerifyRequest(BaseModel):
 async def create_share(
     request: CreateShareRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: Dict = Depends(get_current_user)
+    current_user: Dict = Depends(get_current_user)  # ISS-025 P0：创建分享强制登录，created_by 归属真实用户
 ):
     """
     创建分享链接

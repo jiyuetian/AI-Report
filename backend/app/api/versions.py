@@ -86,7 +86,7 @@ async def rollback_version(
     dashboard_id: str,
     request: RollbackRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: Dict = Depends(get_current_user)
+    current_user: Dict = Depends(get_current_user)  # ISS-025 P0：版本回退强制登录，防止任意看板被匿名回退
 ):
     """回退到指定版本"""
     user_id = current_user["user_id"]
