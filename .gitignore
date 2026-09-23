@@ -92,3 +92,5 @@ backend/probe_out.txt
 backend/.backend.pid
 backend/verify_n1_*.py
 backend/scripts/_*.py
+# === 含明文密钥，禁止 push（复盘文档）===
+docs/project_record/07-完整复盘.md
