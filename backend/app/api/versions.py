@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.version_manager import VersionManager
 
 router = APIRouter(prefix="/versions", tags=["Versions"])
@@ -85,9 +86,10 @@ async def rollback_version(
     dashboard_id: str,
     request: RollbackRequest,
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """回退到指定版本"""
+    user_id = current_user["user_id"]
     try:
         result = await VersionManager.rollback_to_version(
             db, dashboard_id, request.version_id, user_id

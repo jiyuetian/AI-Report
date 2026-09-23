@@ -32,7 +32,7 @@ class ShareVerifyRequest(BaseModel):
 async def create_share(
     request: CreateShareRequest,
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     创建分享链接
@@ -43,6 +43,7 @@ async def create_share(
     - 设置有效期
     - 可选密码保护
     """
+    user_id = current_user["user_id"]
     try:
         result = await ShareService.create_share(
             db,

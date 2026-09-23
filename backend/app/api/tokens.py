@@ -10,7 +10,7 @@ from datetime import datetime
 
 from app.core.database import get_db
 from app.core.token_manager import TokenManager, schedule_daily_reset
-from app.core.security import require_admin
+from app.core.security import require_admin, get_optional_user
 from app.models.chat import TokenQuota, TokenApplication
 
 router = APIRouter(prefix="/tokens", tags=["Tokens-Token管理"])
@@ -160,13 +160,25 @@ async def trigger_scheduled_reset(
 @router.get("/status", response_model=Dict)
 async def get_full_status(
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Optional[Dict] = Depends(get_optional_user)
 ):
     """
     获取完整Token状态 (含预警信息)
+    可选鉴权（ISS-025 C 类）：无 token 返回匿名最小信息，有 token 返回完整配额。
     """
-    quota = await TokenManager.get_quota_status(db, current_user)
-    
+    if current_user is None:
+        # 匿名视角：仅告知配额系统可用，不泄露任何用户数据
+        return {
+            "authenticated": False,
+            "token_available": True,
+            "quota": None,
+            "warning": None,
+            "input_disabled": False,
+            "show_warning_bar": False,
+        }
+    user_id = current_user["user_id"]
+    quota = await TokenManager.get_quota_status(db, user_id)
+
     # 构建预警文案
     warning_message = None
     if quota["status"] == "exhausted":
@@ -183,9 +195,10 @@ async def get_full_status(
             "content": f"已使用{quota['usage_percent']:.0f}%，剩余{quota['remaining']}Token，建议及时申请加量",
             "action": "申请加量"
         }
-    
+
     return {
-        "user_id": current_user,
+        "user_id": user_id,
+        "authenticated": True,
         "quota": quota,
         "warning": warning_message,
         "input_disabled": quota["is_exhausted"],

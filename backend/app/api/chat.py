@@ -439,7 +439,7 @@ async def send_message_stream(
     request: ChatMessageRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    _auth: Dict = Depends(get_current_user)
 ):
     """
     发送消息 - SSE流式响应 (修复：db session生命周期)
@@ -450,6 +450,7 @@ async def send_message_stream(
     - 在流式生成器外完成session的获取/创建（使用传入的db）
     - 在流式生成器内使用独立的db session进行消息保存
     """
+    current_user = _auth["user_id"]  # ISS-025: 取服务端登录身份，禁止匿名调用
     from app.core.database import async_session_factory
     from app.core.feasibility_checker import check_feasibility
     from app.core.event_logger import log_user_action
