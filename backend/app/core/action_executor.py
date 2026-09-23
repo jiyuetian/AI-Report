@@ -140,6 +140,24 @@ class ActionExecutor:
                 if source_type and chart.get("chart_type") == source_type:
                     target_chart = chart
                     break
+        # 2026-09-24 修复（P0-3 遗留）：三个锚点（图名/chart_id/源图型）一个都没给、且看板有多张图时，
+        # 下面的兜底会挑"第一张还不是目标类型的图"去改 —— 实测把用户的 KPI 卡改掉了，
+        # 这正是"无主语兜底改第一张"的答非所问。此时必须澄清，绝不猜。
+        if (target_chart is None and len(charts) >= 2
+                and not title_kw and not chart_id and not source_type):
+            _names = "、".join(
+                [(c.get("title") or "第%d张" % (i + 1)) for i, c in enumerate(charts[:8])]
+            )
+            return {
+                "success": False,
+                "action_type": "change_chart",
+                "requires_clarify": True,
+                "reason": "which_chart",
+                "options": [{"chart_id": c.get("id"), "title": c.get("title"),
+                             "chart_type": c.get("chart_type")} for c in charts],
+                "error": f"你想改哪一张图？可选：{_names}（回复图名或序号，例如「第二张」）。",
+            }
+
         if target_chart is None and charts:
             target_chart = next(
                 (c for c in charts if c.get("chart_type") != target_type), None

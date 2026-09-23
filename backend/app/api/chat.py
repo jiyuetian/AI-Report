@@ -740,7 +740,12 @@ async def send_message_stream(
         await asyncio.sleep(0.5)
         
         # 5. 生成响应（纯内存操作，无DB）
-        intent_type = IntentType(intent_result["intent_type"])
+        # 2026-09-24 修复（P0-3 遗留）：clarify 不是 IntentType 成员（IntentType 只描述业务意图），
+        # 澄清/追问场景下直接构造枚举会抛 ValueError 并中断整条流，导致"没有回复、pending 没落库"。
+        try:
+            intent_type = IntentType(intent_result["intent_type"])
+        except ValueError:
+            intent_type = IntentType.UNKNOWN
         # UNKNOWN 意图或低置信度时，调用 LLM 生成自然语言回复，避免答非所问
         if plan.get("actions"):
             # 规划器已产出动作列表（单指令=1项，行为不变；复合指令=多项，依次执行）

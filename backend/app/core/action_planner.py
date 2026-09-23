@@ -312,6 +312,22 @@ def _clarify_action(reason: str, message: str, clause: str, options=None, pendin
     }
 
 
+def _detect_chart_anchor(msg: str, charts: list) -> Optional[str]:
+    """P0-3 遗留修复：从用户短答案里找是否点名了某张图（按图名子串命中），返回图名或 None。
+
+    背景：真实生成的看板里图表 id 大量为 null，「第2张/某个图名」是唯一可靠锚点。
+    拿不到锚点就必须继续追问，不能让执行器去兜底改第一张图。
+    """
+    if not charts or not msg:
+        return None
+    _m = (msg or "").strip()
+    for _c in charts:
+        _t = (_c.get("title") or "").strip()
+        if _t and _t in _m:
+            return _t
+    return None
+
+
 def _resolve_pending_clarify(message: str, pending: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """P0-3 澄清循环承接：用户上一轮被问"改哪张/哪种图/哪个字段/哪种粒度"，本轮给短答案，
     把短答案解析成完整的待执行动作，避免重新分类时落 UNKNOWN。
@@ -355,17 +371,42 @@ def _resolve_pending_clarify(message: str, pending: Dict[str, Any], context: Dic
         return None
 
     # 3) 按 reason 构造待执行动作
+    _charts = (context or {}).get("current_config", {}).get("charts", []) or []
+
     if reason == "which_chart":
         return {
             "type": "change_chart",
-            "params": {"chart_id": _opt.get("chart_id"), "target_type": pp.get("target_type")},
+            # 2026-09-24 修复（P0-3 遗留）：AI 生成的看板里图表 id 常为 null，
+            # 只带 chart_id 等于没锚点，执行器会兜底改"第一张还不是目标类型的图"，
+            # 实测把第 1 张 KPI 卡改成了目标图型。补 title_keyword 让无 id 看板也能精确定位。
+            "params": {"chart_id": _opt.get("chart_id"),
+                       "title_keyword": _opt.get("title"),
+                       "target_type": pp.get("target_type")},
             "clause": message, "intent_type": "change_chart", "confidence": 85,
             "classified_by": "pending_clarify",
         }
     if reason == "vague_chart_type":
+        _target = _opt.get("chart_type") or _opt.get("label")
+        # 2026-09-24 修复（P0-3 遗留）：上一轮问的是"改成哪种图"，本轮用户答了图型，
+        # 但仍然没说改哪一张图 -> 继续追问"改哪张"，不许拿第一张图兜底。
+        _anchor_kw = pp.get("title_keyword") or _detect_chart_anchor(msg, _charts)
+        _anchor_id = pp.get("chart_id")
+        if not _anchor_kw and not _anchor_id and len(_charts) >= 2:
+            _names = "、".join(
+                [(c.get("title") or "第%d张" % (i + 1)) for i, c in enumerate(_charts[:8])]
+            )
+            return _clarify_action(
+                "which_chart",
+                f"好的，改成{_target}。请告诉我要改哪一张图：{_names}"
+                f"（回复图名或序号即可，例如「第二张」）。",
+                message,
+                [{"chart_id": c.get("id"), "title": c.get("title"), "chart_type": c.get("chart_type")}
+                 for c in _charts],
+                pending={"intent_type": "change_chart", "target_type": _target},
+            )
         return {
             "type": "change_chart",
-            "params": {"title_keyword": pp.get("title_keyword"), "target_type": _opt.get("chart_type") or _opt.get("label")},
+            "params": {"chart_id": _anchor_id, "title_keyword": _anchor_kw, "target_type": _target},
             "clause": message, "intent_type": "change_chart", "confidence": 85,
             "classified_by": "pending_clarify",
         }
@@ -481,7 +522,13 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
                 "clauses": [message],
                 "unparsed_clauses": [],
                 "primary_intent": {
-                    "intent_type": _resolved["intent_type"],
+                    # 2026-09-24 修复（P0-3 遗留）：承接后若判定"还得再追问"，本结构是 clarify，
+                    # 而 "clarify" 不是 IntentType 成员，chat.py 的 IntentType(...) 会抛 ValueError，
+                    # 把整条 SSE 流打断 —— 追问既没落到 session 也没回给用户（实测无任何回复）。
+                    # 追问时保留用户原本的意图（如 change_chart），语义不丢。
+                    "intent_type": (_pending.get("intent_type")
+                                    if _resolved.get("type") == "clarify" and _pending.get("intent_type")
+                                    else _resolved["intent_type"]),
                     "confidence": _resolved["confidence"],
                     "analysis": {"raw_message": message, "extracted_params": _resolved.get("params", {})},
                     "is_confident": True,
