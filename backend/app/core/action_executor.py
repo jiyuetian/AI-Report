@@ -308,8 +308,8 @@ class ActionExecutor:
                     return nm
             return ""
 
+        skipped = 0  # P0-1 修复：单图路径(else 分支)也会在下方引用 skipped，必须在分支外初始化，否则单图 add_chart 抛 UnboundLocalError
         if charts_spec:
-            skipped = 0
             def _strict_match(cand, role):
                 """2026-09-21 修复（1.5 垃圾图）：严格匹配真实字段，不做"首个字段"回退，
                 避免把无关字段臆造成垃圾图。仅当候选名精确或子串命中真实字段才返回。"""

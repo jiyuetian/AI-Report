@@ -65,6 +65,11 @@ _FIELD_TOKEN_PATTERNS = [
 ]
 _TOKEN_LEAD_NOISE = re.compile(r"^(?:把|将|用|按|以|根据|按照|对|从|这个|那个|的)")
 
+# 指代消解（P0-1）："再来一个/再加一张/另一个"等无动词、承接上一轮动作的请求
+_ADD_REPEAT_RE = re.compile(
+    r"再来[一一个张]|再加[一一个张]|另一个|也[加来]一个|再给我[一一个张]|复制[一一个张]|多来[一一个张]"
+)
+
 
 def split_clauses(message: str) -> List[str]:
     """把复合指令拆成有序子句。拆不开就原样返回单元素列表（保证单指令行为不变）。"""
@@ -230,6 +235,36 @@ def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confiden
     }
 
 
+def _resolve_history_anaphora(message: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """P0-1 指代消解：用户说"再来一个/再加一张"等无动词、承接上一轮动作的请求。
+
+    仅当上下文记忆里存在上一次图表动作（change_chart/add_chart）时才生效，
+    产出"再加一张类似图"的 add_chart 动作（复用上次的图型与真实字段），不落 UNKNOWN。
+    """
+    last = (context or {}).get("memory", {}).get("last_action")
+    if not last or not last.get("action_type"):
+        return None
+    if not _ADD_REPEAT_RE.search(message or ""):
+        return None
+    if last["action_type"] in ("change_chart", "add_chart"):
+        params = {
+            "chart_type": last.get("chart_type") or "bar",
+            "dimension_field": last.get("dimension_field"),
+            "metric_field": last.get("metric_field") or last.get("value_field"),
+            "title": (last.get("title") or "图表") + "（类似）",
+            "source": "history_repeat",
+        }
+        return {
+            "type": "add_chart",
+            "params": params,
+            "clause": message,
+            "intent_type": "add_chart",
+            "confidence": 80,
+            "classified_by": "history",
+        }
+    return None
+
+
 def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = False) -> Dict[str, Any]:
     """把一条用户消息规划成有序动作列表。
 
@@ -277,6 +312,15 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
 
         # ---- 单点歧义 1：换图但没说/说得模糊 ----
         if itype == IntentType.CHANGE_CHART.value:
+            # P0-1 指代消解：「就改成折线图」无主语时，锁定上一轮操作的图（memory.last_action）
+            if not params.get("title_keyword") and not params.get("chart_id"):
+                _last = (context or {}).get("memory", {}).get("last_action")
+                if _last and _last.get("action_type") in ("change_chart", "add_chart"):
+                    _tk = _last.get("title") or ""
+                    if _tk:
+                        params["title_keyword"] = _tk
+                    elif _last.get("chart_id"):
+                        params["chart_id"] = _last.get("chart_id")
             vague = detect_vague_chart_type(clause, params)
             if vague:
                 actions.append(_clarify_action(vague["reason"], vague["message"], clause, vague.get("options")))
@@ -317,6 +361,19 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
             "analysis": {"raw_message": message, "extracted_params": {}},
             "is_confident": False, "classified_by": "planner",
         }
+
+    # P0-1 指代消解：「再来一个/再加一张」等无动词指代 → 承接上一轮动作（memory.last_action）
+    if not actions and unparsed:
+        _ana = _resolve_history_anaphora(message, context)
+        if _ana:
+            actions.append(_ana)
+            primary = {
+                "intent_type": _ana["intent_type"],
+                "confidence": _ana["confidence"],
+                "analysis": {"raw_message": message, "extracted_params": _ana["params"]},
+                "is_confident": True,
+                "classified_by": "history",
+            }
 
     return {
         "is_compound": len(actions) > 1,

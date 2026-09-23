@@ -273,6 +273,23 @@ async def generate_llm_natural_response(
         "3. 用户想调整看板时，引导使用具体指令（如把饼图改成柱图、新增一个趋势图）\n"
         "4. 回答简洁、专业、有用，中文回复，控制在200字内\n"
         "5. 数据里没有的信息要坦诚说明，不要编造\n\n"
+    )
+
+    # P0-1：注入最近对话历史，使 UNKNOWN/闲聊轮能承接上一句（"再来一个/刚才那个/就改成"）
+    _hist = context.get("history") or []
+    if _hist:
+        _hist_lines = []
+        for _m in _hist[-6:]:
+            _line = f"  {_m.get('role')}: {_m.get('content')}"
+            if _m.get("action_type"):
+                _line += f" (执行:{_m.get('action_type')})"
+            _hist_lines.append(_line)
+        default_prompt += (
+            "## 最近对话历史（承接上下文用；若用户说'再来一个/刚才那个/就改成X'，请结合此处理解）\n"
+            + "\n".join(_hist_lines) + "\n\n"
+        )
+
+    default_prompt += (
         f"用户消息: {user_message}\n\n"
         "请直接回复用户（纯文本，不要JSON）。"
     )
@@ -541,7 +558,35 @@ async def send_message_stream(
         },
         "current_config": current_config
     }
-    
+
+    # P0-1：注入对话历史 + 纠正记忆，使"再来一个/就改成"能承接上一句
+    # 历史：查 ChatMessage 最近 10 轮（user/assistant/action）
+    try:
+        _hist_rows = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(10)
+        )
+        _hist_msgs = list(reversed(_hist_rows.scalars().all()))
+        context["history"] = [
+            {
+                "role": m.role,
+                "content": m.content,
+                "action_type": m.action_type,
+                "action_params": m.action_params,
+                "action_result": m.action_result,
+            }
+            for m in _hist_msgs
+        ]
+    except Exception as e:
+        print(f"[Chat] 读取对话历史失败(忽略): {e}")
+        context["history"] = []
+
+    # 记忆：优先用会话持久化的 memory（每次成功动作后回写），否则从历史上一轮推导
+    _persisted = (session.context or {}).get("memory") if session else None
+    context["memory"] = _persisted if _persisted else _build_memory_from_history(context.get("history", []))
+
     # ==== 阶段2: 内容审核（也在流外完成，避免在生成器中使用db）====
     moderation_result = check_moderation(request.message)
     
@@ -883,6 +928,20 @@ async def send_message_stream(
         # 修复：在流式生成器内创建新的db session，避免依赖注入的session已关闭
         async with async_session_factory() as stream_db:
             try:
+                # P0-1：动作成功后把"本次改了哪张图/字段/口径"回写到会话记忆，供下一轮指代消解
+                if response_data.get("action_results"):
+                    _last_act = _extract_last_action(response_data, last_new_config)
+                    if _last_act:
+                        _sess = await stream_db.get(ChatSession, session_id)
+                        if _sess is not None:
+                            _sctx = _sess.context or {}
+                            _sctx["memory"] = {
+                                "last_action": _last_act,
+                                "updated_at": datetime.utcnow().isoformat()
+                            }
+                            _sess.context = _sctx
+                            from sqlalchemy.orm.attributes import flag_modified as _fm
+                            _fm(_sess, "context")
                 await save_chat_message(
                     stream_db, session_id, request.message, intent_result, 
                     response_data, current_user
@@ -920,6 +979,77 @@ async def send_message_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+def _build_memory_from_history(history):
+    """从对话历史推导"最近一次成功动作"记忆（P0-1 兜底：无持久化记忆时用于指代消解）。"""
+    last_action = None
+    for _m in reversed(history or []):
+        _at = _m.get("action_type")
+        if not _at or _at == "unknown":
+            continue
+        if not (_m.get("action_result") or _m.get("action_params")):
+            continue
+        _ar = _m.get("action_result") or {}
+        _ap = _m.get("action_params") or {}
+        last_action = {
+            "role": _m.get("role"),
+            "content": _m.get("content"),
+            "action_type": _at,
+            "chart_type": _ap.get("target_type") or _ap.get("chart_type") or (_ar.get("to") if isinstance(_ar, dict) else None),
+            "title": _ap.get("title_keyword") or _ap.get("title"),
+            "chart_id": (_ar.get("chart_id") if isinstance(_ar, dict) else None),
+            "dimension_field": _ap.get("dimension_field"),
+            "metric_field": _ap.get("metric_field") or _ap.get("value_field") or _ap.get("y_field"),
+        }
+        break
+    return {"last_action": last_action}
+
+
+def _extract_last_action(response_data, new_config):
+    """从执行结果里提取"最近一次成功动作"的图表事实，回写到会话记忆（P0-1）。"""
+    for _r in (response_data.get("action_results") or []):
+        if not _r.get("success"):
+            continue
+        _atype = _r.get("type")
+        if _atype not in ("change_chart", "add_chart", "delete_chart", "filter_drill", "edit_title", "attribution"):
+            continue
+        _cid = None
+        _to = None
+        for _ch in (_r.get("changes") or []):
+            _cid = _ch.get("chart_id") or _ch.get("added_chart") or _cid
+            if _to is None:
+                _to = _ch.get("to")
+        _ctype = _title = _dim = _metric = None
+        _target = None
+        if new_config:
+            for _c in new_config.get("charts", []):
+                if _cid and _c.get("id") == _cid:
+                    _target = _c
+                    break
+            # 兜底：change_chart 无 chart_id 时按新图型定位（看板图表可能缺 id）
+            if _target is None and _to and _atype == "change_chart":
+                for _c in new_config.get("charts", []):
+                    if _c.get("chart_type") == _to:
+                        _target = _c
+                        break
+            # 兜底：仍无则取最后一张图
+            if _target is None and new_config.get("charts"):
+                _target = new_config["charts"][-1]
+        if _target:
+            _ctype = _target.get("chart_type")
+            _title = _target.get("title")
+            _dim = _target.get("x_field") or _target.get("category_field")
+            _metric = _target.get("y_field") or _target.get("value_field")
+        return {
+            "action_type": _atype,
+            "chart_id": _cid,
+            "chart_type": _ctype,
+            "title": _title,
+            "dimension_field": _dim,
+            "metric_field": _metric,
+        }
+    return None
 
 
 async def save_chat_message(
