@@ -356,3 +356,261 @@
 `core/export_service.py:190` 的 `http://127.0.0.1:8000/downloads/...` 只是拼下载 URL 字符串，不是请求。
 
 → **结论：给管线端点加鉴权不会断内部链路。**
+
+---
+
+## 附录 B：134 个无 security 操作 —— 完整分类表（2026-09-23 OpenAPI 全量扫描）
+
+> 扫描来源：`GET /openapi.json`，遍历 `paths[method].security`，空即无鉴权。
+> 总操作数 193，无 security 声明 **134** 个。
+
+### B.0 统计总览
+
+- **A 类（有意公开，不改）**：10 个
+- **测试端点（_internal/golden/loadtest/chat-test/quality-debug，本轮不修）**：38 个
+- **C 类（用户拍板：可选鉴权）**：1 个（仅 `tokens/status`）
+- **真漏必须修**：85 个  ← ISS-025 真实工作量
+  - 其中 P0（写/烧配额/数据导出）：见下表
+  - P1（读他人数据/有限写）：见下表
+  - P2（只读/参考类）：见下表
+
+> ⚠️ 上一轮手探只找到 14 个、先报 13 个 B 类 —— **那是严重低估**。OpenAPI 全量扫描显示真漏是 **85 个**（含 P0 35 个）。本轮只修用户指定的 3 个 P0 + tokens/status + 7 处裸 fetch；其余 真漏 进 ISS-025  backlog 按优先级排期。
+
+### B.1 完整分类表
+
+| # | 方法 | 端点 | 分类 | 优先级 | 说明 |
+|---|------|------|------|--------|------|
+| 1 | GET | `/` | A | - | 根路由/文档重定向 |
+| 2 | GET | `/api/v1/auth/captcha` | A | - | 登录前图形验证码 |
+| 3 | POST | `/api/v1/auth/forgot-password/reset` | A | - | 找回密码流程（发码/验码/重置） |
+| 4 | POST | `/api/v1/auth/forgot-password/send-code` | A | - | 找回密码流程（发码/验码/重置） |
+| 5 | POST | `/api/v1/auth/forgot-password/verify-code` | A | - | 找回密码流程（发码/验码/重置） |
+| 6 | POST | `/api/v1/auth/login` | A | - | 登录 |
+| 7 | POST | `/api/v1/auth/register` | A | - | 注册 |
+| 8 | GET | `/api/v1/health` | A | - | 健康检查，LB/探针必需 |
+| 9 | GET | `/api/v1/shares/{share_code}` | A | - | 公开分享页（持链接即可看，设计公开） |
+| 10 | POST | `/api/v1/shares/{share_code}/verify` | A | - | 公开分享密码校验（设计公开） |
+| 11 | POST | `/api/v1/brain/_internal/init-configs` | 测试 | - | _internal 测试桩 |
+| 12 | POST | `/api/v1/brain/_internal/test-orchestrate` | 测试 | - | _internal 测试桩 |
+| 13 | POST | `/api/v1/brain/_internal/test-retry` | 测试 | - | _internal 测试桩 |
+| 14 | POST | `/api/v1/brain/_internal/test-score` | 测试 | - | _internal 测试桩 |
+| 15 | POST | `/api/v1/brain/s1/_internal/test-v2-tables` | 测试 | - | _internal 测试桩 |
+| 16 | POST | `/api/v1/brain/s2/_internal/test-v2-tables` | 测试 | - | _internal 测试桩 |
+| 17 | POST | `/api/v1/brain/s3/_internal/test-01-table` | 测试 | - | _internal 测试桩 |
+| 18 | POST | `/api/v1/brain/s3/_internal/test-grain-constraints` | 测试 | - | _internal 测试桩 |
+| 19 | POST | `/api/v1/brain/s3/_internal/test-self-healing` | 测试 | - | _internal 测试桩 |
+| 20 | GET | `/api/v1/chat/test/action-examples` | 测试 | - | 对话能力测试样例 |
+| 21 | GET | `/api/v1/chat/test/intent-examples` | 测试 | - | 对话能力测试样例 |
+| 22 | POST | `/api/v1/chat/test/moderation` | 测试 | - | 对话能力测试样例 |
+| 23 | POST | `/api/v1/chat/test/retry` | 测试 | - | 对话能力测试样例 |
+| 24 | GET | `/api/v1/golden/acceptance-check` | 测试 | - | Golden 回归测试套件 |
+| 25 | GET | `/api/v1/golden/datasets` | 测试 | - | Golden 回归测试套件 |
+| 26 | GET | `/api/v1/golden/datasets/{dataset_id}` | 测试 | - | Golden 回归测试套件 |
+| 27 | POST | `/api/v1/golden/export-report/{report_id}` | 测试 | - | Golden 回归测试套件 |
+| 28 | GET | `/api/v1/golden/report/{report_id}` | 测试 | - | Golden 回归测试套件 |
+| 29 | GET | `/api/v1/golden/reports/latest` | 测试 | - | Golden 回归测试套件 |
+| 30 | POST | `/api/v1/golden/run` | 测试 | - | Golden 回归测试套件 |
+| 31 | POST | `/api/v1/golden/run-single/{dataset_id}` | 测试 | - | Golden 回归测试套件 |
+| 32 | GET | `/api/v1/golden/stats/summary` | 测试 | - | Golden 回归测试套件 |
+| 33 | GET | `/api/v1/llm/_internal/test-mock-response` | 测试 | - | _internal 测试桩 |
+| 34 | GET | `/api/v1/llm/_internal/test-mock-s1` | 测试 | - | _internal 测试桩 |
+| 35 | POST | `/api/v1/llm/_internal/test-retry` | 测试 | - | _internal 测试桩 |
+| 36 | GET | `/api/v1/loadtest/acceptance-check` | 测试 | - | 压测套件 |
+| 37 | POST | `/api/v1/loadtest/chart-10k` | 测试 | - | 压测套件 |
+| 38 | POST | `/api/v1/loadtest/concurrent-chat` | 测试 | - | 压测套件 |
+| 39 | GET | `/api/v1/loadtest/report/{report_id}` | 测试 | - | 压测套件 |
+| 40 | GET | `/api/v1/loadtest/reports/latest` | 测试 | - | 压测套件 |
+| 41 | POST | `/api/v1/loadtest/run` | 测试 | - | 压测套件 |
+| 42 | POST | `/api/v1/loadtest/upload-100k` | 测试 | - | 压测套件 |
+| 43 | POST | `/api/v1/quality/_internal/test-quality` | 测试 | - | _internal 测试桩 |
+| 44 | GET | `/api/v1/quality/debug/clean-stats` | 测试 | - | 质检 debug 注入/统计 |
+| 45 | POST | `/api/v1/quality/debug/inject-dup` | 测试 | - | 质检 debug 注入/统计 |
+| 46 | POST | `/api/v1/tokens/_internal/test-consume` | 测试 | - | _internal 测试桩 |
+| 47 | POST | `/api/v1/tokens/_internal/test-exhausted` | 测试 | - | _internal 测试桩 |
+| 48 | POST | `/api/v1/tokens/_internal/test-warning` | 测试 | - | _internal 测试桩 |
+| 49 | GET | `/api/v1/tokens/status` | C | P2 | 用户拍板：可选鉴权（无token返最小信息） |
+| 50 | GET | `/api/v1/brain/configs` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 51 | POST | `/api/v1/brain/configs` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 52 | POST | `/api/v1/brain/configs/update` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 53 | GET | `/api/v1/brain/configs/{config_key}` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 54 | GET | `/api/v1/brain/configs/{config_key}/history` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 55 | POST | `/api/v1/brain/configs/{config_key}/rollback` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 56 | POST | `/api/v1/brain/s2/generate` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 57 | POST | `/api/v1/brain/s2/generate-v2-table` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 58 | POST | `/api/v1/brain/s3/generate-dashboard` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 59 | POST | `/api/v1/brain/s3/generate-llm` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 60 | POST | `/api/v1/brain/s4/orchestrate` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 61 | POST | `/api/v1/brain/s4s5/orchestrate-and-score` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 62 | POST | `/api/v1/brain/s5/score` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 63 | GET | `/api/v1/brain/s5/score-config` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 64 | POST | `/api/v1/chat/classify-intent` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 65 | POST | `/api/v1/chat/execute-action` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 66 | POST | `/api/v1/chat/message` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 67 | POST | `/api/v1/exceptions/schema/heal` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 68 | POST | `/api/v1/exports/async` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 69 | POST | `/api/v1/exports/sync` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 70 | POST | `/api/v1/lineage/build` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 71 | POST | `/api/v1/lineage/rebuild-all` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 72 | POST | `/api/v1/llm/chat` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 73 | POST | `/api/v1/llm/chat/completions` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 74 | POST | `/api/v1/quality/check` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 75 | GET | `/api/v1/quality/check/ai/{dataset_id}` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 76 | POST | `/api/v1/quality/fix` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 77 | POST | `/api/v1/quality/fix-batch` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 78 | GET | `/api/v1/reports` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 79 | POST | `/api/v1/reports` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 80 | GET | `/api/v1/reports/{report_id}/html` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 81 | GET | `/api/v1/reports/{report_id}/json` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 82 | POST | `/api/v1/shares/create` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 83 | POST | `/api/v1/versions/create` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 84 | POST | `/api/v1/versions/rollback/{dashboard_id}` | 真漏 | P0 | 写操作/烧LLM配额/数据导出 — 高危 |
+| 85 | GET | `/api/v1/brain/report/{dataset_id}/export` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 86 | POST | `/api/v1/brain/s1/detect` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 87 | POST | `/api/v1/brain/s1/detect-v2-table` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 88 | POST | `/api/v1/brain/s3/recommend` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 89 | POST | `/api/v1/brain/trace/run/complete` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 90 | POST | `/api/v1/brain/trace/run/start` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 91 | POST | `/api/v1/brain/trace/stage/complete` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 92 | POST | `/api/v1/brain/trace/stage/start` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 93 | GET | `/api/v1/brain/trace/{run_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 94 | GET | `/api/v1/brain/trace/{run_id}/summary` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 95 | POST | `/api/v1/chat/sessions` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 96 | POST | `/api/v1/exceptions/async/timeout-check` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 97 | POST | `/api/v1/exceptions/batch-check` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 98 | POST | `/api/v1/exceptions/category/validate` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 99 | POST | `/api/v1/exceptions/conflict/detect` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 100 | POST | `/api/v1/exceptions/data-bloat/detect` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 101 | GET | `/api/v1/exceptions/empty-dashboard/{dashboard_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 102 | POST | `/api/v1/exceptions/expired/cleanup` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 103 | POST | `/api/v1/exceptions/grain/validate` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 104 | POST | `/api/v1/exceptions/key-type/validate` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 105 | POST | `/api/v1/exceptions/orphan-rows/detect` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 106 | GET | `/api/v1/exceptions/report/{dataset_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 107 | POST | `/api/v1/exceptions/sensitive/detect` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 108 | GET | `/api/v1/exceptions/session/kickout/{user_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 109 | GET | `/api/v1/exports/status/{task_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 110 | GET | `/api/v1/lineage/impact/{node_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 111 | GET | `/api/v1/lineage/resolve` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 112 | POST | `/api/v1/lineage/verify` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 113 | POST | `/api/v1/shares/{share_id}/revoke` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 114 | POST | `/api/v1/tokens/applications/apply` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 115 | GET | `/api/v1/tokens/applications/check-active` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 116 | GET | `/api/v1/tokens/applications/my-applications` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 117 | GET | `/api/v1/tokens/applications/my-applications/{application_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 118 | POST | `/api/v1/tokens/consume` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 119 | GET | `/api/v1/versions/list/{dashboard_id}` | 真漏 | P1 | 读他人数据/有限写 — 中危 |
+| 120 | GET | `/api/v1/brain/s1/dictionary` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 121 | GET | `/api/v1/brain/s2/prompt-template` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 122 | GET | `/api/v1/brain/s2/types` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 123 | GET | `/api/v1/brain/s3/chart-types` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 124 | GET | `/api/v1/brain/s3/field-types` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 125 | GET | `/api/v1/brain/s3/grain-recommendations/{grain}` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 126 | GET | `/api/v1/brain/s3/rules` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 127 | POST | `/api/v1/brain/s3/validate-grain` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 128 | GET | `/api/v1/llm/rate-limit/status` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 129 | POST | `/api/v1/llm/template/render` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 130 | GET | `/api/v1/llm/usage/{user_id}` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 131 | GET | `/api/v1/skills` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 132 | GET | `/api/v1/tokens/can-send` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 133 | GET | `/api/v1/tokens/quota` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+| 134 | POST | `/api/v1/versions/compare` | 真漏 | P2 | 只读/参考类，信息敏感低 |
+
+### B.2 真漏 P0 清单（优先修，共 35 个）
+
+| 方法 | 端点 | 风险 |
+|------|------|------|
+| GET | `/api/v1/brain/configs` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/configs` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/configs/update` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/brain/configs/{config_key}` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/brain/configs/{config_key}/history` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/configs/{config_key}/rollback` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s2/generate` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s2/generate-v2-table` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s3/generate-dashboard` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s3/generate-llm` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s4/orchestrate` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s4s5/orchestrate-and-score` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/brain/s5/score` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/brain/s5/score-config` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/chat/classify-intent` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/chat/execute-action` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/chat/message` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/exceptions/schema/heal` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/exports/async` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/exports/sync` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/lineage/build` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/lineage/rebuild-all` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/llm/chat` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/llm/chat/completions` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/quality/check` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/quality/check/ai/{dataset_id}` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/quality/fix` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/quality/fix-batch` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/reports` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/reports` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/reports/{report_id}/html` | 写操作/烧LLM配额/数据导出 — 高危 |
+| GET | `/api/v1/reports/{report_id}/json` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/shares/create` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/versions/create` | 写操作/烧LLM配额/数据导出 — 高危 |
+| POST | `/api/v1/versions/rollback/{dashboard_id}` | 写操作/烧LLM配额/数据导出 — 高危 |
+
+### B.3 真漏 P1 清单（共 35 个）
+
+| 方法 | 端点 | 风险 |
+|------|------|------|
+| GET | `/api/v1/brain/report/{dataset_id}/export` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/s1/detect` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/s1/detect-v2-table` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/s3/recommend` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/trace/run/complete` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/trace/run/start` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/trace/stage/complete` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/brain/trace/stage/start` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/brain/trace/{run_id}` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/brain/trace/{run_id}/summary` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/chat/sessions` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/async/timeout-check` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/batch-check` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/category/validate` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/conflict/detect` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/data-bloat/detect` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/exceptions/empty-dashboard/{dashboard_id}` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/expired/cleanup` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/grain/validate` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/key-type/validate` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/orphan-rows/detect` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/exceptions/report/{dataset_id}` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/exceptions/sensitive/detect` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/exceptions/session/kickout/{user_id}` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/exports/status/{task_id}` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/lineage/impact/{node_id}` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/lineage/resolve` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/lineage/verify` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/shares/{share_id}/revoke` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/tokens/applications/apply` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/tokens/applications/check-active` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/tokens/applications/my-applications` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/tokens/applications/my-applications/{application_id}` | 读他人数据/有限写 — 中危 |
+| POST | `/api/v1/tokens/consume` | 读他人数据/有限写 — 中危 |
+| GET | `/api/v1/versions/list/{dashboard_id}` | 读他人数据/有限写 — 中危 |
+
+### B.4 真漏 P2 清单（只读/参考类，共 15 个）
+
+| 方法 | 端点 | 风险 |
+|------|------|------|
+| GET | `/api/v1/brain/s1/dictionary` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/brain/s2/prompt-template` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/brain/s2/types` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/brain/s3/chart-types` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/brain/s3/field-types` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/brain/s3/grain-recommendations/{grain}` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/brain/s3/rules` | 只读/参考类，信息敏感低 |
+| POST | `/api/v1/brain/s3/validate-grain` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/llm/rate-limit/status` | 只读/参考类，信息敏感低 |
+| POST | `/api/v1/llm/template/render` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/llm/usage/{user_id}` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/skills` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/tokens/can-send` | 只读/参考类，信息敏感低 |
+| GET | `/api/v1/tokens/quota` | 只读/参考类，信息敏感低 |
+| POST | `/api/v1/versions/compare` | 只读/参考类，信息敏感低 |
