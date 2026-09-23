@@ -80,7 +80,9 @@ def clean_title_keyword(kw: str) -> str:
     if not kw:
         return ""
     # 去掉前缀指令词
-    kw = re.sub(r"^(删?除|移除|去掉|删掉|删了|不要|不需要|把|将|那个|这个|那张|这张|第[一二三四五六七八九十\d]{1,2}[个张幅])\s*", "", kw)
+    # ISS-022：「名为/叫/标题为」是修饰词不是图名的一部分，不剥会得到「名为数据明细」
+    # 从而永远匹配不到真实图名「数据明细」。长词排在短词前，避免「叫」抢先于「叫做」。
+    kw = re.sub(r"^(删?除|移除|去掉|删掉|删了|不要|不需要|把|将|那个|这个|那张|这张|第[一二三四五六七八九十\d]{1,2}[个张幅]|名字叫|名字是|标题为|标题是|标题叫|名为|叫做|叫)\s*", "", kw)
     # 去掉后缀噪声（可重复）
     for _ in range(4):
         new = re.sub(r"(那张|这张|那个|这个|张|个|幅|图表|图|的|那|这|一份|一项)$", "", kw).strip()
@@ -209,8 +211,23 @@ class IntentClassifier:
                 if re.search(pattern, message, re.IGNORECASE):
                     confidence = cls._calculate_confidence(message, intent_type, pattern)
                     analysis = cls._extract_params(message, intent_type, context)
+                    # ISS-022：正则认出是删图，却没抽出任何定位线索
+                    # （例：「把数据明细删掉」命中 把.*(删掉) 但 params 为空），
+                    # 补一次"删除动词 + 看板里真实存在的图名"识别，避免退化成追问。
+                    if intent_type == IntentType.DELETE_CHART and not cls._has_delete_anchor(analysis):
+                        _d = cls._try_delete_by_title(message, context)
+                        if _d:
+                            analysis = dict(analysis or {})
+                            analysis.update({k: v for k, v in (_d[2] or {}).items()
+                                             if k in ("extracted_params", "classified_by")})
+                            confidence = max(confidence, _d[1])
                     return intent_type, confidence, analysis
         
+        # ISS-022：正则没认出来的「删除<真实图名>」先按图名兜住，避免交给 LLM 瞎猜
+        _del = cls._try_delete_by_title(message, context)
+        if _del:
+            return _del
+
         # 未知意图 → P0-2：规则未命中但消息像"看板操作语义"，改交 LLM 主导规划动作
         # （不再立刻落 UNKNOWN 走闲聊，解决"答非所问"）。纯闲聊/无操作语义仍交给下方 LLM 兜底 → UNKNOWN。
         if cls.looks_like_operation(message, context):
@@ -238,6 +255,44 @@ class IntentClassifier:
         "图", "图表", "饼图", "柱图", "折线图", "线图", "散点图", "表格", "指标", "kpi",
         "看板", "数据", "字段", "标题", "结论", "总结", "洞察",
     ]
+
+    _DELETE_VERBS = ("删除", "移除", "去掉", "删掉", "删了", "不要", "不需要")
+
+    @staticmethod
+    def _has_delete_anchor(analysis: Dict[str, Any]) -> bool:
+        """删图动作是否已具备定位线索（图名/序号/图型），决定要不要再尝试按图名识别。"""
+        p = ((analysis or {}).get("extracted_params") or {})
+        return bool(p.get("title_keyword") or p.get("chart_index") or p.get("chart_type")
+                    or p.get("delete_all") or p.get("chart_id"))
+
+    @classmethod
+    def _try_delete_by_title(cls, message: str, context: Dict[str, Any]) -> Optional[Tuple]:
+        """ISS-022：用户说「删除数据明细」——删除动词后直接跟图名，句尾没有"图/图表"。
+
+        DELETE_CHART 的正则要求句尾出现 图/图表/这个/那个/第N个，因此这类句子匹配不上，
+        只能落到 SEMANTIC_ACTION 交给 LLM 猜，LLM 抽不到「数据明细」是真实图名这件事。
+        这里用看板里真实存在的图名做精确识别：句子同时含删除动词 + 已有图名即判定删图。
+        放在正则之后执行，所以「删除第二张图」等已有行为完全不受影响。
+        """
+        msg = (message or "").strip()
+        if not msg or not any(v in msg for v in cls._DELETE_VERBS):
+            return None
+        charts = (((context or {}).get("current_config") or {}).get("charts") or [])
+        hit = None
+        for c in charts:
+            if not isinstance(c, dict):
+                continue
+            t = str(c.get("title") or "").strip()
+            # 取最长匹配，避免短图名抢先命中（「销售额」vs「各地区销售额对比」）
+            if t and len(t) >= 2 and t in msg and (hit is None or len(t) > len(hit)):
+                hit = t
+        if not hit:
+            return None
+        return IntentType.DELETE_CHART, 80, {
+            "raw_message": msg,
+            "extracted_params": {"title_keyword": hit},
+            "classified_by": "delete_by_title",
+        }
 
     @classmethod
     def looks_like_operation(cls, message: str, context: Dict[str, Any] = None) -> bool:

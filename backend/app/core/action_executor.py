@@ -505,9 +505,11 @@ class ActionExecutor:
                 return {
                     "success": False,
                     "action_type": "delete_chart",
+                    # ISS-022：用户点名了图却匹配不上 -> 走澄清追问，而不是一句干巴巴的拒绝
+                    "requires_clarify": True,
                     "error": (
                         f"没有找到标题/类型匹配「{title_keyword or chart_type}」的图表，未做任何删除。"
-                        "当前看板有："
+                        "你想删的是哪一张？当前看板有："
                         + "、".join((c.get("title") or "未命名") for c in charts[:10])
                         + "。请说明具体是哪一张。"
                     ),
