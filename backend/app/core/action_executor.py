@@ -931,7 +931,11 @@ class ActionExecutor:
           直接给出"这张图到底卡在哪"的结论（字段缺失 / 清洗置空 / 高缺失率 / 字段正常），
           无法实查时也明确说明原因，不再让用户盲试。
         """
-        analysis_target = params.get("target", "异常数据")
+        # 2026-09-24 修复（P0-2 真跑）：planner 产出的 attribution params 里没有 target，
+        # 只带 clause。旧代码拿默认值「异常数据」去匹配图表 -> 一张都匹配不上 -> 退化成
+        # 「第一张非 KPI 图」，回复开头永远是套话「收到对『异常数据』的归因请求」，
+        # 完全无视用户真正问的是「为什么逾期上升」。改为优先使用用户原话。
+        analysis_target = (params.get("target") or params.get("clause") or "异常数据").strip()
 
         # 仅记录归因请求轨迹，不伪装成已完成的分析
         if "attribution_path" not in current_config:
@@ -1001,6 +1005,36 @@ class ActionExecutor:
                     out.append(str(v))
             return out
 
+        # 2026-09-24 修复：用户整句（「为什么逾期上升」）几乎不可能整体出现在图名里，
+        # 但其中的关键词（逾期）能精确定位到「历史逾期次数 vs 收入负债比」。
+        # 旧实现整句匹配失败就直接跳到"第一张非 KPI 图"，于是答非所问。
+        _ATTR_STOP_PHRASES = (
+            "为什么", "怎么会", "怎么", "怎样", "如何", "请问", "麻烦", "帮我", "我想",
+            "分析", "一下", "看看", "是不是", "有没有", "给我", "可以", "能否",
+            "原因", "情况", "异常", "趋势", "上升", "下降", "波动", "这个", "那些",
+            "请求", "归因", "请求", "数据", "问题",
+        )
+        # 短语自动展开成 2-gram：否则「为什么」这类 3 字词永远过滤不掉它的 2 字碎片。
+        _ATTR_STOP = set()
+        for _p in _ATTR_STOP_PHRASES:
+            if len(_p) <= 2:
+                _ATTR_STOP.add(_p)
+            for _i in range(len(_p) - 1):
+                _ATTR_STOP.add(_p[_i:_i + 2])
+
+        def _target_tokens(s: str) -> List[str]:
+            """把用户原话切成 2 字词片段用于定位图表（跳过虚词/泛词）"""
+            s = "".join(
+                ch for ch in str(s or "")
+                if ("\u4e00" <= ch <= "\u9fa5") or str(ch).isalnum()
+            )
+            out: List[str] = []
+            for i in range(len(s) - 1):
+                t = s[i:i + 2]
+                if t not in _ATTR_STOP and t not in out:
+                    out.append(t)
+            return out
+
         matched = None
         for c in charts:
             if not isinstance(c, dict):
@@ -1009,6 +1043,22 @@ class ActionExecutor:
             if analysis_target and analysis_target in hay:
                 matched = c
                 break
+        if matched is None:
+            _toks = _target_tokens(analysis_target)
+            if _toks:
+                _best, _best_score = None, 0
+                for c in charts:
+                    if not isinstance(c, dict):
+                        continue
+                    # 图名直接点明主题（「历史逾期次数 vs 收入负债比」）比字段名偶然含该词
+                    # 更能说明用户问的就是这张图，故给图名命中更高权重。
+                    _title = str(c.get("title") or "")
+                    _fields_hay = "|".join(_chart_fields(c))
+                    _score = (3 * sum(1 for t in _toks if t in _title)
+                              + sum(1 for t in _toks if t in _fields_hay))
+                    if _score > _best_score:
+                        _best, _best_score = c, _score
+                matched = _best
         if matched is None:
             # 找字段缺失的那张（最可能是"无可绘制数据"的元凶）
             for c in charts:
@@ -1095,7 +1145,14 @@ class ActionExecutor:
                     next_step = "可先按该字段做缺失值处理（填充/删除），再重画。"
                 else:
                     conclusion = f"字段 {('、'.join(fields))} 都存在于数据集且非空——字段层面没问题。"
-                    next_step = "那更可能是图表配置/取数问题，建议重新生成看板；或告诉我目标，我按现有字段重建一张。"
+                    # 2026-09-24：旧文案「建议重新生成看板」正是用户最烦的套话
+                    # （把问题甩回给用户，等于没回答）。改成挂"我能做什么"的具体下一步。
+                    next_step = (
+                        f"字段层面没问题，说明不是缺字段导致的异常。"
+                        f"我改不了已有图表，但可以做两件具体的事："
+                        f"① 告诉我目标口径，我按「{title}」的字段重建一张；"
+                        f"② 若要判断数值走势，需要有可查询的数据源，我再取值计算。"
+                    )
 
             message = (
                 f"收到对「{analysis_target}」的归因请求。需要说明：对话助手不能直接改已有图表，"
