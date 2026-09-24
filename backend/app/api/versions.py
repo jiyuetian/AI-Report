@@ -36,12 +36,12 @@ class CompareRequest(BaseModel):
 async def create_version(
     request: CreateVersionRequest,
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)  # ISS-025：写操作必须登录，且以登录用户身份落账（此前任何人可匿名改）
 ):
     """创建新版本"""
     try:
         version = await VersionManager.create_version(
-            db, request.dashboard_id, request.name, request.description, user_id
+            db, request.dashboard_id, request.name, request.description, current_user["user_id"]
         )
         return {
             "success": True,
@@ -60,7 +60,8 @@ async def create_version(
 async def list_versions(
     dashboard_id: str,
     include_auto: bool = True,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)  # ISS-025：写操作必须登录，且以登录用户身份落账（此前任何人可匿名改）
 ):
     """获取版本列表"""
     versions = await VersionManager.get_version_list(db, dashboard_id, include_auto)
@@ -102,7 +103,8 @@ async def rollback_version(
 @router.post("/compare")
 async def compare_versions(
     request: CompareRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)  # ISS-025：写操作必须登录，且以登录用户身份落账（此前任何人可匿名改）
 ):
     """对比两个版本"""
     try:

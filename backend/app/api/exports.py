@@ -37,7 +37,7 @@ class AsyncExportResponse(BaseModel):
 async def export_sync(
     request: ExportRequest,
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)  # ISS-025：写操作必须登录，且以登录用户身份落账（此前任何人可匿名改）
 ):
     """
     同步导出（<5秒返回）
@@ -81,7 +81,7 @@ async def export_sync(
             format=format_map[request.format],
             include_watermark=request.include_watermark,
             include_logic=request.include_logic,
-            user_id=user_id
+            user_id=current_user["user_id"]
         )
         
         if result["mode"] == "not_implemented":
@@ -110,7 +110,7 @@ async def export_async(
     request: ExportRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)  # ISS-025：写操作必须登录，且以登录用户身份落账（此前任何人可匿名改）
 ):
     """
     异步导出（>5秒任务）
@@ -131,7 +131,7 @@ async def export_async(
             format=format_map[request.format],
             include_watermark=request.include_watermark,
             include_logic=request.include_logic,
-            user_id=user_id
+            user_id=current_user["user_id"]
         )
         
         return {

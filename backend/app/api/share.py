@@ -123,7 +123,7 @@ async def verify_share_password(
 async def revoke_share(
     share_id: str,
     db: AsyncSession = Depends(get_db),
-    user_id: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)  # ISS-025：写操作必须登录，且以登录用户身份落账（此前任何人可匿名改）
 ):
     """
     撤销分享
@@ -131,7 +131,7 @@ async def revoke_share(
     只有创建者可以撤销
     """
     try:
-        result = await ShareService.revoke_share(db, share_id, user_id)
+        result = await ShareService.revoke_share(db, share_id, current_user["user_id"])
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

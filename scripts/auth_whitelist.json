@@ -75,9 +75,7 @@
     "/api/v1/exceptions/schema/heal",
     "/api/v1/exceptions/sensitive/detect",
     "/api/v1/exceptions/session/kickout/{user_id}",
-    "/api/v1/exports/async",
     "/api/v1/exports/status/{task_id}",
-    "/api/v1/exports/sync",
     "/api/v1/lineage/build",
     "/api/v1/lineage/impact/{node_id}",
     "/api/v1/lineage/rebuild-all",
@@ -95,7 +93,6 @@
     "/api/v1/reports",
     "/api/v1/reports/{report_id}/html",
     "/api/v1/reports/{report_id}/json",
-    "/api/v1/shares/{share_id}/revoke",
     "/api/v1/skills",
     "/api/v1/tokens/applications/apply",
     "/api/v1/tokens/applications/check-active",
@@ -103,9 +100,6 @@
     "/api/v1/tokens/applications/my-applications/{application_id}",
     "/api/v1/tokens/can-send",
     "/api/v1/tokens/consume",
-    "/api/v1/tokens/quota",
-    "/api/v1/versions/compare",
-    "/api/v1/versions/create",
-    "/api/v1/versions/list/{dashboard_id}"
+    "/api/v1/tokens/quota"
   ]
 }
