@@ -54,3 +54,32 @@
 - 原因：rule_fallback 仅绕过 probe 暂停，S3 图表生成阶段可能仍尝试 LLM 调用（超时重试）未完全跳过 LLM。
 - 影响：路演若现场 AI 真挂、用户选规则生成，需等 ~2 分钟才出看板（可接受但不顺畅）。
 - 待拍板：是否让 S3 也完全跳过 LLM（接 rule_fallback 标志跳过 LLM 分支）？属小改动，确认后做（与 Q6/S4b 同类）。
+
+## Q9. 澄清类意图（clarify）到底该不该算一个 IntentType？（2026-09-24 临机决策，请复核）
+- 现状：`IntentType` 枚举里没有 clarify，`chat.py` 原本 `IntentType(intent_result["intent_type"])`
+  遇到 "clarify" 直接抛 ValueError 打断整条 SSE 流（表现为追问无回复、pending 不落库）。
+- 我的处理：追问时 primary_intent 保留用户原意图（如 change_chart），并对非枚举值做 try/except 兜底。
+- 待复核：更干净的做法是在 IntentType 里加 `CLARIFY = "clarify"` 成员并让前端据此渲染澄清卡片。
+  属语义改动，未擅自做。
+
+## Q10. 「真归因」需要数据源，但风控数据集的 DuckDB 物理表已不在
+- 实测：`data/duckdb/aibi.db` 只有 QA 样例表 `ds_04d68399_*`；`risk_demo_v2_*`（贷款明细/客户风险画像）
+  的 `ds_4bece390_*` 等物理表在所有 DuckDB 文件里都不存在（业务表已归档到 `data/_archive/duckdb/`）。
+- 后果：「为什么逾期上升」只能做到"字段层面实查 + 定位到正确图表"，做不到"取数计算趋势/同比"。
+- 待拍板：A) 把归档的 duckdb 表拷回活跃库再实现真取数归因；B) 明确告知路演只到"定位+字段核查"层；
+  C) 改从 SQLite/文件源取数。选哪个我再来改。
+
+## Q11. 可行性检查把泛指词当字段要求（「分析一下担保代偿风险」被硬拦）
+- 位置：`backend/app/core/feasibility_checker.py:189 _check_field_existence`
+  关键词表含「风险」，句中出现即判定"数据里没有该字段"→ severity=blocking，请求在到达分析前被拒。
+- 我的判断：这个拦截本身是诚实的（数据集确实没有"担保代偿"字段），所以**没有动它**。
+- 待拍板：A) 保持现状（宁可拒，不臆造）；B) 对 attribution/semantic 意图降级为 warning 放行；
+  C) 增加"语义代理字段"映射（担保代偿风险 → 历史逾期次数/收入负债比）再分析。选哪个我再来改。
+
+## Q12. ISS-025 剩余 74 个无鉴权端点，是否继续按批推
+- 本批（6 个）选的是"写操作 + 落匿名账 + 前端已带 token"的高风险项，已真跑验证并过门禁。
+- 剩余 74 个多为 brain/s1-s5 链路与 `_internal` 测试桩。
+- 待拍板：A) 继续按"是否读写用户数据"分批（建议下一批：quality/fix、lineage/rebuild-all、
+  exceptions/schema-heal 等会改数据的）；B) 只收口对外端点、`_internal` 测试桩靠部署层隔离；
+  C) 暂停。另：本次只做了"必须登录"（认证），**未做归属校验（认证用户能否改他人资源）**，
+  这是更大的攻击面，需单独立项。
