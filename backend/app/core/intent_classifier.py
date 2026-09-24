@@ -832,6 +832,7 @@ class IntentClassifier:
         charts = []
         for p in parts:
             ct = None
+            is_avg = False  # 在两条分支共用出口（charts.append）前保证已绑定，避免 else 分支 UnboundLocalError
             for t in ["饼图", "柱图", "柱状图", "条形图", "直方图", "线图", "折线图", "散点图", "环形图", "圆环图", "表格"]:
                 if t in p:
                     ct = t
