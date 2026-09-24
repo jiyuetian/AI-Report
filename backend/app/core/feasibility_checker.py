@@ -185,6 +185,13 @@ class FeasibilityChecker:
         
         return None
     
+    # 泛指分析概念词：风险/情况/表现/趋势/异常/分布/占比/对比/变化/走势/波动/结构/特征
+    # 这些词表达的是"想做什么分析"，不是"要求某个具体字段"，不应被当成字段名去校验存在性。
+    _GENERIC_CONCEPT_WORDS = {
+        "风险", "情况", "表现", "趋势", "异常", "分布", "占比", "对比",
+        "变化", "走势", "波动", "结构", "特征", "分析", "解读", "结论",
+    }
+
     @staticmethod
     def _check_field_existence(message: str, field_names: List[str]) -> Optional[Dict]:
         """检查用户提到的字段是否存在"""
@@ -202,6 +209,8 @@ class FeasibilityChecker:
         
         mentioned_fields = []
         for kw in field_keywords:
+            if kw in _GENERIC_CONCEPT_WORDS:
+                continue  # 泛指概念词不当字段要求
             if kw in message:
                 mentioned_fields.append(kw)
         
