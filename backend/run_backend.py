@@ -137,6 +137,18 @@ def main():
     atexit.register(_cleanup_pidfile)
 
     print(f"[B5] 启动后端 pid={os.getpid()} → http://{HOST}:{PORT}")
+
+    # 0.4：打印已加载的 LLM provider 链（failover 顺序，供启动日志佐证）
+    try:
+        from app.core.config import get_llm_provider_list
+        _providers = get_llm_provider_list()
+        _chain = " → ".join(
+            f"{p.get('name')}({p.get('model')})" for p in _providers
+        )
+        print(f"[0.4] LLM provider 链({len(_providers)}层): {_chain}")
+    except Exception as _e:
+        print(f"[0.4-WARN] 读取 provider 链失败：{_e}")
+
     uvicorn.run("app.main:app", host=HOST, port=PORT)
 
 
