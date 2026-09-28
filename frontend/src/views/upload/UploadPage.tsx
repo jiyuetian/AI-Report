@@ -7,7 +7,7 @@ import { SheetSelectModal, EncodingSelectModal } from '../../components/modals'
 import QualityCheckPanel, { type QualityCheckStatus } from '../../components/quality/QualityCheckPanel'
 import LoadingPage from '../../components/charts/LoadingPage'
 import { useNavigate } from 'react-router-dom'
-import { authHeaders } from '../../utils/request'
+import { http, authHeaders } from '../../utils/request'
 
 const { Dragger } = Upload
 const { Title, Text } = Typography
@@ -304,8 +304,8 @@ export default function UploadPage() {
         message.success(`已删除「${fileName}」`)
         // 后端数据集异步删除（失败不影响前端移除）
         if (dsId) {
-          // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 DELETE /datasets/{id}，已带 authHeaders()
-          fetch(`${API_BASE}/datasets/${dsId}`, { method: 'DELETE', headers: authHeaders() }).catch(() => {})
+          // 统一走 request.ts 封装（自动带 token + 401 兜底）
+          http.delete(`/datasets/${dsId}`).catch(() => {})
         }
       },
     })

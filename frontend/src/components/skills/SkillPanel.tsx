@@ -11,9 +11,9 @@
  */
 import React, { useEffect, useState } from 'react'
 import { Tag, Tooltip } from 'antd'
-import { authHeaders } from '../../utils/request'
+import { http } from '../../utils/request'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+// API 基址统一由 utils/request.ts 的 http 封装处理（/api/v1）
 
 export interface SkillMetaLite {
   id: string
@@ -40,10 +40,9 @@ export default function SkillPanel({ panelKind, tags, title, children, className
   useEffect(() => {
     let alive = true
     const key = (tags || []).join(',')
-    // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /skills，ISS-025 端点已加鉴权，前端必须带 token
-    fetch(`${API_BASE}/skills`, { headers: authHeaders() })
-      .then((r) => r.json())
-      .then((d: { skills?: SkillMetaLite[] }) => {
+    // 统一走 request.ts 封装（自动带 token + 401 兜底 + JSON 解析）
+    http.get<{ skills?: SkillMetaLite[] }>('/skills')
+      .then((d) => {
         if (!alive) return
         const all = d.skills || []
         const filtered = all.filter(
