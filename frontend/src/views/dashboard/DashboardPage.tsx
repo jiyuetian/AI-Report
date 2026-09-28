@@ -1395,7 +1395,7 @@ const DashboardPage: React.FC = () => {
 
       {/* 右侧对话面板 */}
       <div className="dashboard-chat-sidebar">
-        <ChatPanel dashboardId={urlId} onAction={handleAction} onCollapse={() => setChatCollapsed(true)} />
+        <ChatPanel key={urlId} dashboardId={urlId} onAction={handleAction} onCollapse={() => setChatCollapsed(true)} />
       </div>
 
       {/* A03-02-01 图表详情子页：点击图表卡 → 大图 + 配置 + 数据明细 + 血缘链接 */}

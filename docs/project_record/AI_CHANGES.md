@@ -30,3 +30,12 @@
 | (governance) | docs(governance) | _coach_input 治理源迁入 + 本台账 + ISS-037 |
 
 > 注：commit hash 在 push 前以本地生成为准；本表以「类型+说明」锚定，避免 hash 漂移误解。
+
+## 四、night9 关键变更（已 commit）
+
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| (crossdash) | fix(chat) | 跨看板上下文串号：chat.py 取/建会话后按「当前 dashboard_id + 登录用户」重定位会话归属，杜绝旧看板历史注入当前看板 | ISS-038 |
+| (crossdash) | fix(frontend) | DashboardPage.tsx 给 `<ChatPanel>` 加 `key={urlId}`，切看板重挂载重新 loadHistory（双保险） | ISS-038 |
+
+> 第 1 件 glm-5.5-flash 入链：直调 400/1211（模型未开放），按红线不入链，无代码改动、无 commit（详情见 night9/ROUND_NOW.md）。

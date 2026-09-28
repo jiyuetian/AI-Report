@@ -86,4 +86,17 @@
 
 ---
 
+## ISS-038 跨看板上下文串号（历史过锚定的跨看板形态）
+
+- **现象（2026-09-28 night9 Item2 复测确认）**：前端看板切换 `/dashboard/A → /dashboard/B` 复用同一 `<ChatPanel>` 组件实例，组件无 `key` 故不重挂载，`sessionId` state 滞留 A 的旧值；切 B 首条消息带 A 的 `session_id` + `dashboard_id=B` 发出 → 后端 `chat.py` 按 `session_id` 加载历史（旧看板 A 的对话），注入当前看板 B 的上下文，表现「在 B 看板里 AI 仍引用 A 的旧话题」。这是 ISS-015 Bug1（历史过锚定）的跨看板广义形态。
+- **确定性复现**：隔离 SQLite + stub LLM 复测脚本（看板A聊2轮 MARKER_ALPHA → 切B带A的session_id发问），修复前 `context_dashboard_id=dashB` 但 `history` 含 A 的 4 条 MARKER_ALPHA 消息（`leak_MARKER_ALPHA=true`）。
+- **根因**：① 前端 `DashboardPage.tsx` 未给 `<ChatPanel>` 设 `key={urlId}`，切看板不重挂载，`loadHistory()` 仅 mount 跑一次；② 后端 `chat.py` 取/建会话后直接 `dashboard_id = request.dashboard_id or session.dashboard_id`，当 `session.dashboard_id != request.dashboard_id` 时仍信任旧 session，把旧看板历史注入当前看板。
+- **修复（已落码 + 确定性回归通过）**：
+  1. 后端 `chat.py`（ISS-038 归属校正块）：取/建会话后增加——若 `session.dashboard_id != request.dashboard_id`，以「当前 dashboard_id + 登录用户」为权威重新定位到当前看板最新会话（无则新建），使注入历史恒为当前看板历史。同看板多轮（session 不变）零行为变更。
+  2. 前端 `DashboardPage.tsx:1398` 给 `<ChatPanel>` 加 `key={urlId}`，切看板时 React 重挂载，重新 `loadHistory()` 拉当前看板会话（双保险）。
+- **验证**：复测脚本回归 `leak_MARKER_ALPHA=false, history_len=0`（跨看板不再泄漏，同看板多轮不变）；前端 `tsc --noEmit` 退出码 0。
+- **状态**：`[DONE]` 修复 commit 见 night9/ROUND_NOW.md（本地未 push）。
+
+---
+
 > 维护方式：每条待办记录「现象 / 决策 / 到期或触发条件 / 状态」。解决后把状态改为 `[DONE]` 或删除该行。

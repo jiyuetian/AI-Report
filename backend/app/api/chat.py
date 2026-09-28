@@ -580,7 +580,20 @@ async def send_message_stream(
         session = result.scalar_one_or_none()
     else:
         session = None
-    
+
+    # ISS-038 修复（跨看板上下文串号）：前端切看板时可能仍带着旧看板的 session_id，
+    # 若直接信任该 session，会把旧看板的对话历史注入当前看板上下文（历史过锚定的跨看板形态）。
+    # 改为以“当前 dashboard_id + 登录用户”为会话归属权威：当传入 session 属于另一看板时，
+    # 重新定位到当前看板的最新会话（无则新建），使注入的历史恒为当前看板的历史。
+    if session is not None and request.dashboard_id and session.dashboard_id != request.dashboard_id:
+        _alt = await db.execute(
+            select(ChatSession)
+            .where(ChatSession.dashboard_id == request.dashboard_id, ChatSession.user_id == current_user)
+            .order_by(ChatSession.created_at.desc())
+            .limit(1)
+        )
+        session = _alt.scalar_one_or_none()
+
     if not session:
         # 创建新会话
         session = ChatSession(
