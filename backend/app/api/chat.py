@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_, func
 import json
 import asyncio
+import re
 from datetime import datetime
 
 from app.core.database import get_db
@@ -202,6 +203,82 @@ async def generate_intent_response(intent_type: IntentType, analysis: Dict, cont
     return responses.get(intent_type, responses[IntentType.UNKNOWN])
 
 
+# ============== D 修复（诚实兜底）辅助 ==============
+# 两层检测：
+#   ① 前瞻承诺：动词(_PROMISE_VERBS)+标记(_COMMIT_MARKERS)，拦"我来帮你加 X"
+#   ② 陈述性冒领：显式完成标记(_CLAIM_MARKERS) 或 "第N张/个…"+身份/占有词(_CLAIM_RE+_CLAIM_IDENTITY)，
+#      拦"已经做好了/我帮你加了/第6张KPI就是我做的"这类跨会话/跨轮成果冒领（ISS-033 / Bug2）
+_PROMISE_VERBS = (
+    "新增","添加","创建","加一张","加一个","加个","增加",
+    "修改","改成","调整","更新","变更",
+    "删除","移除","去掉",
+    "筛选","过滤","生成","新建","插入",
+    "会","将要","准备","打算","立刻","立即",
+)
+# 承诺标记：第一人称 / 完成体 / 即时体。仅当动词附近出现这些，才判定为"假承诺"而非"提问/建议"
+_COMMIT_MARKERS = ("我","帮你","为您","我们","已","已经","好","这就","马上")
+
+# 冒领标记集（陈述性完成体）：本回合未真实执行动作，回复出现这些词即判定为冒领，强制补声明
+_CLAIM_MARKERS = (
+    "已经做好了","已经做好","已经加了","已经添加","已经生成","已经帮你","已经帮您",
+    "我帮你加了","我帮你添加","我帮你做了","我帮你生成","我为您加了","我为您做了",
+    "已经完成","已经搞定了","已经搞定","刚加了","刚才加了","刚刚加了","刚才帮你",
+    "我做的","是我做的","这张卡我做的","这张图我做的","这是我做的","刚才生成了",
+)
+# 指称式冒领："第N张/个/图/卡片/KPI/指标/表" + 身份/占有词（"就是/是我/已经/我做的/做好了/帮你加/为您加"）
+_CLAIM_RE = re.compile(r"第\s*[0-9零一二三四五六七八九十百]+\s*(张|个|图|卡片|KPI|指标|表)")
+_CLAIM_IDENTITY = ("就是","是我","已经","我做的","做好了","帮你加","为您加")
+
+
+def _is_question(text: str) -> bool:
+    """粗略判断是否为疑问句，用于降低指称式冒领的正则误伤（问句里'第N张'多为指代而非认领）。"""
+    t = text.rstrip()
+    return t.endswith(("?","？","吗","么","咋")) or "？" in text or "?" in text
+
+
+def _contains_false_promise(text: str) -> bool:
+    """自然回复是否含假承诺/冒领构造（本分支实际未执行任何动作）。"""
+    if not text:
+        return False
+    # ① 前瞻承诺：动词+标记
+    for v in _PROMISE_VERBS:
+        idx = text.find(v)
+        while idx != -1:
+            lo, hi = max(0, idx - 5), min(len(text), idx + len(v) + 3)
+            window = text[lo:hi]
+            if any(m in window for m in _COMMIT_MARKERS):
+                return True
+            idx = text.find(v, idx + 1)
+    # ② 陈述性冒领：显式完成标记（高置信，不受问句影响）
+    if any(m in text for m in _CLAIM_MARKERS):
+        return True
+    # ③ 指称式冒领："第N张…"+身份/占有词（问句不触发，避免"第3张图怎么改"误伤）
+    if not _is_question(text) and _CLAIM_RE.search(text) and any(k in text for k in _CLAIM_IDENTITY):
+        return True
+    return False
+
+# 注意：免责声明文案与 D 方案逻辑强耦合（本函数是"硬兜底"，非 prompt 层）。
+# 如后续要把免责文案做成 Prompt 中心可配置项，走独立迭代；
+# 当前保持代码层硬编码，保证 LLM 无论如何都绕不过。
+def _apply_honesty_guard(llm_msg: str, action_executed: bool = False) -> str:
+    """D 兜底：本回合未真实执行动作、且回复含假承诺/冒领时，强制追加免责声明；否则原样返回。
+
+    action_executed=True 表示本轮确实执行了看板动作（如 add_chart 成功），
+    此时"已经帮你加了"是事实，不补声明。
+    """
+    if action_executed:
+        return llm_msg
+    if _contains_false_promise(llm_msg):
+        return (
+            llm_msg.rstrip()
+            + "\n\n— — —\n"
+            + "⚠️ 说明：以上为口头回应，本次对话尚未实际修改看板。"
+            + "看板中已有的图表若非你本次通过明确指令添加，并非由你生成。"
+            + "如需真正执行，请使用明确指令（如「把饼图改成柱图」「新增一个趋势图」）。"
+        )
+    return llm_msg
+
+
 # ============== LLM 自然语言回复生成 ==============
 
 def _rule_guidance_message(context: Dict[str, Any]) -> str:
@@ -272,7 +349,9 @@ async def generate_llm_natural_response(
         "2. 用户想分析数据时，给出具体分析建议（用哪个字段、看哪张图）\n"
         "3. 用户想调整看板时，引导使用具体指令（如把饼图改成柱图、新增一个趋势图）\n"
         "4. 回答简洁、专业、有用，中文回复，控制在200字内\n"
-        "5. 数据里没有的信息要坦诚说明，不要编造\n\n"
+        "5. 数据里没有的信息要坦诚说明，不要编造\n"
+        "6. 你只能陈述**本次对话中你实际执行的看板修改**；看板里已有的图表/卡片若不是你本次通过明确指令添加的，"
+        "不要说'已经做好了/我帮你加了/第N张就是我做的'之类话——那是其他会话的成果，并非你生成\n\n"
     )
 
     # P0-1：注入最近对话历史，使 UNKNOWN/闲聊轮能承接上一句（"再来一个/刚才那个/就改成"）
@@ -471,6 +550,27 @@ async def send_message_stream(
     from app.core.database import async_session_factory
     from app.core.feasibility_checker import check_feasibility
     from app.core.event_logger import log_user_action
+
+    # ==== ISS-034 探针：请求到达 /chat/message 入口即落日志，不依赖后续任何流程 ====
+    # 定位"用户在前端看到消息、但 chat_messages 无对应记录"的丢消息 bug：
+    #   - 本探针命中 + 下游三分支(L659/753/966)缺失 → 后端静默丢弃（L774 路径）
+    #   - 本探针缺失 → 请求根本没进 handler（前端未提交 / 截图来自另一实例）
+    # 与下游日志配合形成 "入口→分类→执行" 完整链路追踪；探针失败绝不阻塞主流程。
+    try:
+        log_user_action(
+            event_type="chat_request_received",
+            user_id=current_user,
+            dashboard_id=request.dashboard_id,
+            session_id=request.session_id,
+            details={
+                "message": (request.message or "")[:200],
+                "message_len": len(request.message or ""),
+                "probe": "entry",
+                "note": "请求已到达 /chat/message 入口；此后若 chat_messages 无对应 user 行且下游日志缺失，即后端静默丢弃，否则为前端未提交。",
+            },
+        )
+    except Exception:
+        pass
 
     # ==== 阶段1: 获取或创建会话（在流外完成，使用传入的db）====
     if request.session_id:
@@ -782,6 +882,10 @@ async def send_message_stream(
                         ),
                     }
                     llm_msg = ai_error["message"]
+            # ── D 修复（诚实兜底）── 本分支 actions 恒空（UNKNOWN/不置信），action_executed=False：
+            # 若文本含"已经做好了/我帮你加了/第N张就是我做的"等冒领构造，强制补声明（ISS-033 / Bug2）
+            if ai_error is None:
+                llm_msg = _apply_honesty_guard(llm_msg, action_executed=False)
             response_data = {
                 "message": llm_msg,
                 "action": None,
