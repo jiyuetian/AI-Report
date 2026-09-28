@@ -25,6 +25,29 @@ async def _check_llm_reachable(attempts: int = 3) -> dict:
     绿标永不亮。故默认重试 attempts 次 + 2s 退避；仅当 attempts 次全失败才
     fail-closed 判不可达，符合原 fail-closed 哲学。health 端点传 attempts=1 保持快速。
     """
+    # 2026-09-28 修复（Item2 P0）：探针必须测「真实 provider 链」(LLM_PROVIDERS 经 llm_gateway 失败转移)，
+    # 而非遗留单 provider 配置(settings.LLM_MODEL)。否则会出现：探针用旧配置判可达=True，
+    # 但 brain/run 实际走 LLM_PROVIDERS，其中 zhipu 余额不足(HTTP 400 balance=0)/sensenova 429 等
+    # 真实失败在 S3 才暴露，导致「AI 失败却没弹窗」(M1 弹窗被漏触发，看板被静默规则兜底)。
+    # 用 llm_chat 真实打一次最小请求：任一 provider 成功即可达；全部失败(balance=0/429/超时)即不可达→弹用户选择。
+    providers = getattr(settings, "LLM_PROVIDERS", None)
+    if providers:
+        try:
+            from app.core.llm_gateway import llm_chat
+            try:
+                resp = await asyncio.wait_for(
+                    llm_chat(prompt="请只回复一个字：好", json_mode=False, timeout=15.0),
+                    timeout=18.0,
+                )
+            except asyncio.TimeoutError:
+                return {"reachable": False, "reason": "gateway 探针超时(>18s)"}
+            if getattr(resp, "success", False) and (getattr(resp, "content", None) or "").strip():
+                return {"reachable": True, "reason": "ok (gateway)"}
+            return {"reachable": False, "reason": f"gateway 不可用: {getattr(resp, 'error', '无 content')}"}
+        except Exception as e:
+            return {"reachable": False, "reason": f"gateway_probe_error: {str(e)[:200]}"}
+
+    # 遗留单 provider 兜底（仅当未配置 LLM_PROVIDERS 时走旧逻辑）
     base_url = settings.LLM_BASE_URL
     api_key = settings.LLM_API_KEY
     if not base_url or not api_key:

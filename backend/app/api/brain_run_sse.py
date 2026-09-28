@@ -616,6 +616,7 @@ async def brain_run_pipeline(
             # 让用户决定「立即规则兜底」或「等待 AI 恢复重试」。超时（BRAIN_AI_CHOICE_TIMEOUT）
             # 未操作则自动规则兜底，避免任务永久挂起。
             llm_offline = False
+            user_accepted_rule_fallback = False  # 标记：用户已在探针阶段明确选"规则兜底"，S3 不再重复弹窗
             try:
                 llm_probe = await _check_llm_reachable()
                 llm_offline = not llm_probe.get("reachable", False)
@@ -633,6 +634,8 @@ async def brain_run_pipeline(
                             "· 或等待 AI 恢复后重试"
                         ),
                     })
+                    if choice == "rule_fallback":
+                        user_accepted_rule_fallback = True
                     if choice == "wait_retry":
                         # 用户选择等待：重新探测一次；恢复则继续走 AI，否则仍走规则兜底
                         try:
@@ -651,8 +654,10 @@ async def brain_run_pipeline(
                     "stage": "probe",
                     "options": ["rule_fallback", "wait_retry"],
                     "reason": f"探测异常: {_short_err(e)}",
-                    "message": "AI 服务探测异常（暂不可用）。您可改用规则引擎立即生成基础看板，或等待恢复后重试。",
-                })
+                        "message": "AI 服务探测异常（暂不可用）。您可改用规则引擎立即生成基础看板，或等待恢复后重试。",
+                    })
+                if choice == "rule_fallback":
+                    user_accepted_rule_fallback = True
                 if choice == "wait_retry":
                     try:
                         _re = await _check_llm_reachable()
@@ -874,7 +879,10 @@ async def brain_run_pipeline(
                         {"used": budget.used, "budget": budget.budget, "percent": budget.percent})
                 # 检测 AI 是否真正参与：generated_by != 'llm' 表示内部已降级到规则引擎
                 # 注意：LLM 不可达时不计入「AI 失败」，以免触发 600s 用户询问挂起
-                if not llm_offline and s3_result.get("generated_by") != "llm":
+                # 2026-09-28 修复（Item2 P0）：只要 S3 真实 LLM 调用失败(含 400/402/余额不足/429/超时)，
+                # 就必须把选择权交还用户，不再因 llm_offline 状态静默吞掉提示。
+                # 仅当用户已在探针阶段明确选过"规则兜底"(user_accepted_rule_fallback)时才不重复弹窗，避免双重询问。
+                if not user_accepted_rule_fallback and s3_result.get("generated_by") != "llm":
                     s3_ai_failed = True
                     s3_ai_reason = s3_result.get("fallback_reason") or "AI 图表生成调用失败"
             except Exception as e:

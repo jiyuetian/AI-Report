@@ -446,13 +446,18 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
         ) : (
           <>
             <Button size="large" onClick={handleCancel}>取消生成</Button>
-            <Button
-              type="primary"
-              size="large"
-              onClick={() => { window.location.href = '/dashboards'; }}
-            >
-              跳过等待，直接查看看板 →
-            </Button>
+            {/* 2026-09-28 修复（Item2 P0）：AI 失败弹窗(aiAwaiting)显示期间，禁止"跳过等待"旁路，
+                否则用户可绕过 AI/规则决策直接看看板，全程无感知"本次是 AI 还是兜底"。
+                仅当弹窗未激活时，才允许正常的"跳过等待"捷径。 */}
+            {!aiAwaiting && (
+              <Button
+                type="primary"
+                size="large"
+                onClick={() => { window.location.href = '/dashboards'; }}
+              >
+                跳过等待，直接查看看板 →
+              </Button>
+            )}
           </>
         )}
       </div>
