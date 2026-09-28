@@ -458,9 +458,14 @@ class S3ChartEngine:
         elif ctype in ("histogram",):
             y = _pick_metric(number_fields)
         elif ctype in ("scatter",) and len(number_fields) >= 2:
-            # 散点图需要两个数值字段
-            x = number_fields[1] if len(number_fields) > 1 else number_fields[0]
-            y = number_fields[0]
+            # 散点图需要两个数值字段；与标题 {number_field1}/{number_field2} 一致取最佳两指标(n0/n1)
+            x = n0
+            y = n1
+        elif ctype in ("heatmap",) and len(category_fields) >= 2 and number_fields:
+            # 热力图需要两个分类维度 + 一个数值；与标题 {category_field1} x {category_field2} 一致
+            x = c0
+            y = c1
+            val = _pick_metric(number_fields)
         elif ctype in ("table",):
             pass  # 明细表不绑定特定维度
 
@@ -474,7 +479,15 @@ class S3ChartEngine:
         if ctype in ("map",) and g0 and val:
             config.update({"geo_field": g0, "value_field": val})
         if ctype in ("histogram",) and y:
-            config.update({"field": y})
+            # 直方图箱数自适应：按去重数估算，clamp 到 [5,30]（替换 YAML 硬编码 bins=20）
+            distinct = cardinality.get(y, 0) if cardinality else 0
+            bins = (max(5, min(30, int(round((distinct ** 0.5) * 2)))) if distinct else 10)
+            config.update({"field": y, "bins": bins})
+        # CHART-01 修复：散点/热力图此前漏写 config.update，config 沿用 YAML 占位符
+        if ctype in ("scatter",) and x and y:
+            config.update({"x": x, "y": y})
+        if ctype in ("heatmap",) and x and y and val:
+            config.update({"x": x, "y": y, "value": val})
 
         # 派生指标反哺：指标列是已验证派生指标时，把加工公式与安全聚合方式写进配置
         metric_field = y or val
@@ -633,6 +646,11 @@ class S3ChartEngine:
             # 兜底也必须字段真实；无字段则跳过（不再塞空壳）
             if ctype in ("bar", "pie") and (not cat_f or not num_f):
                 continue
+            # CHART-02 修复：兜底饼图必须受基数上限约束，避免高基数分类生成不可读饼图
+            if ctype == "pie":
+                _pcat = self._best_dim(cat_f, cardinality)
+                if not _pcat or cardinality.get(_pcat, 0) > self.chart_constraints.get("pie", {}).get("max_slices", 8):
+                    continue
             if ctype == "line" and (not date_f or not num_f):
                 continue
             if ctype == "scatter" and len(num_f) < 2:

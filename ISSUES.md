@@ -43,3 +43,31 @@
 - **现象（2026-09-28 night7 Item2 复测）**：T2 刚 `add_chart` 新增趋势图后，T3「再来一个」被分类为 `unknown`（0 action），系统反问澄清而非顺势再加一张图。非崩溃，属意图分类对省略上下文指代的覆盖不足。
 - **决策**：低优先级。若要做，应在 intent_classifier / 上下文记忆层对「再来一个 / 再加一个 / 也来一个」在上一轮为 add_chart 时推断为 add_chart（沿用上轮分析方向）。D 边界（诚实兜底）在此场景下仍成立：未假称已添加。
 - **状态**：`[OPEN]` 待排期（下一轮对话增强主线处理）。
+
+---
+
+## ISS-034 CHART-01 散点/热力图 config 占位符未替换 + heatmap 字段绑定缺失
+
+- **现象（2026-09-24 night8 TEST-1 模块A 规则引擎基线实测）**：11 夹具 56 图全量核查发现，**所有 10 张散点图** `config.x="{number_field1}"`、`config.y="{number_field2}"` 为 YAML 字面占位符（前端若读 config 渲染轴名将显示字面 `{number_field1}` 等）；**D3a 热力图** `config.x/y/value` 同为占位符，且其 `x_field/y_field/category_field/value_field` 全为 `None`（heatmap 在字段绑定段根本无分支）。
+- **影响**：`x_field/y_field` 本身绑定正确（真实字段），缺陷仅落在 `config` 字典 → 若前端读 `config.x/y` 会拿到占位符；heatmap 则无字段可绑定，图不可用。
+- **根因**：`backend/app/core/brain_modules/s3_chart_engine_v2.py` 第 445–465 行字段绑定段只处理 line/bar/pie/map/kpi/histogram/scatter/table，**heatmap 分支缺失**；第 467–477 行 `config.update(...)` 段 line/bar/pie/map/histogram 都有分支，**scatter/heatmap 漏写** → config 直接沿用 YAML 占位符。
+- **修复（已落码 + 验证通过）**：① 445–465 段补 heatmap 分支 `x=c0, y=c1, val=n0`；② 467–477 段补 `config.update({"x":x,"y":y})`（scatter）与 `config.update({"x":x,"y":y,"value":val})`（heatmap），用真实字段覆盖占位符；散点绑定同步改为最佳两指标 n0/n1 与标题一致。
+- **验证**：11 夹具真实 CSV 复跑 `_rulebaseline.json`，散点/热力图 config 占位符 0 例；D1 散点 config.x/y 由 `{number_field1}`/`{number_field2}` → 真实字段（如 担保余额/收入负债比）。
+- **状态**：`[DONE]` fix(chart) commit 见 night8/ROUND_NOW.md（本地未 push）。基线证据见 `TEST1_A_BASELINE.md` + `_rulebaseline.json` / `_rulebaseline_before.json` / `_rulebaseline_after.json`。
+
+## ISS-035 CHART-02 兜底饼图缺 cardinality 校验（潜在）
+
+- **现象（night8 TEST-1 基线，潜在未触发）**：`_apply_fallback`（`s3_chart_engine_v2.py` 第 634 行）对 `pie` 仅校验 `cat_f or num_f` 是否存在，**不校验分类基数**。若唯一分类列基数 >8（如 地区 200 类），兜底饼图会生成不可读的超高扇区饼图。
+- **根因**：634 行 `if ctype in ("bar","pie") and (not cat_f or not num_f): continue` 未复用 `chart_constraints.pie.max_slices`（第 312 行）做基数上限判断。主规则饼图（`s3_chart_rules.yaml` 120–122 `category_cardinality: {min:2,max:8}`）已限制，仅兜底路径漏。
+- **触发**：本次 11 夹具未触发（D6c 20 类地区被识别为 geo→map；饼图仅出现在低基数字段）。必须修以防回归。
+- **修复（已落码 + 验证通过）**：634 行后补 `if ctype=="pie": _pcat=self._best_dim(cat_f,cardinality); if not _pcat or cardinality.get(_pcat,0)>self.chart_constraints.get("pie",{}).get("max_slices",8): continue`。
+- **验证**：单测高基数分类(基数200)+数值字段走 `_apply_fallback`，产出类型 [bar,kpi,table]，**无 pie**（此前会生成 200 扇区不可读饼图）。
+- **状态**：`[DONE]` fix(chart) commit 见 night8/ROUND_NOW.md（本地未 push）。
+
+## ISS-036 CHART-03 直方图 bins=20 硬编码
+
+- **现象（night8 TEST-1 基线实测）**：10/11 数据集直方图 `config.bins` 恒为 20。
+- **根因**：`s3_chart_rules.yaml` 第 158 行 `config: {field: "{number_field}", bins: 20}` 硬编码；引擎 476–477 行 `config.update({"field": y})` 只覆盖 field，未覆盖 bins。
+- **修复（已落码 + 验证通过）**：引擎侧按字段去重数自适应计算 bins（clamp 到 [5,30]），YAML 去掉硬编码 20（改注释说明由引擎算）。
+- **验证**：11 夹具真实 CSV 复跑，直方图 bins 取值 {5,12,23,28}（此前恒为 20），均 ∈[5,30] 且 !=20。
+- **状态**：`[DONE]` fix(chart) commit 见 night8/ROUND_NOW.md（本地未 push）。

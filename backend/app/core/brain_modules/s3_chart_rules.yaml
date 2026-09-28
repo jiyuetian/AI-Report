@@ -155,7 +155,7 @@ rules:
       title: "{number_field}分布"
       config:
         field: "{number_field}"
-        bins: 20
+        # bins 由引擎按字段去重数自适应计算（clamp [5,30]），此处不再硬编码 20
 
   # ========== 关联类（双数值）==========
   - name: "散点图-相关性"
