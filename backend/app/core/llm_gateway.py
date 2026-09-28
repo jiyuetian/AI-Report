@@ -418,6 +418,25 @@ class LLMGateway:
                         )
                         response.raise_for_status()
                         data = response.json()
+                        # ── A 修复：错误体检测（failover 吞错）──
+                        # 部分 provider（如智谱）把 insufficient_user_quota 等业务错误包成
+                        # HTTP 200 + {"error": {...}} 返回，raise_for_status 通过但实为失败。
+                        # 若不识别，错误会被当成功内容返回 -> failover 永不触发、备胎白配。
+                        # 同时防御 choices 缺失/为空（结构损坏）。命中即切下一 provider。
+                        _err = data.get("error")
+                        _choices = data.get("choices")
+                        if _err or not _choices:
+                            _em = ""
+                            if isinstance(_err, dict):
+                                _em = _err.get("message") or _err.get("type") or json.dumps(_err, ensure_ascii=False)
+                            elif isinstance(_err, str):
+                                _em = _err
+                            else:
+                                _em = "响应缺少 choices 字段（结构损坏）"
+                            print(f"[LLM-ERRORBODY] provider {prov_name} 返回错误体(HTTP 200 实为失败): {_em}")
+                            last_error = f"LLM返回错误体(HTTP 200 实为失败): {_em}"
+                            key_exhausted = True
+                            break
                         content = data["choices"][0]["message"]["content"]
                         response_json = None
                         if request.json_mode:
@@ -425,6 +444,23 @@ class LLMGateway:
                             # 若JSON提取失败则不视为成功（交给上层降级），避免抛异常中断
                             if response_json is None:
                                 raise ValueError("LLM响应未包含有效JSON")
+                            # ── A 修复（续）：content 内嵌错误体（如 {"error":"insufficient_user_quota"}）──
+                            # 部分 provider 把业务错误作为 content 字符串返回（HTTP 200），
+                            # 顶层 data 无 error 键，需解析 content 识别，否则会被当成功返回。
+                            if isinstance(response_json, dict) and (
+                                "error" in response_json
+                                or "error_code" in response_json
+                                or "error_message" in response_json
+                            ):
+                                _em = str(
+                                    response_json.get("error")
+                                    or response_json.get("error_message")
+                                    or response_json.get("error_code")
+                                )
+                                print(f"[LLM-ERRORBODY] provider {prov_name} content 内嵌错误体(HTTP 200 实为失败): {_em}")
+                                last_error = f"LLM content 内嵌错误体(HTTP 200 实为失败): {_em}"
+                                key_exhausted = True
+                                break
                         usage = data.get("usage", {})
                         prompt_tokens = usage.get("prompt_tokens", TokenCounter.estimate(request.prompt))
                         completion_tokens = usage.get("completion_tokens", 0)
