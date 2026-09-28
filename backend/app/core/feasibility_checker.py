@@ -209,7 +209,7 @@ class FeasibilityChecker:
         
         mentioned_fields = []
         for kw in field_keywords:
-            if kw in _GENERIC_CONCEPT_WORDS:
+            if kw in FeasibilityChecker._GENERIC_CONCEPT_WORDS:
                 continue  # 泛指概念词不当字段要求
             if kw in message:
                 mentioned_fields.append(kw)
