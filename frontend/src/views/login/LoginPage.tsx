@@ -3,6 +3,7 @@ import { Form, Input, Button, Checkbox, Card, Typography, message, Steps } from 
 import { UserOutlined, LockOutlined, SafetyOutlined, MobileOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import './LoginPage.css'
+import { authorizedFetch } from '../../utils/request'
 
 const { Title, Text, Link } = Typography
 
@@ -34,8 +35,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       // TODO: 调用登录API
-      // eslint-disable-next-line no-restricted-globals -- 登录接口本身，绝不能带 token
-      const response = await fetch('/api/v1/auth/login', {
+      const response = await authorizedFetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

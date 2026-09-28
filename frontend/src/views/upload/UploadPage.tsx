@@ -7,7 +7,7 @@ import { SheetSelectModal, EncodingSelectModal } from '../../components/modals'
 import QualityCheckPanel, { type QualityCheckStatus } from '../../components/quality/QualityCheckPanel'
 import LoadingPage from '../../components/charts/LoadingPage'
 import { useNavigate } from 'react-router-dom'
-import { http, authHeaders } from '../../utils/request'
+import { http, authHeaders, authorizedFetch } from '../../utils/request'
 
 const { Dragger } = Upload
 const { Title, Text } = Typography
@@ -200,8 +200,7 @@ export default function UploadPage() {
         const dashByDs = new Map<string, string>()
         await Promise.all(dsIds.map(async dsId => {
           try {
-            // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 /dashboards/by-dataset/*，已带 authHeaders()
-            const res = await fetch(`${API_BASE}/dashboards/by-dataset/${dsId}`, { headers: authHeaders() })
+            const res = await authorizedFetch(`${API_BASE}/dashboards/by-dataset/${dsId}`, { headers: authHeaders() })
             if (!res.ok) return
             const data = await res.json()
             const first = (data?.items || [])[0]
@@ -370,8 +369,7 @@ export default function UploadPage() {
   const checkFileNeedsSelection = async (fileId: string, fileName: string, fileExt: string) => {
     try {
       // 获取预览信息
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 GET /files/{id}/preview，已带 authHeaders()
-      const response = await fetch(`${API_BASE}/files/${fileId}/preview`, { headers: authHeaders() })
+      const response = await authorizedFetch(`${API_BASE}/files/${fileId}/preview`, { headers: authHeaders() })
       
       // 先检查响应Content-Type是否为JSON，避免非JSON响应导致解析失败
       const contentType = response.headers.get('content-type') || ''
@@ -456,8 +454,7 @@ export default function UploadPage() {
     const timeoutId = setTimeout(() => controller.abort(), 30000)
     
     try {
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 POST /datasets，已带 authHeaders()
-      const response = await fetch(`${API_BASE}/datasets`, {
+      const response = await authorizedFetch(`${API_BASE}/datasets`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -504,8 +501,7 @@ export default function UploadPage() {
     setSheetModal(prev => ({ ...prev, visible: false }))
     
     try {
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 select-sheet，已带 authHeaders()
-      const response = await fetch(`${API_BASE}/files/${fileId}/select-sheet`, {
+      const response = await authorizedFetch(`${API_BASE}/files/${fileId}/select-sheet`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ file_id: fileId, sheet_name: sheetName })
@@ -533,8 +529,7 @@ export default function UploadPage() {
     setEncodingModal(prev => ({ ...prev, visible: false }))
     
     try {
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 select-encoding，已带 authHeaders()
-      const response = await fetch(`${API_BASE}/files/${fileId}/select-encoding`, {
+      const response = await authorizedFetch(`${API_BASE}/files/${fileId}/select-encoding`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ file_id: fileId, encoding })
@@ -569,8 +564,7 @@ export default function UploadPage() {
         item.uid === uid ? { ...item, status: 'uploading', progress: 0 } : item
       ))
 
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 POST /files（FormData 上传），已带 authHeaders() 且不设 Content-Type 以保留 multipart boundary
-      const response = await fetch(`${API_BASE}/files`, {
+      const response = await authorizedFetch(`${API_BASE}/files`, {
         method: 'POST',
         headers: authHeaders(),
         body: formData,

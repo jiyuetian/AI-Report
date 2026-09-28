@@ -11,7 +11,7 @@ import {
   CheckCircleOutlined
 } from '@ant-design/icons';
 import './LoadingPage.css';
-import { authHeaders } from '../../utils/request';
+import { authHeaders, authorizedFetch } from '../../utils/request';
 
 const { Title, Text } = Typography;
 
@@ -188,8 +188,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
         ? `${API_BASE}/brain/run/${runId}/status?dataset_id=${encodeURIComponent(datasetId)}`
         : `${API_BASE}/brain/run/${runId}/status`;
       // 后端该端点强制鉴权，裸 fetch 必须带 Authorization，否则登录态下必 401
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 GET /brain/run/{id}/status，已带 authHeaders()
-      const res = await fetch(url, { headers: authHeaders() });
+      const res = await authorizedFetch(url, { headers: authHeaders() });
       const data = await res.json();
       if (mountedRef.current) applyStatus(data, emitComplete);
     } catch (e) {
@@ -222,8 +221,8 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
     lastPctRef.current = 0;
     lastPctTsRef.current = Date.now();
     try {
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 POST /brain/run，已带 authHeaders()
-      const res = await fetch(`${API_BASE}/brain/run`, {
+      // SSE 流式链路：brain/run 的 startRun/cancel/resume/status 均走 authorizedFetch 取原始 Response（status 轮询 + 触发 SSE），合理不走 request() 的 JSON 解析封装
+      const res = await authorizedFetch(`${API_BASE}/brain/run`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ dataset_id: datasetId, user_id: 'current' }),
@@ -297,8 +296,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
     const runId = runIdRef.current;
     if (runId) {
       try {
-        // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 cancel，已带 authHeaders()
-        await fetch(`${API_BASE}/brain/run/${runId}/cancel`, { method: 'POST', headers: authHeaders() });
+        await authorizedFetch(`${API_BASE}/brain/run/${runId}/cancel`, { method: 'POST', headers: authHeaders() });
       } catch (e) { /* 忽略 */ }
       localStorage.removeItem(RUN_KEY(datasetId));
     }
@@ -314,8 +312,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
     if (!runId) return;
     setAiAwaiting(null); // 先关弹窗，等待流水线继续（轮询会刷新进度）
     try {
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 resume，已带 authHeaders()
-      await fetch(`${API_BASE}/brain/run/${runId}/resume`, {
+      await authorizedFetch(`${API_BASE}/brain/run/${runId}/resume`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ choice }),

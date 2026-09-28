@@ -16,7 +16,7 @@ import {
   PictureOutlined, ThunderboltFilled, CloseOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { authHeaders } from '../../utils/request';
+import { authHeaders, authorizedFetch } from '../../utils/request';
 import './ChatPanel.css';
 
 const { Text, Title } = Typography;
@@ -83,8 +83,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   // 获取Token状态
   const fetchTokenStatus = async () => {
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /tokens/status，ISS-025 端点已加鉴权，前端必须带 token
-      const res = await fetch('/api/v1/tokens/status', { headers: authHeaders() });
+      const res = await authorizedFetch('/api/v1/tokens/status', { headers: authHeaders() });
       const data = await res.json();
       if (data.quota) {
         setTokenStatus(data.quota);
@@ -124,7 +123,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     if (!dashboardId) return;
     try {
       // G3 联动：/chat/sessions/latest 现已强制鉴权，裸 fetch 不带 token 会 401 → 走 authHeaders()
-      const res = await fetch(`/api/v1/chat/sessions/latest?dashboard_id=${encodeURIComponent(dashboardId)}`, { headers: authHeaders() });
+      const res = await authorizedFetch(`/api/v1/chat/sessions/latest?dashboard_id=${encodeURIComponent(dashboardId)}`, { headers: authHeaders() });
       if (!res.ok) return;
       const data = await res.json();
       if (data.success && data.session_id && data.messages?.length > 0) {
@@ -159,8 +158,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   // 创建会话
   const createSession = async () => {
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，ISS-025 端点已加鉴权，前端必须带 token
-      const res = await fetch('/api/v1/chat/sessions', {
+      const res = await authorizedFetch('/api/v1/chat/sessions', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dashboard_id: dashboardId })
@@ -218,8 +216,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
     // SSE流式请求
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /chat/*，ISS-025 端点已加鉴权，前端必须带 token
-      const res = await fetch('/api/v1/chat/message', {
+      // SSE 流式：chat/message 走 authorizedFetch 取原始 Response 以消费 ReadableStream，合理不走 request() 的 JSON 解析封装
+      const res = await authorizedFetch('/api/v1/chat/message', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({

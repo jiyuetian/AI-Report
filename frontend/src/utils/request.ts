@@ -30,6 +30,25 @@ export function authHeaders(extra?: Record<string, string>): Record<string, stri
   return headers
 }
 
+
+/**
+ * 给「非 SSE 的裸 fetch」统一补鉴权的薄封装。与 authHeaders() 不同，它直接发起请求并返回
+ * 原始 Response，保留调用方对 res.ok / res.headers / res.body(ReadableStream) / signal 的
+ * 完全控制。所有非流式裸 fetch 都应改走本函数，避免各组件重复拼 Authorization、并消除
+ * `no-restricted-globals` 对裸 fetch 的限制（request.ts 是 fetch 唯一合法出处）。
+ * SSE 流式调用（LoadingPage / ChatPanel）也走本函数取原始 Response 消费流，合理不走
+ * request() 的 JSON 解析封装。
+ */
+export async function authorizedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = localStorage.getItem('token')
+  const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined) }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  // eslint-disable-next-line no-restricted-globals -- 统一鉴权封装：fetch 的唯一合法出处（非 SSE 与非流式调用统一走这里）
+  return fetch(url, { ...options, headers })
+}
+
 export async function request<T = any>(
   path: string,
   options: RequestInit = {},

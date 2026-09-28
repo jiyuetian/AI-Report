@@ -6,7 +6,7 @@ import {
 } from '@ant-design/icons'
 // Phase 5：SkillPanel 薄壳收口（展示本面板由哪些后端 skill 驱动，暗色自动继承）
 import SkillPanel from '../skills/SkillPanel'
-import { authHeaders } from '../../utils/request'
+import { authHeaders, authorizedFetch } from '../../utils/request'
 
 // 后端返回的单个问题结构
 export interface ApiQualityIssue {
@@ -216,8 +216,7 @@ export default function QualityCheckPanel({
     const timer = setInterval(async () => {
       attempts++
       try {
-        // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
-        const res = await fetch(`${API_BASE}/quality/check/ai/${dsId}`, { headers: authHeaders() })
+        const res = await authorizedFetch(`${API_BASE}/quality/check/ai/${dsId}`, { headers: authHeaders() })
         const data = await res.json()
         if (data.status === 'done') {
           clearInterval(timer)
@@ -314,8 +313,7 @@ export default function QualityCheckPanel({
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 45000)
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
-      const response = await fetch(`${API_BASE}/quality/check`, {
+      const response = await authorizedFetch(`${API_BASE}/quality/check`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataset_id: datasetId }),
@@ -371,8 +369,7 @@ export default function QualityCheckPanel({
   const loadExisting = useCallback(async (): Promise<number | null> => {
     if (!datasetId) return null
     try {
-      // eslint-disable-next-line no-restricted-globals -- 强制鉴权端点 GET /quality/{id}/issues，已带 authHeaders()
-      const res = await fetch(`${API_BASE}/quality/${datasetId}/issues`, { headers: authHeaders() })
+      const res = await authorizedFetch(`${API_BASE}/quality/${datasetId}/issues`, { headers: authHeaders() })
       if (!res.ok) return null
       const data = await res.json()
       const raw = (data?.issues || []) as any[]
@@ -439,8 +436,7 @@ export default function QualityCheckPanel({
     setFixing(true)
     message.loading({ content: '正在应用修复方案，请稍候...', key: 'fix', duration: 0 })
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
-      const response = await fetch(`${API_BASE}/quality/fix`, {
+      const response = await authorizedFetch(`${API_BASE}/quality/fix`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -527,8 +523,7 @@ export default function QualityCheckPanel({
     setApplyingPlan(true)
     message.loading({ content: `正在按推荐方案批量修复 ${plan.length} 项...`, key: 'plan', duration: 0 })
     try {
-      // eslint-disable-next-line no-restricted-globals -- 非强制鉴权端点 /quality/*，ISS-025 端点已加鉴权，前端必须带 token
-      const resp = await fetch(`${API_BASE}/quality/fix-batch`, {
+      const resp = await authorizedFetch(`${API_BASE}/quality/fix-batch`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataset_id: datasetId, items: plan }),
