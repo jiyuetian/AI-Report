@@ -287,6 +287,10 @@ def detect_vague_chart_type(clause: str, params: Dict[str, Any]) -> Optional[Dic
     if has_concrete:
         return None
     if any(v in clause for v in _VAGUE_TYPE_WORDS) or not params.get("target_type"):
+        # 2026-09-29 night10 Item1(ISS-039)：轴/字段替换（"把Y轴换成利润"）已显式点名目标字段，
+        # 不算"图型模糊"，不应反问"要哪种图"。
+        if params.get("target_field"):
+            return None
         return {
             "reason": "vague_chart_type",
             "message": (
@@ -747,8 +751,11 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
 
         # ---- 单点歧义 2：点名了不存在的字段 → 禁止幻觉，必须澄清 ----
         missing = [t for t in explicit_field_tokens(clause) if not _field_exists(t, field_names)]
+        # 2026-09-29 night10 Item1(ISS-039)：轴/字段替换（"把Y轴换成利润"）中"利润"是用户显式指定的目标字段，
+        # 不是缺失字段，不应触发"字段不存在"澄清。
         if missing and itype in (IntentType.ADD_CHART.value, IntentType.CHANGE_CHART.value,
-                                 IntentType.FILTER_DRILL.value, IntentType.DELETE_CHART.value):
+                                 IntentType.FILTER_DRILL.value, IntentType.DELETE_CHART.value) \
+                and not params.get("target_field"):
             avail = "、".join(field_names[:10]) or "（当前数据集没有可用字段画像）"
             actions.append(_clarify_action(
                 "field_not_found",

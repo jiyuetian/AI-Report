@@ -123,6 +123,10 @@ class IntentClassifier:
             r"(换|改|变成|换成).{0,20}(图|图表|饼图|柱图|线图|散点图|表格)",
             r"(饼图|柱图|线图|散点图).{0,12}(改|换).{0,12}(饼图|柱图|线图|散点图|表格)",
             r"(把|将|给).{0,20}?(图|图表|柱状图|柱图|饼图|线图|折线图|散点图|圆环图|环形图|表格).{0,12}(改|换|变成)(成|为)",
+            # 2026-09-29 night10 Item1(ISS-040)：否定+纠正「不是A，是B」→ change_chart(source=A,target=B)
+            r"不是.{0,10}?(饼图|柱图|柱状图|线图|折线图|散点图|环形图|圆环图|表格).{0,10}?(是|换成|改成|改为|变成).{0,10}?(饼图|柱图|柱状图|线图|折线图|散点图|环形图|圆环图|表格)",
+            # 2026-09-29 night10 Item1(ISS-039)：轴/字段替换「把Y轴换成利润」→ change_chart(target_field=利润)
+            r"(Y轴|y轴|X轴|x轴|纵坐标|横坐标|数值轴|指标轴|指标|数值|字段|维度).{0,8}(换成|改成|改为|变为|变成|调成|用)",
         ],
         IntentType.ADD_CHART: [
             # 新增/添加/加/插入/来个 + 可选量词 + 任意描述(维度/指标/占比, 放宽间隙至30) + 图型词
@@ -416,6 +420,7 @@ class IntentClassifier:
         }
         
         if intent_type == IntentType.CHANGE_CHART:
+            analysis["extracted_params"] = analysis.get("extracted_params") or {}
             # 提取源图表和目标图表类型
             chart_types = ["饼图", "柱图", "柱状图", "线图", "折线图", "散点图", "表格"]
             found_types = [t for t in chart_types if t in message]
@@ -438,7 +443,9 @@ class IntentClassifier:
             if tm:
                 title_kw = tm.group(1).strip().strip("\"'“”「」《》")
                 generic = ("图表", "图", "它", "这个", "那个", "第一个", "最后一个")
-                if title_kw and title_kw not in chart_types and title_kw not in generic:
+                _axis_kw = ("Y轴", "y轴", "X轴", "x轴", "纵坐标", "横坐标", "数值轴", "指标轴", "指标", "数值", "字段", "维度")
+                # 轴/字段替换（"把Y轴换成利润"）的"Y轴"不是图名，交给下方 target_field 处理
+                if title_kw and title_kw not in chart_types and title_kw not in generic and title_kw not in _axis_kw:
                     analysis["extracted_params"]["title_keyword"] = clean_title_keyword(title_kw)
             # 2026-09-18 新增：时间粒度（"按月聚合的折线图"）
             # 老实现完全丢弃"按月"，用户说完之后图表仍是原粒度，看上去"没改对"。
@@ -451,6 +458,15 @@ class IntentClassifier:
                     break
             if grain:
                 analysis["extracted_params"]["time_grain"] = grain
+            # 2026-09-29 night10 Item1(ISS-039)：轴/字段替换「把Y轴换成利润」→ 只改字段不改图型
+            _axis_m = re.search(
+                r"(Y轴|y轴|X轴|x轴|纵坐标|横坐标|数值轴|指标轴|指标|数值|字段|维度).{0,8}(换成|改成|改为|变为|变成|调成|用)\s*([一-龥A-Za-z0-9_]{1,16})",
+                message,
+            )
+            if _axis_m:
+                _ep = analysis["extracted_params"]
+                _ep["target_field"] = _axis_m.group(3).strip("。，； ")
+                _ep["target_axis"] = "x" if _axis_m.group(1) in ("X轴", "x轴", "横坐标") else "y"
         
         elif intent_type == IntentType.ADD_CHART:
             # 提取要添加的图表类型（优先具体图表类型，如"饼图"）
@@ -545,23 +561,40 @@ class IntentClassifier:
             analysis["extracted_params"] = {"direction": direction}
         
         elif intent_type == IntentType.FILTER_DRILL:
-            # 提取筛选字段和值
-            filter_match = re.search(r"(只看|只查看|只显示|筛选|过滤|聚焦)[^，。；]*?(地区|区域|省份|城市|类别|类型|状态|分类)", message)
-            val_match = re.search(r"(只看|只查看|只看|只显示|筛选|过滤|聚焦)\s*([^，。；的\s]{2,16}?(?:省|市|区|县|类别|类型|状态))", message)
-            if filter_match:
+            # 2026-09-29 night10 Item1(ISS-039)：年份筛选「只看2025年数据」
+            _yr = re.search(r"(20\d{2}|19\d{2})\s*年?", message)
+            if _yr:
+                _year_val = _yr.group(1)
+                _fps = (context or {}).get("field_profiles") or ((context or {}).get("dataset_info") or {}).get("field_profiles") or []
+                _year_field = "年份"
+                for _fp in _fps:
+                    _nm = (_fp.get("name") or _fp.get("column") or "")
+                    if re.search(r"(年份|年|year|date|时间|月份)", _nm, re.I):
+                        _year_field = _nm
+                        break
                 analysis["extracted_params"] = {
-                    "filter_field": filter_match.group(2),
-                    "filter_value": None
+                    "filter_field": _year_field,
+                    "filter_value": _year_val,
+                    "is_year": True,
                 }
-                # 提取具体值（如"华东""杭州"）
-                m = re.search(r"(只看|只查看|只显示|筛选|过滤|聚焦)([^，。；的\s]{1,12}?)[的地区省市区]", message)
-                if m:
-                    analysis["extracted_params"]["filter_value"] = m.group(2)
-            elif val_match:
-                analysis["extracted_params"] = {
-                    "filter_field": None,
-                    "filter_value": val_match.group(2)
-                }
+            else:
+                # 提取筛选字段和值
+                filter_match = re.search(r"(只看|只查看|只显示|筛选|过滤|聚焦)[^，。；]*?(地区|区域|省份|城市|类别|类型|状态|分类)", message)
+                val_match = re.search(r"(只看|只查看|只看|只显示|筛选|过滤|聚焦)\s*([^，。；的\s]{2,16}?(?:省|市|区|县|类别|类型|状态))", message)
+                if filter_match:
+                    analysis["extracted_params"] = {
+                        "filter_field": filter_match.group(2),
+                        "filter_value": None
+                    }
+                    # 提取具体值（如"华东""杭州"）
+                    m = re.search(r"(只看|只查看|只显示|筛选|过滤|聚焦)([^，。；的\s]{1,12}?)[的地区省市区]", message)
+                    if m:
+                        analysis["extracted_params"]["filter_value"] = m.group(2)
+                elif val_match:
+                    analysis["extracted_params"] = {
+                        "filter_field": None,
+                        "filter_value": val_match.group(2)
+                    }
         
         elif intent_type == IntentType.ATTRIBUTION:
             # 归因分析参数
@@ -577,11 +610,17 @@ class IntentClassifier:
             # 现改为：按"改成/改为/…"切分 → 遇到分句/连接词截断 → 去各类引号。
             new_title = extract_clean_title(message)
             if new_title:
-                analysis["extracted_params"] = {
-                    "new_title": new_title,
-                    # 图表标题 vs 看板标题：出现"图表/这张图/第N张"时改的是图表标题
-                    "scope": "chart" if re.search(r"(图|图表|这张|那张|第[一二三四五六七八九十\d]{1,2}[张个])", message) else "dashboard",
-                }
+                # 图表标题 vs 看板标题：出现"图表/这张图/第N张"时改的是图表标题
+                _chart_kw = re.search(r"(图|图表|这张|那张|第[一二三四五六七八九十\d]{1,2}[张个])", message)
+                _scope = "chart" if _chart_kw else "dashboard"
+                _eps = {"new_title": new_title, "scope": _scope}
+                # 2026-09-29 night10 Item1(ISS-039)：单图看板「把标题改成X」（无图关键词）即重命名那张图，
+                # 否则缺 chart_id 会被执行器误改看板标题。多图且无图关键词仍按看板标题处理。
+                _charts = (context or {}).get("current_config", {}).get("charts", []) or []
+                if len(_charts) == 1 and not re.search(r"(看板|整个|总|大)", message):
+                    _eps["chart_id"] = _charts[0].get("id")
+                    _eps["scope"] = "chart"
+                analysis["extracted_params"] = _eps
 
         elif intent_type == IntentType.ADD_CONCLUSION:
             # 追加结论：只记录位置与来源约束，正文由 action_executor 基于真实字段生成

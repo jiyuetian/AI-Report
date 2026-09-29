@@ -106,15 +106,20 @@
   - B1-7 `把Y轴换成利润` → y_field 未变（change_chart 字段替换规则未命中）。
   - B1-10 `只看2025年数据` → config.filter.year=None（时间筛选规则未抽取年份）。
 - **证据**：`docs/project_record/night_runs/night9/TEST1_B_BASELINE.md`（dash_id dashB_B1-5 / dashB_B1-7 / dashB_B1-10，结果 FAIL）。
-- **决策**：仅记录不修（本轮不碰生产 DuckDB、不修正文逻辑，待用户确认排期）。属「规则引擎本应命中但未命中」类缺陷；需与 B2/B3 的「规则模式天然缺 LLM 字段抽取」缺口区分。
-- **状态**：`[OPEN]` 待排期（night9 Item4 摸底登记，未修复）。
+- **决策**：属「规则引擎本应命中但未命中」类缺陷；需与 B2/B3 的「规则模式天然缺 LLM 字段抽取」缺口区分。
+- **修复（2026-09-29 night10 Item1）**：三处规则缺口已闭环，确定性真测全 PASS（见 `night_runs/night10/ROUND_NOW.md` 第 1 件）：
+  - B1-5 `把标题改成销售分析`：单图看板「把标题改成X」自动带 `chart_id`+`scope=chart`，改图标题而非看板标题（原误改看板标题）。
+  - B1-7 `把Y轴换成利润`：新增「轴/字段替换」正则（`Y轴换成利润`）→ change_chart(target_field=利润, target_axis=y)；`detect_vague_chart_type` 在 `target_field` 存在时返回 None（不反问图型）。
+  - B1-10 `只看2025年数据`：FILTER_DRILL 抽取年份分支 → filter_field=年份/filter_value=2025/is_year=true；filter_drill 落库补 `year` 键（修复 `re` 未 import 的 NameError 崩溃）。
+- **状态**：`[DONE]`（night10 Item1 修复 + 复测 5/5 PASS）。
 
 ## ISS-040 纠正指令规则未承接（B4-1 / B4-7）
 
 - **现象（2026-09-29 night9 Item4 规则模式基线）**：`不是饼图，是柱图` 与二次纠正 `不是这个，是那个` 均未把图型改为柱图（纠正意图规则未承接；B4-3 承接澄清「折线图」可改，说明澄清承接可用但「否定+纠正」句式规则未覆盖）。
 - **证据**：`TEST1_B_BASELINE.md`（dashB_B4-1 / dashB_B4-7，结果 FAIL）。
 - **决策**：仅记录不修（本轮不修）。
-- **状态**：`[OPEN]` 待排期。
+- **修复（2026-09-29 night10 Item1）**：CHANGE_CHART 新增「否定+纠正」正则（`不是X(是|换成|改成|改为|变成)Y`，覆盖饼图/柱图/线图/散点图/环形图/表格）→ change_chart(source_type=饼图, target_type=柱图)；确定性真测全 PASS（B4-1 单次纠正、B4-7 二次纠正均 chart_type=bar）。
+- **状态**：`[DONE]`（night10 Item1 修复 + 复测 5/5 PASS）。
 
 ## ISS-041 复合 add_chart 规则模式不加图（B1-2 / B2-1 / B2-2 / B2-3）
 

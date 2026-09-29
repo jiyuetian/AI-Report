@@ -8,6 +8,7 @@ from enum import Enum
 from datetime import datetime
 import json
 import uuid
+import re
 
 
 class ActionType(str, Enum):
@@ -119,8 +120,15 @@ class ActionExecutor:
     ) -> Dict[str, Any]:
         """执行换图"""
         source_type = params.get("source_type")
-        # 修复：将中文类型名转换为枚举值
-        target_type = ActionExecutor.normalize_chart_type(params.get("target_type", "bar"))
+        # 2026-09-29 night10 Item1(ISS-039)：字段替换（"把Y轴换成利润"）只改字段不改图型，
+        # target_type 留空时不应强制改成 bar（否则会把饼图误改成柱图）。
+        _chart_type_arg = params.get("target_type")
+        if _chart_type_arg:
+            target_type = ActionExecutor.normalize_chart_type(_chart_type_arg)
+            _change_type = True
+        else:
+            target_type = None
+            _change_type = False
         chart_id = params.get("chart_id")
         # 2026-09-18 修复："把地区分布 换成饼图"此前改的是第一张图（常误伤 KPI 卡）。
         # 现按标题关键词先精确定位，再退回类型匹配，最后兜底"第一张还不是目标类型的图"。
@@ -165,8 +173,9 @@ class ActionExecutor:
 
         if target_chart:
             old_type = target_chart.get("chart_type")
-            # 修复：确保存储的是标准化后的类型名
-            target_chart["chart_type"] = target_type
+            # 仅当明确要求换图型时才改 chart_type；字段替换保持原图型
+            if _change_type and target_type:
+                target_chart["chart_type"] = target_type
 
             # 根据新类型调整配置（2026-09-18 修复：换图沿用原字段，不再写死 category/value，
             # 否则"柱图→饼图"后图表用不存在的 category 列取数，页面看起来"没变化/空白"）
@@ -213,9 +222,20 @@ class ActionExecutor:
                 else:
                     grain_applied = True
 
-            msg = f"已将图表从{ActionExecutor._get_chart_type_name(old_type)}改为{ActionExecutor._get_chart_type_name(target_type)}"
-            if grain_applied:
-                msg += f"，并按{({'month':'月','day':'天','week':'周','quarter':'季度','year':'年'}).get(time_grain, time_grain)}聚合"
+            if _change_type and target_type:
+                msg = f"已将图表从{ActionExecutor._get_chart_type_name(old_type)}改为{ActionExecutor._get_chart_type_name(target_type)}"
+                if grain_applied:
+                    msg += f"，并按{({'month':'月','day':'天','week':'周','quarter':'季度','year':'年'}).get(time_grain, time_grain)}聚合"
+            else:
+                _tf0 = (params.get("target_field") or "").strip()
+                _ax0 = "X轴" if (params.get("target_axis") or "y") == "x" else "Y轴"
+                msg = (f"已更新图表{_ax0}为{_tf0}" if _tf0 else "已更新图表配置")
+
+            # 2026-09-29 night10 Item1(ISS-039)：字段替换（"把Y轴换成利润"）覆盖对应轴字段
+            _tf = (params.get("target_field") or "").strip()
+            if _tf:
+                _axis = params.get("target_axis") or "y"
+                target_chart[("x_field" if _axis == "x" else "y_field")] = _tf
 
             return {
                 "success": True,
@@ -888,8 +908,11 @@ class ActionExecutor:
             current_config["filters"].append({
                 "field": filter_field,
                 "value": filter_value,
-                "operator": "eq"
+                "operator": "eq",
             })
+            # 2026-09-29 night10 Item1(ISS-039)：年份筛选补充 year 键，便于前端/校验读取
+            if isinstance(filter_value, str) and re.fullmatch(r"\d{4}", filter_value):
+                current_config["filters"][-1]["year"] = filter_value
         
         # 更新下钻路径
         if "drill_path" not in current_config:
