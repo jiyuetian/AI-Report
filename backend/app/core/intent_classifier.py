@@ -834,6 +834,20 @@ class IntentClassifier:
             return None
 
     @classmethod
+    def _single_value_intent(cls, msg: str) -> bool:
+        """ISS-052 ①：单值语义 → KPI 单值卡（累计值/最新值/最新/总额/合计/汇总等）。
+
+        命中即表示用户要的是「一个数字」而非「一张分布图」，应出 kpi/big_number 类型，
+        取时序最新一期或全量聚合单值，而非默认 30+ 柱密排图。
+        """
+        return bool(re.search(r"(累计值|累计|最新值|最新|总额|总笔数|总数量|合计|汇总值|单值)", msg or ""))
+
+    @classmethod
+    def _chart_semantic(cls, msg: str) -> bool:
+        """消息是否含「要一张图」的语义词（分布/占比/对比/趋势…），用于区分单值卡与图。"""
+        return bool(re.search(r"(分布|占比|构成|对比|趋势|排名|排行|情况|统计|明细|列表|看板)", msg or ""))
+
+    @classmethod
     def _rule_extract_add_charts(cls, message, field_profiles):
         """规则兜底：顿号拆分多图 + 维度/指标关键词匹配字段画像。
 
@@ -872,6 +886,7 @@ class IntentClassifier:
         for p in parts:
             ct = None
             is_avg = False  # 在两条分支共用出口（charts.append）前保证已绑定，避免 else 分支 UnboundLocalError
+            single_val = False  # ISS-052 ①：同上，单值意图标志也需提前绑定
             for t in ["饼图", "柱图", "柱状图", "条形图", "直方图", "线图", "折线图", "散点图", "环形图", "圆环图", "表格"]:
                 if t in p:
                     ct = t
@@ -887,8 +902,16 @@ class IntentClassifier:
                 is_avg = bool(re.search(r"(平均值|均值|平均|汇总|平均汇总)", p))
                 metric = _mf
                 dim = ""
-                title = f"{_mf}平均值" if is_avg else _mf
-                ct = "kpi" if is_avg else (ct or "bar")
+                single_val = cls._single_value_intent(p)
+                # ISS-052 ①：单指标 + 无图型 + 无维度 → KPI 单值卡，杜绝默认 bar 出 30+ 柱密排
+                if is_avg:
+                    title = f"{_mf}平均值"
+                elif single_val:
+                    title = f"{_mf}（最新）"
+                else:
+                    title = _mf
+                # 单值语义 或 未显式指定图型 且非「分布/占比」语义 → 单值卡；否则沿用图型
+                ct = "kpi" if (is_avg or single_val or (ct is None and not cls._chart_semantic(p))) else (ct or "bar")
             else:
                 dim = ""
                 for k in dim_keywords:
@@ -903,28 +926,32 @@ class IntentClassifier:
                     metric = cls._match_field(max(matched)[2], field_profiles, "metric")
             # 仅当该子句含图型或维度/指标，才视为一个新增图请求
             if ct or dim or metric:
-                title = p
-                # 去掉开头的指令前缀（含冒号，注意不能先拆"再加工"否则残留"再工"）
-                title = re.sub(
-                    r'^(?:再)?\s*(?:加工|新增|添加|加|来)\s*(?:一个|一张|个|张)?\s*'
-                    r'(?:饼图|柱图|柱状图|条形图|直方图|线图|折线图|散点图|环形图|圆环图|表格)?\s*[：: ]*',
-                    '', title
-                )
-                # 去掉结尾的图型词
-                title = re.sub(r'(饼图|柱图|柱状图|条形图|直方图|线图|折线图|散点图|圆环图|环形图|表格|指标卡|kpi|KPI|图)$',
-                               '', title, flags=re.I)
-                # 2026-09-18：规则兜底的标题会残留"按客户风险等级的"这类前缀/助词，
-                # 去掉"按/把/用/将/拿/对"前缀与结尾"的/了/来"，得到干净的图表名。
-                title = re.sub(r'^(?:按|把|用|将|拿|对|根据|按照)\s*', '', title.strip())
-                title = re.sub(r'(?:的|了|来)$', '', title.strip())
-                title = title.strip('：: ').strip()
-                title = title or (dim and f"{dim}分布") or "新图表"
+                # ISS-052 ①：单指标单值 KPI 已在上文算出干净标题（如「担保余额（最新）」），
+                # 不再用原始整句回填，避免标题变成「顶部新增担保余额最新的累计值」
+                if not (ct == "kpi" and dim == "" and metric):
+                    title = p
+                    # 去掉开头的指令前缀（含冒号，注意不能先拆"再加工"否则残留"再工"）
+                    title = re.sub(
+                        r'^(?:再)?\s*(?:加工|新增|添加|加|来)\s*(?:一个|一张|个|张)?\s*'
+                        r'(?:饼图|柱图|柱状图|条形图|直方图|线图|折线图|散点图|环形图|圆环图|表格)?\s*[：: ]*',
+                        '', title
+                    )
+                    # 去掉结尾的图型词
+                    title = re.sub(r'(饼图|柱图|柱状图|条形图|直方图|线图|折线图|散点图|圆环图|环形图|表格|指标卡|kpi|KPI|图)$',
+                                   '', title, flags=re.I)
+                    # 2026-09-18：规则兜底的标题会残留"按客户风险等级的"这类前缀/助词，
+                    # 去掉"按/把/用/将/拿/对"前缀与结尾"的/了/来"，得到干净的图表名。
+                    title = re.sub(r'^(?:按|把|用|将|拿|对|根据|按照)\s*', '', title.strip())
+                    title = re.sub(r'(?:的|了|来)$', '', title.strip())
+                    title = title.strip('：: ').strip()
+                    title = title or (dim and f"{dim}分布") or "新图表"
                 charts.append({
                     "title": title,
                     "chart_type": cls._normalize_chart_type(ct or "pie"),
                     "dimension_field": dim,
                     "metric_field": metric,
-                    "aggregation": "avg" if is_avg else None,
+                    # ISS-052 ①：单值卡聚合口径——「最新」取 max(≈最新一期)，「累计/总额/合计」取 sum
+                    "aggregation": "avg" if is_avg else ("max" if single_val and re.search(r"(最新值|最新)", p) else ("sum" if single_val else None)),
                 })
         # 问题2 修复（Change C）：上述按子句拆图全空时，兜底——若消息含聚合/统称词
         # （平均值/均值/平均/汇总/每个/所有/各）且列举了真实字段名，则按「每个字段的均值」生成一张图。
@@ -988,6 +1015,9 @@ class IntentClassifier:
         单图/常规表述（规则 ≤1 张）仍走 LLM 优先，保留其灵活性。
         """
         rule = cls._rule_extract_add_charts(message, field_profiles)
+        # ISS-052 ①：单指标单值 KPI（规则确定性产出）优先采用，避免回落 LLM 臆造 30+ 柱密排图
+        if rule and len(rule) == 1 and rule[0]["chart_type"] == "kpi" and not rule[0].get("dimension_field"):
+            return rule
         if rule and len(rule) >= 2:
             return rule
         llm = cls._llm_extract_add_charts(message, field_profiles)

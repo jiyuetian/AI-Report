@@ -266,6 +266,30 @@ class ActionExecutor:
         ftype = (fp.get("type") or fp.get("dtype") or "").upper()
         return any(t in ftype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL", "NUMBER", "DEC"))
 
+    # ISS-052 ③：分类维度高基数阈值——超过则柱/线图 Top-N 兜底
+    MAX_DIM_CATS = 20
+
+    @staticmethod
+    def _is_good_dimension(fp, total_rows: int = None) -> bool:
+        """ISS-052 ②：维度字段质量护栏。返回该字段是否适合做分类轴（X 轴类别）。
+
+        - 数值型字段默认不适格（会出 30+ 彩虹柱）；仅低基数数值（年份/等级码 ≤12 类）例外。
+        - 名称像 ID/序号/时间戳 → 不适格（用户实测「X 轴绑了原始长数字串 3111814397.55」即此）。
+        - 文本/分类字段：始终适格（高基数由 Top-N 兜底）。
+        """
+        if not fp:
+            return False
+        nm = (fp.get("name") or fp.get("column") or "")
+        if ActionExecutor._is_numeric_field(fp):
+            dc = fp.get("distinct_count")
+            if dc is not None and dc <= 12:
+                return True  # 低基数数值（年份/等级码）可作为分类
+            # 无基数信息时，名称像 ID/时间戳/序号 → 仍判不适格
+            if re.search(r"(号|id|序号|编号|时间|日期|date|time|timestamp|年月|月份代码|编码)", nm, re.I):
+                return False
+            return False  # 高基数数值 → 不适格
+        return True
+
     @staticmethod
     def _build_chart(chart_type: str, title: str, dim: str, metric: str, dataset_id: str, seq: int, aggregation: str = None) -> Dict[str, Any]:
         """按图型把维度/指标字段映射到正确的 echarts 字段名（不再写死 category/value）。
@@ -371,6 +395,19 @@ class ActionExecutor:
                 if not metric:
                     skipped += 1
                     continue
+                # ISS-052 ②：维度质量护栏——高基数数值/疑似 ID 字段不得做分类轴
+                dim_fp = next((fp for fp in field_profiles
+                               if (fp.get("name") or fp.get("column")) == dim), None)
+                if ct in ("pie", "bar", "line", "scatter", "table") and dim and not ActionExecutor._is_good_dimension(dim_fp):
+                    if metric:
+                        # 维度不适格但有指标 → 降级为 KPI 单值卡（比出 30+ 彩虹柱好）
+                        ct = "kpi"
+                        dim = ""
+                        if not title:
+                            title = f"{metric}（单值）"
+                    else:
+                        skipped += 1
+                        continue
                 if ct in ("pie", "bar", "line", "scatter", "table") and not dim:
                     # 维度图必须有真实维度字段；kpi 允许只给指标
                     skipped += 1
@@ -381,8 +418,18 @@ class ActionExecutor:
                        for c in current_config.get("charts", [])):
                     skipped += 1
                     continue
+                # ISS-052 ③：分类维度高基数 → Top-N 兜底（防 30+ 柱密排）
+                top_n = None
+                if ct in ("bar", "line") and dim:
+                    _dc = (dim_fp or {}).get("distinct_count")
+                    if _dc is not None and _dc > ActionExecutor.MAX_DIM_CATS:
+                        top_n = ActionExecutor.MAX_DIM_CATS
                 seq = existing + len(new_charts) + 1
-                new_charts.append(ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq, spec.get("aggregation")))
+                _new = ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq, spec.get("aggregation"))
+                if top_n:
+                    _new["config"]["top_n"] = top_n
+                    _new["config"]["sort"] = "desc"
+                new_charts.append(_new)
         else:
             # 兼容旧逻辑：单图，字段用 params 真实字段或画像兜底
             # M6-03：若请求中完全解析不出真实字段（如用户提到的字段在数据集里不存在），

@@ -826,10 +826,15 @@ const DashboardPage: React.FC = () => {
               name: cat, value: aggregateValues(vals, agg)
             }))
           : Array.from(cntMap.entries()).map(([cat, n]) => ({ name: cat, value: n }));
-        const xData = seriesData.map(d => d.name);
-        const yData = seriesData.map(d => d.value);
-        const colors = ['#5B8FF9', '#5AD8A6', '#F6BD16', '#E86452', '#6DC8EC'];
-        
+        // night12 ISS-052 ③：分类维度高基数 → Top-N 兜底，避免 30+ 柱密排
+        const _topN = (chart.config && chart.config.top_n) || (chart.top_n);
+        let seriesDataFinal = seriesData;
+        if (_topN && Number(_topN) > 0) {
+          seriesDataFinal = [...seriesData].sort((a: any, b: any) => b.value - a.value).slice(0, Number(_topN));
+        }
+        const xData = seriesDataFinal.map(d => d.name);
+        const yData = seriesDataFinal.map(d => d.value);
+
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
           tooltip: { trigger: 'axis', valueFormatter: (v: any) => formatMetricDisplay(value_field, Number(v)) },
@@ -839,9 +844,8 @@ const DashboardPage: React.FC = () => {
           series: [{
             data: yData,
             type: 'bar',
-            itemStyle: {
-              color: (params: any) => colors[params.dataIndex % colors.length]
-            },
+            // night12 ISS-052 ④：单维度柱图用单色系（多色循环无分类意义）
+            itemStyle: { color: '#1677ff' },
             label: { show: true, position: 'top', formatter: (params: any) => formatMetricDisplay(value_field, Number(params.value)) }
           }]
         };

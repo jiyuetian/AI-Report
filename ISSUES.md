@@ -203,6 +203,22 @@
 - **修复（night11 Item5）**：明细表（`renderDetailTable` + 图表详情弹窗）改为展示**全部列** + `scroll={{ x: 'max-content' }}` 横向滚动；数据行全量分页（每页 20、可切页、显示总行数）。明细单元格仍走 Item3 统一比率格式化（`formatMetricDisplay`）。
 - **状态**：`[DONE]` night11 Item5。
 
+## ISS-052 add_chart 语义路由 + 维度护栏（P0，本轮核心）
+
+- **现象（用户 2026-09-23 下午复测）**：对 `risk_demo_v2_03`（48×29）说「顶部新增担保余额最新的累计值」，AI 产出 30+ 根柱形图（担保余额 48 个不同值 → 48 柱），标题为原始整句「顶部新增担保余额最新的累计值」；X 轴曾绑到原始长数字串（高基数数值字段）。
+- **根因（只读定位，四洞）**：全链路 `intent_classifier.py`（意图 + 结构化 charts 规格）→ `action_executor.py`（`_execute_add_chart`/`_build_chart` 物化 config）。
+  ① 单值语义误判：数值单指标无图型词时默认 `bar`，且 `_extract_add_charts` 规则 ≤1 张回落 LLM 兜底易臆造柱图；
+  ② 维度质量护栏缺失：仅 `_is_numeric_field` 判轴适格，无「高基数数值/疑似 ID」不适格判定；
+  ③ 无 Top-N 兜底，维度全量密排；
+  ④ 前端单维度柱图走默认多色循环。
+- **修复（已落码 + 确定性真测 EXIT=0 通过）**：
+  ① 后端 `intent_classifier.py` 新增 `_single_value_intent`/`_chart_semantic`，数值单指标 + 无图型词 + 无图语义 → `kpi` 单值卡，标题 `字段（最新）`，aggregation 取 max/sum；`_extract_add_charts` 早返回：规则确定性单指标 KPI 直接采用，不回落 LLM；
+  ② 后端 `action_executor.py` 新增 `_is_good_dimension`（数值仅低基数 ≤12 或年份/等级码适格，ID/序号/时间戳/编号不适格）+ `MAX_DIM_CATS=20`，不适格有指标 → 降级 KPI，无指标跳过；
+  ③ `bar/line` 维度基数 >20 写 `top_n=20, sort=desc`，前端柱图按 `top_n` 排序切片；
+  ④ 前端 `DashboardPage.tsx` 单维度柱图 `itemStyle:{color:'#1677ff'}` 单色。
+- **验证**：确定性测试 `_verify_iss052.py` 3 场景全 PASS（原句→KPI `y_field=担保余额,aggregation=max,title=担保余额（最新）`；高基数数值维度→降级 KPI；低基数文本维度月份→允许作 bar）。真 LLM 端到端截图受沙箱网络限制，逻辑层前后对比已由确定性测试覆盖（同 night11 ISS-049 处置）。
+- **状态**：`[DONE]`（night12 第 1 件，commit 见 night12/ROUND_NOW.md）。
+
 ## ISS-051 清洗策略平铺看不懂
 
 - **现象（用户实测）**：附录 B 78 条清洗策略平铺罗列，可读性差。
