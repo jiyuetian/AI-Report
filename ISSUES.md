@@ -233,4 +233,11 @@
 - **修复（night11 Item5）**：后端 `appendix_service._clean_log` 透出每条记录的 `issue_type`（apply 取 `params.issue_type`，detect 取 `iss.type`，均来自已有管线元数据、非新计算）；前端 `AppendixPanel` 改为**按字段叙事卡片**：`字段名 | 清洗动作(算子·策略 Tag) | 清洗前(空值x/异常y/重复z 行，按 issue_type 归类 affected_rows) | 清洗后(已修复/已忽略/待处理 行)`。按字段影响行数降序排列，78 条平铺→每字段一卡。
 - **状态**：`[DONE]` night11 Item5。
 
+### ISS-051 night12 改向（叙事卡片 → 行级明细表）
+- **现象（用户下午复测）**：用户拒绝 night11 的「叙事卡片」方向，要求改为**行级明细表**（列：原始数据行号 | 字段 | 问题类型 | 清洗策略 | 清洗前数据 | 清洗后数据）。
+- **只读核查（数据模型）**：后端 `_clean_log`（`appendix_service.py:116`）仅按 `(dataset_id, target_field, issue_type)` 与 `(dataset_id, field_name, type, status)` **聚合**存储——字段含 `issue_type / strategy / stage / affected_rows(影响行数) / status`；`data_cleaner.py` **不记录**原始数据行号、逐行清洗前/清洗后单元格值。故用户期望的「原始数据行号 / 清洗前数据 / 清洗后数据」三列在当前管线元数据里**不存在**，无法构建真正的逐数据行明细（不编造）。
+- **修复（night12）**：`AppendixPanel` B 段由「按字段叙事卡片」改为 `cleanLogTable` 行级明细表，列 = 字段 | 阶段 | 问题类型 | 清洗策略 | 影响行数 | 清洗后状态，并置顶 `Alert` 明示「元数据未记录逐行明细」。这是现有元数据的诚实重组（聚合级行 = 一条 clean_log 记录），非伪造逐行前后值。如需真逐行明细，须在 `data_cleaner` 落 `change_log`（行号/旧值/新值），超本轮范围，建议单列需求。
+- **4 指标卡一致性核查**：用户观察到 B 段 4 张卡均显示相同统计（0空值/4异常/2修复/1忽略/1待处理）。代码核查——night11 `cleanLogCards` 的 `byField[f]` 聚合正确按字段作用域（每字段 `nullN/abnormalN/dupN/fixed/ignored/todo` 在 `.map(f=>` 内重置、仅累加该字段 entries），**无聚合 bug**；4 卡雷同属数据特征（risk_demo_v2_03 各字段质检分布相近），非代码缺陷。night12 改为表格后每条 clean_log 记录直接成行，原「卡片雷同」困惑自然消解。
+- **状态**：`[DONE]`（night12 改向 + 诚实数据缺口说明，commit 见 night12/ROUND_NOW.md 第 3 件）。
+
 > 维护方式：每条待办记录「现象 / 决策 / 到期或触发条件 / 状态」。解决后把状态改为 `[DONE]` 或删除该行。
