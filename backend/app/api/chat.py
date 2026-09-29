@@ -948,6 +948,12 @@ async def send_message_stream(
                         "message": None,
                         "error": None,
                     }
+                    # night9 Item3：cancel_pending 不调用 execute_action，仅清除上一轮提议并回复
+                    if act.get("type") == "cancel_pending":
+                        one["success"] = True
+                        one["message"] = "已取消，未对看板做任何修改。"
+                        action_results.append(one)
+                        continue
                     try:
                         # 每个动作都重新从 db 读最新配置：保证前一个动作的落库被后一个看到
                         async with async_session_factory() as stream_db:
@@ -1071,6 +1077,10 @@ async def send_message_stream(
                                 "options": _cp.get("options") or [],
                                 "created_at": datetime.utcnow().isoformat(),
                             }
+                            # night9 Item3：AI 提议并询问"要加吗？"时带 proposal，持久化供确认词承接执行
+                            _prop = _a.get("proposal")
+                            if _prop:
+                                _clarify_pending["proposal"] = _prop
                             break
                     _sess = await stream_db.get(ChatSession, session_id)
                     if _sess is not None:
@@ -1084,6 +1094,9 @@ async def send_message_stream(
                             _sctx["pending_clarify"] = _clarify_pending
                         elif _last_act:
                             # 真实动作成功执行 → 澄清已被接住，清除 pending_clarify
+                            _sctx.pop("pending_clarify", None)
+                        # night9 Item3：用户用否定词取消上一轮提议 → 清除 pending_clarify
+                        elif any(_a.get("type") == "cancel_pending" for _a in (plan.get("actions") or [])):
                             _sctx.pop("pending_clarify", None)
                         # 既没澄清也没真实动作（闲聊/unknown）→ 保留 pending_clarify 等待下次回答
                         _sess.context = _sctx

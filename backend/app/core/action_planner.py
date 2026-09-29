@@ -300,16 +300,24 @@ def detect_vague_chart_type(clause: str, params: Dict[str, Any]) -> Optional[Dic
     return None
 
 
-def _clarify_action(reason: str, message: str, clause: str, options=None, pending=None) -> Dict[str, Any]:
+def _clarify_action(reason: str, message: str, clause: str, options=None, pending=None, proposal=None) -> Dict[str, Any]:
     """P0-3：clarify 产出携带 pending 载荷（意图类型 + 已确定的部分参数），
-    供下一轮用户给短答案时由 _resolve_pending_clarify 接住，避免"听不懂就报错/落 UNKNOWN"。"""
-    return {
+    供下一轮用户给短答案时由 _resolve_pending_clarify 接住，避免"听不懂就报错/落 UNKNOWN"。
+
+    night9 Item3 扩展：proposal 为「待用户确认的动作」（如 {"intent_type":"add_chart",
+    "partial_params":{...}}）。当 AI 提议并询问"要加吗？"时带上 proposal，用户用确认词
+    承接即执行该动作（模块 B5 承诺执行）；否定词则取消。
+    """
+    p = {
         "type": "clarify",
         "params": {"reason": reason, "message": message, "options": options or [], "pending": pending},
         "clause": clause,
         "intent_type": "clarify",
         "confidence": 0,
     }
+    if proposal:
+        p["proposal"] = proposal
+    return p
 
 
 def _detect_chart_anchor(msg: str, charts: list) -> Optional[str]:
@@ -325,6 +333,53 @@ def _detect_chart_anchor(msg: str, charts: list) -> Optional[str]:
         _t = (_c.get("title") or "").strip()
         if _t and _t in _m:
             return _t
+    return None
+
+
+# ==== night9 Item3：C 确认词承接（模块 B5 承诺执行）====
+# 确认词 / 否定词词表。仅在「上一轮有 pending 提议」时由 plan_actions 调用 detect_confirmation 才有意义；
+# 本函数只做文本判定，返回 "confirm" / "negate" / None。
+_CONFIRM_TOKENS = {
+    "好", "好的", "好呀", "好哒", "好嘞", "可以", "可以呀", "行", "行啊", "确认",
+    "ok", "okay", "没问题", "没问题的", "就这样", "就这", "按你说的", "按你说的来",
+    "同意", "可以了", "好的呀", "成", "成交", "准", "通过",
+}
+_NEGATE_TOKENS = {
+    "不好", "不行", "不要", "不用", "先不", "暂不需要", "暂时不用", "算了", "别",
+    "不想要", "不需要", "不用了", "否", "不可以", "不干", "不要了", "暂不", "先不用",
+}
+_PUNCT_STRIP = " ，。！？、~～.,!?;；:：'\"''（）()【】[]<>《》\t\n\r　"
+
+
+def _norm_confirm_text(msg: str) -> str:
+    if not msg:
+        return ""
+    s = (msg or "").strip()
+    for ch in _PUNCT_STRIP:
+        s = s.replace(ch, "")
+    return s.lower()
+
+
+def detect_confirmation(message: str) -> Optional[str]:
+    """night9 Item3：识别确认词 / 否定词。
+
+    - "confirm"：用户用 好/可以/确认/就这样/ok 等承接上一轮 AI 的提议。
+    - "negate"：用户用 不好/先不/不用/算了 等拒绝上一轮提议。
+    - None：非确认/否定短语（走正常分类）。
+
+    约束：要求归一化后文本**整体**命中词表且长度 <= 12，否定优先于确认，
+    避免误判（如"这个图好""能不能不用"被当成确认）。
+    """
+    s = _norm_confirm_text(message)
+    if not s or len(s) > 12:
+        return None
+    if s in _NEGATE_TOKENS:
+        return "negate"
+    # 兜底否定前缀：以 不/别/算了/暂/先不 开头且非单纯确认词
+    if s.startswith(("不", "别", "算了", "暂", "先不")) and s not in _CONFIRM_TOKENS:
+        return "negate"
+    if s in _CONFIRM_TOKENS:
+        return "confirm"
     return None
 
 
@@ -514,6 +569,49 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
     # 优先尝试把短答案解析成完整动作，命中则直接短路返回，避免重新分类时落 UNKNOWN 或重复澄清。
     _pending = (context or {}).get("pending_clarify")
     if _pending:
+        # night9 Item3：确认词承接（模块 B5 承诺执行）。上一轮 AI 提出了待确认动作，
+        # 本轮用户用确认词/否定词承接，确定性短路（不依赖 LLM 分类，规避 429 与误判）。
+        _conf = detect_confirmation(message)
+        if _conf == "negate":
+            return {
+                "is_compound": False,
+                "actions": [{"type": "cancel_pending", "params": {}, "clause": message,
+                             "intent_type": "cancel_pending", "confidence": 90,
+                             "classified_by": "confirmation_word"}],
+                "clauses": [message], "unparsed_clauses": [],
+                "primary_intent": {"intent_type": "cancel_pending", "confidence": 90,
+                                   "analysis": {"raw_message": message, "extracted_params": {}},
+                                   "is_confident": True, "classified_by": "confirmation_word"},
+            }
+        if _conf == "confirm":
+            _prop = _pending.get("proposal") or {}
+            _it = _prop.get("intent_type") or _pending.get("intent_type")
+            if _it and _it not in ("clarify", "unknown", "cancel_pending"):
+                _params = dict(_prop.get("partial_params") or {})
+                _params.setdefault("clause", message)
+                return {
+                    "is_compound": False,
+                    "actions": [{"type": _it, "params": _params, "clause": message,
+                                 "intent_type": _it, "confidence": 90,
+                                 "classified_by": "confirmation_word"}],
+                    "clauses": [message], "unparsed_clauses": [],
+                    "primary_intent": {"intent_type": _it, "confidence": 90,
+                                       "analysis": {"raw_message": message, "extracted_params": _params},
+                                       "is_confident": True, "classified_by": "confirmation_word"},
+                }
+            # 上一轮是「选项式澄清」(pending 带 options 但无 proposal)：确认=采纳推荐项（第1个）
+            if _pending.get("options"):
+                _first = _resolve_pending_clarify("第一个", _pending, context)
+                if _first:
+                    return {
+                        "is_compound": False,
+                        "actions": [_first],
+                        "clauses": [message], "unparsed_clauses": [],
+                        "primary_intent": {"intent_type": _first["intent_type"], "confidence": 90,
+                                           "analysis": {"raw_message": message, "extracted_params": _first.get("params", {})},
+                                           "is_confident": True, "classified_by": "confirmation_word"},
+                    }
+            # 既没有 proposal 也没有 options：确认词无承接对象，落到正常分类（AI 会再问/闲聊）
         _resolved = _resolve_pending_clarify(message, _pending, context)
         if _resolved:
             return {
