@@ -16,10 +16,18 @@ import re
 
 
 def _extract_json(text: str) -> Optional[Any]:
-    """从可能含推理文本的LLM输出中提取首个完整JSON对象/数组"""
+    """从可能含推理文本/Markdown 围栏的 LLM 输出中提取首个完整 JSON 对象/数组。
+
+    night11-ISS-044 增强：①先剥 Markdown 代码块围栏（```json ... ``` / ``` ... ```）；
+    ②再直接解析；③最后用花括号平衡匹配提取首个 {...}（含 [...]）。
+    """
     if not text:
         return None
     text = text.strip()
+    # ① 剥 Markdown 围栏（推理模型常把 JSON 包在 ```json ... ``` 里，原实现未处理会解析失败）
+    _fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if _fence:
+        text = _fence.group(1).strip()
     # 直接解析
     try:
         return json.loads(text)
@@ -385,6 +393,7 @@ class LLMGateway:
                 )
 
             last_error = None
+            json_hint_added = False  # ISS-044：JSON 解析失败重试时是否已强化 prompt（仅追加一次）
             # 外层：逐个 provider 容错（多 key / 跨 provider 切换）
             for pi, prov in enumerate(self.providers):
                 client = self._get_client(prov)
@@ -450,6 +459,8 @@ class LLMGateway:
                             # 若JSON提取失败则不视为成功（交给上层降级），避免抛异常中断
                             if response_json is None:
                                 raise ValueError("LLM响应未包含有效JSON")
+                            if retry > 0:
+                                print(f"[LLM-JSON-FIX] provider {prov_name} JSON 在第 {retry + 1} 次尝试（强化 prompt 后）解析成功")
                             # ── A 修复（续）：content 内嵌错误体（如 {"error":"insufficient_user_quota"}）──
                             # 部分 provider 把业务错误作为 content 字符串返回（HTTP 200），
                             # 顶层 data 无 error 键，需解析 content 识别，否则会被当成功返回。
@@ -524,10 +535,25 @@ class LLMGateway:
                             key_exhausted = True
                             break
                     except ValueError as e:
-                        # JSON 解析失败：本 key 仅重试 1 次，仍失败则切 key（另一 provider 可能更听话）
+                        # JSON 解析失败（ISS-044）：本 key 内重试 1 次，且重试时强化 prompt 要求只返回合法 JSON；
+                        # 仍失败则切下一 provider（另一 provider 可能更听话/更稳）。
                         last_error = f"LLM响应JSON解析失败: {e}"
-                        print(f"[LLM] provider {prov_name} {last_error}")
+                        print(f"[LLM-JSON-FIX] provider {prov_name} JSON解析失败(attempt {retry + 1})，准备处理")
                         if retry < 1:
+                            # ② 解析失败自动重试一次：强化 prompt（追加用户消息要求只返回合法 JSON、剥围栏）
+                            if request.json_mode and not json_hint_added:
+                                if not isinstance(messages, list):
+                                    messages = list(messages)
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        "⚠️ 你上一次的输出不是合法 JSON，解析失败。请严格只返回一个合法的 JSON 对象："
+                                        "不要包含 Markdown 代码块围栏（如 ```json）、不要包含任何解释文字或 ``` 标记，"
+                                        "直接以 { 开头、以 } 结尾，键名与结构与首次要求一致。"
+                                    ),
+                                })
+                                json_hint_added = True
+                                print(f"[LLM-JSON-FIX] provider {prov_name} 已强化 prompt 重试一次（要求只返回合法 JSON）")
                             await asyncio.sleep(1)
                             continue
                         key_exhausted = True
