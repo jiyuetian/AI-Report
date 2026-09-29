@@ -136,4 +136,18 @@
 - **状态**：`[OPEN]` 待 AI 模式补测。
 
 
+## ISS-043 六层 LLM failover 模型透传 bug（全部 provider 永不命中备胎）
+
+- **现象（2026-09-29 night10 Item2 探活）**：kimi-k3 限流（429）时，网关 6 层 failover 每个 provider 都收到 `model=kimi-k3`，智谱/DeepSeek/glm 拒收 → 400/1211「模型不存在」，6 层全失败（`LLM-ALL-KEYS-FAILED`）。直接逐模型直调却显示 glm-5.3-flash / glm-4.5-air / deepseek-v4-flash 均 200（key 有效）——证明备胎 key 没坏，是 failover 没切模型。
+- **根因**：`llm_gateway.py:393` `model = request.model or prov.get("model")`，`request.model` 有值时对所有 provider 锁死 kimi-k3，备胎自身 model 永不生效。
+- **修复（2026-09-29 night10，commit 9c9e1b7）**：首层沿用调用方显式 model，failover 层改用各 provider 自身 model。直调验证：kimi 429 → zhipu(glm-5.3-flash) success=True。
+- **状态**：`[DONE]`（9c9e1b7）。
+
+## ISS-044 备胎 glm-5.3-flash json_mode 返回非法 JSON，结构化 AI 动作落空
+
+- **现象（2026-09-29 night10 Item2 真跑）**：failover 修好后 kimi 429 → glm-5.3-flash 兜底；自然语言生成（讲解/澄清/润色/免责）高质量可用（例 B4-2：「讲清楚一点」意图不明确→请补充期望，glm-5.3-flash 生成）。但 glm-5.3-flash 对 json_mode（分类/字段抽取/复合 add）偶发「未包含有效 JSON」（`LLM响应JSON解析失败`），导致 `intent_classified` 走规则兜底、add_chart 抽不到字段、复合动作空。规则引擎可接管的意图（如 B4-2 走 semantic_rule）不受影响。
+- **影响**：AI 模式当前「自然语言回复」可用；依赖 json_mode 的结构化动作（B1-2/B2-*/ISS-041 复合 add、ISS-042 多轮承接、需 LLM 分类的 B4-* 澄清）在 glm-5.3-flash 兜底下不稳定。kimi-k3 限流解除后（kimi json_mode 稳）方可完整跑通。
+- **决策**：登记待解决；优先等 kimi 限流窗口结束，或评估把 deepseek-v4-flash 提为 json_mode 主备（其 200 且 JSON 更稳）。
+- **状态**：`[OPEN]` 待 kimi 限流解除 / 备胎 JSON 可靠性确认。
+
 > 维护方式：每条待办记录「现象 / 决策 / 到期或触发条件 / 状态」。解决后把状态改为 `[DONE]` 或删除该行。
