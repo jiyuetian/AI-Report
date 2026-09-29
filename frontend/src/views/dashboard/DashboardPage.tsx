@@ -17,6 +17,8 @@ import { sanitizeChartOption } from '../../components/charts/sanitizeChartOption
 import { useChartTheme } from '../../components/charts/ThemeProvider';
 import { themeChartOption } from '../../components/charts/chartThemeApply';
 import ChartErrorBoundary from '../../components/charts/ChartErrorBoundary';
+// night11 Item3：统一比率/数值格式化（ISS-046/047/048）
+import { formatMetricDisplay, formatKpiValue } from '../../utils/metricFormat';
 
 // KPI卡片组件
 interface KPICardProps {
@@ -830,17 +832,17 @@ const DashboardPage: React.FC = () => {
         
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
-          tooltip: { trigger: 'axis' },
+          tooltip: { trigger: 'axis', valueFormatter: (v: any) => formatMetricDisplay(value_field, Number(v)) },
           grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
           xAxis: { type: 'category', data: xData },
-          yAxis: { type: 'value', name: value_field },
+          yAxis: { type: 'value', name: value_field, axisLabel: { formatter: (val: any) => formatMetricDisplay(value_field, Number(val)) } },
           series: [{
             data: yData,
             type: 'bar',
-            itemStyle: { 
+            itemStyle: {
               color: (params: any) => colors[params.dataIndex % colors.length]
             },
-            label: { show: true, position: 'top' }
+            label: { show: true, position: 'top', formatter: (params: any) => formatMetricDisplay(value_field, Number(params.value)) }
           }]
         };
       }
@@ -929,15 +931,15 @@ const DashboardPage: React.FC = () => {
         const colors = ['#5B8FF9', '#5AD8A6', '#F6BD16', '#E86452', '#6DC8EC'];
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
-          tooltip: { trigger: 'axis' },
+          tooltip: { trigger: 'axis', valueFormatter: (v: any) => formatMetricDisplay(geoVal, Number(v)) },
           grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
           xAxis: { type: 'category', data: seriesData.map(d => d.name), axisLabel: { rotate: seriesData.length > 6 ? 30 : 0 } },
-          yAxis: { type: 'value', name: geoVal },
+          yAxis: { type: 'value', name: geoVal, axisLabel: { formatter: (val: any) => formatMetricDisplay(geoVal, Number(val)) } },
           series: [{
             data: seriesData.map(d => d.value),
             type: 'bar',
             itemStyle: { color: (params: any) => colors[params.dataIndex % colors.length] },
-            label: { show: true, position: 'top' }
+            label: { show: true, position: 'top', formatter: (params: any) => formatMetricDisplay(geoVal, Number(params.value)) }
           }]
         };
       }
@@ -963,8 +965,8 @@ const DashboardPage: React.FC = () => {
           const idx = Math.min(binCount - 1, Math.floor((v - min) / span));
           counts[idx] += 1;
         });
-        const fmt = (n: number) => (Math.abs(n) >= 1e8 ? `${(n / 1e8).toFixed(1)}亿`
-          : Math.abs(n) >= 1e4 ? `${(n / 1e4).toFixed(0)}万` : `${Math.round(n)}`);
+        // night11 Item3 ISS-047：直方图分桶端点用统一格式化（比率→百分比、极小数值保留小数，避免 0~0）
+        const fmt = (n: number) => formatMetricDisplay(histVal, n);
         const xData = counts.map((_, i) => {
           const lo = min + i * span;
           const hi = lo + span;
@@ -1002,10 +1004,13 @@ const DashboardPage: React.FC = () => {
         
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
-          tooltip: { trigger: 'item' },
+          tooltip: {
+            trigger: 'item',
+            formatter: (p: any) => `${x_field}: ${formatMetricDisplay(x_field, Number(p.value?.[0]))}<br/>${y_field}: ${formatMetricDisplay(y_field, Number(p.value?.[1]))}`
+          },
           grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-          xAxis: { type: 'value', name: x_field },
-          yAxis: { type: 'value', name: y_field },
+          xAxis: { type: 'value', name: x_field, axisLabel: { formatter: (val: any) => formatMetricDisplay(x_field, Number(val)) } },
+          yAxis: { type: 'value', name: y_field, axisLabel: { formatter: (val: any) => formatMetricDisplay(y_field, Number(val)) } },
           series: [{
             symbolSize: 8,
             data: seriesData,
@@ -1123,12 +1128,19 @@ const DashboardPage: React.FC = () => {
     else if (agg === 'avg') val = nums.reduce((a: number, b: number) => a + b, 0) / nums.length;
     else if (agg === 'count') val = nums.length;
     else val = nums.reduce((a: number, b: number) => a + b, 0);
-    // 大金额紧凑格式化，避免卡片溢出显示不全
-    const compact = formatCompact(val, c.format);
+    // night11 Item3 ISS-046：比率类 KPI 用统一格式化（v×100 + %，保留 2-4 位小数），
+    // 避免极小比率被 toFixed(2) 成 "0"。派生指标公式含「× 100」时值已是百分数，不再乘 100。
+    const fmt = formatKpiValue(field, val, {
+      format: c.format,
+      ratio: c.ratio,
+      alreadyPercent: isPercentMetric,
+      prefix: c.prefix,
+      suffix: c.suffix,
+    });
     return {
-      value: compact.value,
-      prefix: compact.prefix ?? (c.format === 'currency' ? '¥' : (c.prefix || '')),
-      suffix: compact.suffix ?? ((c.format === 'percent' || isPercentMetric) ? '%' : (c.suffix || '')),
+      value: fmt.value,
+      prefix: fmt.prefix ?? (c.format === 'currency' ? '¥' : (c.prefix || '')),
+      suffix: fmt.suffix ?? (c.suffix || ''),
     };
   };
 
@@ -1237,10 +1249,16 @@ const DashboardPage: React.FC = () => {
       return null;
     }
 
+    // night11 Item3 ISS-048：明细表单元格用统一格式化（比率→百分比，避免 17 位小数裸奔）
     const columns = chartData.columns.slice(0, 6).map((col: any) => ({
       title: col,
       dataIndex: col,
-      key: col
+      key: col,
+      render: (v: any) => {
+        const num = typeof v === 'number' ? v : parseFloat(String(v));
+        if (isNaN(num)) return v;
+        return formatMetricDisplay(col, num);
+      }
     }));
 
     return (
