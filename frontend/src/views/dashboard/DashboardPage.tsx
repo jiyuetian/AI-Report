@@ -803,6 +803,9 @@ const DashboardPage: React.FC = () => {
 
       case 'bar': {
         // 柱状图：x_field = 分类，y_field = 数值
+        // night12 ISS-048 补漏：bar 的度量字段写在 y_field（_build_chart 不为 bar 写 value_field），
+        // 故格式化字段须回退 value_field || y_field；否则 value_field 为空 → 比率判定失效 → 柱值标签裸奔（0.0002 / 17 位小数）。
+        const metricField = value_field || y_field;
         // 2026-09-17：此前无条件求和。比率类派生指标（抵押率/逾期率）求和是错误口径，
         // 必须按图表声明的聚合方式（S3 反哺的 avg）来汇总。
         const categoryValues = [...new Set(data.map((r: any) => String(r[category_field || x_field || ''])))]
@@ -827,7 +830,7 @@ const DashboardPage: React.FC = () => {
             }))
           : Array.from(cntMap.entries()).map(([cat, n]) => ({ name: cat, value: n }));
         // night12 ISS-052 ③：分类维度高基数 → Top-N 兜底，避免 30+ 柱密排
-        const _topN = (chart.config && chart.config.top_n) || (chart.top_n);
+        const _topN = (chart.config && chart.config.top_n);
         let seriesDataFinal = seriesData;
         if (_topN && Number(_topN) > 0) {
           seriesDataFinal = [...seriesData].sort((a: any, b: any) => b.value - a.value).slice(0, Number(_topN));
@@ -837,16 +840,16 @@ const DashboardPage: React.FC = () => {
 
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
-          tooltip: { trigger: 'axis', valueFormatter: (v: any) => formatMetricDisplay(value_field, Number(v)) },
+          tooltip: { trigger: 'axis', valueFormatter: (v: any) => formatMetricDisplay(metricField, Number(v)) },
           grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
           xAxis: { type: 'category', data: xData },
-          yAxis: { type: 'value', name: value_field, axisLabel: { formatter: (val: any) => formatMetricDisplay(value_field, Number(val)) } },
+          yAxis: { type: 'value', name: metricField, axisLabel: { formatter: (val: any) => formatMetricDisplay(metricField, Number(val)) } },
           series: [{
             data: yData,
             type: 'bar',
             // night12 ISS-052 ④：单维度柱图用单色系（多色循环无分类意义）
             itemStyle: { color: '#1677ff' },
-            label: { show: true, position: 'top', formatter: (params: any) => formatMetricDisplay(value_field, Number(params.value)) }
+            label: { show: true, position: 'top', formatter: (params: any) => formatMetricDisplay(metricField, Number(params.value)) }
           }]
         };
       }
@@ -915,7 +918,7 @@ const DashboardPage: React.FC = () => {
         // 地区分布：未注册地理底图时，按「地区维度 + 数值度量」渲染为柱状分布，
         // 与 bar 分支同一套聚合口径（比率类 avg，金额类 sum）
         const geoDim = category_field || (chart.config as any)?.geo_field || '';
-        const geoVal = value_field || (chart.config as any)?.value_field || '';
+        const geoVal = value_field || (chart.config as any)?.value_field || y_field || '';
         const agg = aggOf(chart);
         const groups = new Map<string, number[]>();
         const cntMap = new Map<string, number>();

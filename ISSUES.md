@@ -186,7 +186,14 @@
 - **根因（与 046/047 同族）**：比率字段无小数位约束，float 全精度裸奔。
 - **决策（night11 Item3 已修）**：柱标签/坐标轴/tooltip/明细表单元格统一走 `formatMetricDisplay`，比率→百分比 2-4 位小数、金额走亿/万紧凑，杜绝裸奔 17 位小数。
 - **修复（已落码 + 真值验证）**：坏账率柱标签/轴/tooltip/明细旧裸奔 `0.0002489583333333333` → 新 `0.0249%`；覆盖 bar/map/scatter 三类图表 + 明细表。
-- **状态**：`[DONE]`（night11 Item3）。
+- **状态**：`[DONE]`（night11 Item3，柱标签/轴/tooltip 已接 formatMetricDisplay）。
+
+### ISS-048 night12 补漏（柱值标签仍裸奔）
+- **现象（用户下午复测）**：「担保类型 vs 坏账率」柱图 value label 仍显示 `0.0002` 裸数，night11 的修复未生效。
+- **真根因（night12 只读定位）**：night11 在 bar 分支把格式化字段写成 `formatMetricDisplay(value_field, …)`，但 `_build_chart` 对 bar/line/table **只写 `y_field`、不写 `value_field`**（value_field 仅 pie 用）。故 bar 的 `value_field` 恒为空 → `formatMetricDisplay(undefined, …)` → `isRatioField` 判否 → 回退 `formatCompactNum` → 极小比率裸奔 `0.0002`。night11 实际只覆盖了「数据取值」(line 814 用 `value_field || y_field`)，**漏了格式化字段**。map 分支 `geoVal` 同理漏 `|| y_field`。
+- **修复（night12）**：bar 分支新增 `const metricField = value_field || y_field`，tooltip / yAxis name / 轴标签 / 柱 value label 全部改用 `metricField`；map 分支 `geoVal` 补 `|| y_field`。前端 `tsc --noEmit` 退出码 0。逻辑验证：兜底前 `label=0.0002` → 兜底后 `label=0.0249%`（PASS）。
+- **附**：同次 tsc 冒烟发现 night12 第 1 件（ISS-052）bar 分支 `_topN` 行 `chart.top_n` 不在 `ChartConfig` 类型上（`tsc` 报错 TS2339），已一并改为 `chart.config && chart.config.top_n` 修正，前端 tsc 归零。
+- **状态**：`[DONE]`（night12 补漏，commit 见 night12/ROUND_NOW.md 第 2 件）。
 
 ## ISS-049 散点图轴绑金额与标题不符
 
