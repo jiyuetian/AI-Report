@@ -390,7 +390,13 @@ class LLMGateway:
                 client = self._get_client(prov)
                 prov_name = prov.get("name", f"provider#{pi}")
                 base_url = prov.get("base_url") or ""
-                model = request.model or prov.get("model") or "gpt-4"
+                # 六层 failover 修复（night10）：首层沿用调用方显式 model（如 kimi-k3），
+                # 一旦 failover 到备胎 provider，必须用该 provider 自己的 model
+                # （glm-5.3-flash / glm-4.5-air / deepseek-v4-flash / sensenova-6.8-flash-lite），
+                # 否则会把 kimi-k3 原样发给智谱/DeepSeek 导致 400/1211「模型不存在」，
+                # failover 永远触达不到备胎。原 `request.model or prov.get("model")` 在 request.model 有值时
+                # 对所有 provider 都锁死 kimi-k3，是 failover 失效的真根因。
+                model = request.model if (pi == 0 and request.model) else (prov.get("model") or request.model or "gpt-4")
                 need_business = "sensenova" in (base_url or "")  # SenseNova 需 business_type
                 is_kimi = "kimi" in (model or "")  # kimi 仅允许 temperature=1
 
