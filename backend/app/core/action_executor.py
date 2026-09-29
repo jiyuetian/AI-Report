@@ -24,6 +24,7 @@ class ActionType(str, Enum):
     QUALITY_FIX = "quality_fix"        # 数据质量修复（清洗层）
     CLARIFY = "clarify"                # 歧义/不可执行：向用户澄清，绝不猜测执行
     CHART_FIX = "chart_fix"            # 图表问题诊断+修复（空图/无数据，AI对话用）
+    UNDO = "undo"                      # night13 Item1：撤销最近一次 AI 操作（会话层 AI 动作栈回退）
 
 
 class ChartType(str, Enum):
@@ -100,6 +101,7 @@ class ActionExecutor:
             ActionType.CLARIFY: ActionExecutor._execute_clarify,
             ActionType.QUALITY_FIX: ActionExecutor._execute_quality_fix,
             ActionType.CHART_FIX: ActionExecutor._execute_chart_fix,
+            ActionType.UNDO: ActionExecutor._execute_undo,
         }
         
         executor = executors.get(action_type)
@@ -119,6 +121,24 @@ class ActionExecutor:
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
         """执行换图"""
+        # night13 Item1：undo 还原（restore_fields 为修改前保存的字段快照）
+        _restore = params.get("restore_fields")
+        if _restore:
+            _charts = current_config.get("charts", [])
+            _rc = next((c for c in _charts if c.get("id") == _restore.get("chart_id")), None)
+            if _rc is None:
+                return {"success": False, "error": "未找到要还原的图表", "action_type": "change_chart"}
+            for k in ("chart_type", "x_field", "y_field", "category_field", "value_field", "time_grain"):
+                if k in _restore:
+                    _rc[k] = _restore[k]
+            return {
+                "success": True, "action_type": "change_chart",
+                "changes": [{"restored": _restore.get("chart_id")}],
+                "new_config": current_config,
+                "render_updates": [{"type": "update_chart", "chart_id": _rc.get("id")}],
+                "message": "已撤销上一次的图表修改",
+                "reverse": None,
+            }
         source_type = params.get("source_type")
         # 2026-09-29 night10 Item1(ISS-039)：字段替换（"把Y轴换成利润"）只改字段不改图型，
         # target_type 留空时不应强制改成 bar（否则会把饼图误改成柱图）。
@@ -237,6 +257,15 @@ class ActionExecutor:
                 _axis = params.get("target_axis") or "y"
                 target_chart[("x_field" if _axis == "x" else "y_field")] = _tf
 
+            _old_state = {
+                "chart_id": target_chart.get("id"),
+                "chart_type": old_type,
+                "x_field": target_chart.get("x_field"),
+                "y_field": target_chart.get("y_field"),
+                "category_field": target_chart.get("category_field"),
+                "value_field": target_chart.get("value_field"),
+                "time_grain": target_chart.get("time_grain"),
+            }
             return {
                 "success": True,
                 "action_type": "change_chart",
@@ -252,7 +281,8 @@ class ActionExecutor:
                     "chart_id": target_chart.get("id"),
                     "chart_type": target_type
                 }],
-                "message": msg
+                "message": msg,
+                "reverse": {"type": "change_chart", "params": {"restore_fields": _old_state}},
             }
         
         return {
@@ -329,6 +359,29 @@ class ActionExecutor:
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
         """执行新增图（支持 LLM/规则提取的多图，按真实字段生成，不再写死 category/value）"""
+        # night13 Item1：undo 重加（restore_chart 为删除时保存的完整图配置 + restore_index 原位置）
+        _restore = params.get("restore_chart")
+        if _restore and isinstance(_restore, dict):
+            if "charts" not in current_config:
+                current_config["charts"] = []
+            _ridx = params.get("restore_index")
+            existing_ids = {c.get("id") for c in current_config["charts"]}
+            _rc = dict(_restore)
+            while _rc.get("id") in existing_ids:
+                _rc["id"] = f"chart_{uuid.uuid4().hex[:8]}"
+            existing_ids.add(_rc["id"])
+            if isinstance(_ridx, int) and 0 <= _ridx <= len(current_config["charts"]):
+                current_config["charts"].insert(_ridx, _rc)
+            else:
+                current_config["charts"].append(_rc)
+            return {
+                "success": True, "action_type": "add_chart",
+                "changes": [{"added_chart": _rc.get("id"), "restored": True}],
+                "new_config": current_config,
+                "render_updates": [{"type": "add_chart", "chart": _rc}],
+                "message": f"已恢复图表「{_rc.get('title', '未命名')}」",
+                "reverse": None,
+            }
         dataset_id = context.get("dataset_id") or ""
         field_profiles = (context.get("dataset_info") or {}).get("field_profiles") or []
 
@@ -435,16 +488,26 @@ class ActionExecutor:
             # M6-03：若请求中完全解析不出真实字段（如用户提到的字段在数据集里不存在），
             # 拒绝并给出明确提示，绝不臆造无关字段的图表。
             if not (params.get("dimension_field") or params.get("metric_field")
-                    or params.get("value_field") or params.get("y_field")):
+                    or params.get("value_field") or params.get("y_field")
+                    or params.get("metric") or params.get("dimension")):
+                _fns = [fp.get("name") or fp.get("column") for fp in field_profiles if fp.get("name") or fp.get("column")][:12]
+                _avail = "、".join(_fns) if _fns else "（当前数据集没有可用字段画像）"
                 return {
                     "success": False,
-                    "error": "未能从数据中匹配到您提到的字段，请使用数据中的真实字段名（如维度字段或数值指标）再试。",
+                    "error": (
+                        "数据里没有匹配到您说的字段，我不能拿别的字段顶替而臆造图表。\n"
+                        f"当前可用字段：{_avail}。请换成其中一个真实字段再试。"
+                    ),
                     "action_type": "add_chart",
                 }
-            chart_type = ActionExecutor.normalize_chart_type(params.get("chart_type", "bar"))
+            # night13 Item1：规则路径用 target_type 表达"要新增的图型"，此前只认 chart_type，
+            # 导致「顶部新增销售额最新的累计值」本该是 KPI 单值卡却被建成 bar 图（K-1）。
+            chart_type = ActionExecutor.normalize_chart_type(
+                params.get("chart_type") or params.get("target_type") or "bar")
             fd, fm = first_dim_metric()
-            dim = params.get("dimension_field") or fd
-            metric = params.get("metric_field") or params.get("value_field") or params.get("y_field") or fm
+            dim = params.get("dimension_field") or params.get("dimension") or fd
+            metric = (params.get("metric_field") or params.get("value_field")
+                      or params.get("y_field") or params.get("metric") or fm)
             metric_name = params.get("metric_name")
             title = metric_name if (chart_type == "kpi" and metric_name) else (
                 params.get("title") or f"新增{ActionExecutor._get_chart_type_name(chart_type)}"
@@ -458,11 +521,36 @@ class ActionExecutor:
         # 2026-09-18：id 必须唯一。老逻辑用 `chart_{len+1}`，删过图之后再新增会与已有图同 id，
         # 前端按 id 渲染就会出现"新增的图覆盖了已有图"。
         existing_ids = {c.get("id") for c in current_config["charts"]}
-        for c in new_charts:
+        # night13 Item1（ISS-056 布局落位）：position=top → 置顶；near_title → 落在指定图旁（同 y 行）。
+        near_title = params.get("near_title")
+        position = params.get("position")
+        insert_at = None
+        ref_y = None
+        if position == "top":
+            insert_at = 0
+        elif near_title:
+            for i, c in enumerate(current_config["charts"]):
+                if near_title in (c.get("title") or ""):
+                    insert_at = i + 1
+                    _rp = c.get("position")
+                    if isinstance(_rp, dict):
+                        ref_y = _rp.get("y")
+                    break
+        for j, c in enumerate(new_charts):
             while c["id"] in existing_ids:
                 c["id"] = f"chart_{uuid.uuid4().hex[:8]}"
             existing_ids.add(c["id"])
-            current_config["charts"].append(c)
+            if ref_y is not None and isinstance(c.get("position"), dict):
+                c["position"]["y"] = ref_y
+            if insert_at is not None:
+                current_config["charts"].insert(insert_at + j, c)
+            else:
+                current_config["charts"].append(c)
+        # night13 Item1：记录可反向撤销的描述（仅当确有新增）
+        reverses = [
+            {"type": "delete_chart", "params": {"chart_id": c["id"]}}
+            for c in new_charts
+        ] if new_charts else []
 
         if not new_charts:
             # N1-D3'：若全因"已存在"被去重跳过（skipped>0），视为成功而非报错
@@ -474,6 +562,7 @@ class ActionExecutor:
                     "new_config": current_config,
                     "render_updates": [],
                     "message": "这些图表已存在，未重复添加。",
+                    "reverse": [],
                 }
             return {
                 "success": False,
@@ -490,6 +579,7 @@ class ActionExecutor:
             "new_config": current_config,
             "render_updates": [{"type": "add_chart", "chart": c} for c in new_charts],
             "message": f"已添加 {len(new_charts)} 个图表：{titles}{skip_note}",
+            "reverse": reverses,
         }
     
     @staticmethod
@@ -543,14 +633,21 @@ class ActionExecutor:
         
         target_chart = None
         target_idx = None
-        
-        if chart_index is not None:
+
+        chart_id = params.get("chart_id")
+        if chart_id:
+            for i, c in enumerate(charts):
+                if c.get("id") == chart_id:
+                    target_chart = charts[i]
+                    target_idx = i
+                    break
+        if target_chart is None and chart_index is not None:
             # 按序号删除（1-based）
             idx = chart_index - 1
             if 0 <= idx < len(charts):
                 target_chart = charts[idx]
                 target_idx = idx
-        elif title_keyword:
+        elif target_chart is None and title_keyword:
             # 按标题关键词（包含匹配）删除最后一个匹配的
             for i in range(len(charts) - 1, -1, -1):
                 title = (charts[i].get("title") or "")
@@ -582,7 +679,7 @@ class ActionExecutor:
                     ),
                     "new_config": current_config,
                 }
-        elif chart_type:
+        elif target_chart is None and chart_type:
             # 按类型删除最后一个匹配的
             normalized_type = ActionExecutor.normalize_chart_type(chart_type)
             for i in range(len(charts) - 1, -1, -1):
@@ -598,7 +695,7 @@ class ActionExecutor:
                              + "、".join((c.get("title") or "未命名") for c in charts[:10]),
                     "new_config": current_config,
                 }
-        else:
+        elif target_chart is None:
             # 2026-09-18 修复：此前"默认删除最后一张"，用户没说删哪张就删错了。
             # 现在改为要求澄清。
             return {
@@ -630,7 +727,9 @@ class ActionExecutor:
                 "chart_id": deleted.get("id"),
                 "chart_index": target_idx
             }],
-            "message": f"已删除图表'{deleted.get('title', '未命名')}'"
+            "message": f"已删除图表'{deleted.get('title', '未命名')}'",
+            # night13 Item1：保存完整图配置 + 原位置，供 undo 精确重加（回到删除前状态）
+            "reverse": {"type": "add_chart", "params": {"restore_chart": dict(deleted), "restore_index": target_idx}},
         }
     
     @staticmethod
@@ -1266,7 +1365,8 @@ class ActionExecutor:
                         "changes": [{"chart_id": chart_id, "from": old_title, "to": new_title}],
                         "new_config": current_config,
                         "render_updates": [{"type": "update_title", "chart_id": chart_id, "title": new_title}],
-                        "message": f"图表标题已更新为'{new_title}'"
+                        "message": f"图表标题已更新为'{new_title}'",
+                        "reverse": {"type": "edit_title", "params": {"chart_id": chart_id, "new_title": old_title}},
                     }
         else:
             # 修改看板标题
@@ -1650,6 +1750,22 @@ class ActionExecutor:
             # 关键：让前端重新拉图表数据（清洗层已改，刷新即可见）
             "refresh_chart_data": True,
             "message": f"{summary}。图表「{title}」已按修复后的数据刷新。",
+        }
+
+    @staticmethod
+    def _execute_undo(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """undo 由 chat.py 会话层（AI 动作栈）处理，不应进入通用执行器；此处仅作安全兜底。"""
+        return {
+            "success": False,
+            "action_type": "undo",
+            "requires_clarify": True,
+            "reason": "undo_handled_by_session",
+            "error": "撤销操作由会话层处理，不应直接进入通用执行器。",
+            "new_config": current_config,
         }
 
     @staticmethod

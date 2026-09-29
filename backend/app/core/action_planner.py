@@ -508,6 +508,7 @@ def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confiden
         IntentType.ADD_CONCLUSION.value: "add_conclusion",
         IntentType.CHART_FIX.value: "chart_fix",
         IntentType.QUALITY_FIX.value: "quality_fix",
+        IntentType.UNDO.value: "undo",        # night13 Item1：撤销最近一次 AI 操作
     }
     act = mapping.get(intent_type)
     if not act:
@@ -751,6 +752,12 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
 
         # ---- 单点歧义 2：点名了不存在的字段 → 禁止幻觉，必须澄清 ----
         missing = [t for t in explicit_field_tokens(clause) if not _field_exists(t, field_names)]
+        # night13 Item1（K-8 字段匹配失败禁出图）：ADD_CHART 的 metric_name 也按真实字段校验，
+        # 覆盖"加一个叫XXX的新指标"这类 explicit_field_tokens 抽不到坏字段名的中文口语。
+        if itype == IntentType.ADD_CHART.value and not params.get("target_field"):
+            _mn = (params.get("metric_name") or "").strip()
+            if _mn and _mn not in ("新增指标", "新增", "指标") and not _field_exists(_mn, field_names):
+                missing = missing + [_mn]
         # 2026-09-29 night10 Item1(ISS-039)：轴/字段替换（"把Y轴换成利润"）中"利润"是用户显式指定的目标字段，
         # 不是缺失字段，不应触发"字段不存在"澄清。
         if missing and itype in (IntentType.ADD_CHART.value, IntentType.CHANGE_CHART.value,

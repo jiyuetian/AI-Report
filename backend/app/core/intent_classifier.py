@@ -59,6 +59,7 @@ class IntentType(str, Enum):
     QUALITY_FIX = "quality_fix"        # 数据质量修复（清洗层）
     CHART_FIX = "chart_fix"            # 图表问题诊断/修复（空图、没数据）
     SEMANTIC_ACTION = "semantic_action"  # P0-2：规则未命中的看板操作语义，交由 LLM 主导规划动作
+    UNDO = "undo"                      # night13 Item1：撤销最近一次 AI 操作（会话级 AI 动作栈回退）
     UNKNOWN = "unknown"
 
 
@@ -150,6 +151,13 @@ class IntentClassifier:
             # 「我指的是每一项的平均值」此前无动作动词 → 落 UNKNOWN/LLM 臆造 4 张 bar；
             # 现用泛指量词(每一项/每个/各/所有/全部/各项) + 聚合词(平均/均值/汇总)直接判 ADD_CHART。
             r"(每一项|每一个|每个|各个|各|所有|全部|这些|那些|各项)\s*[^，。；]{0,15}?(平均值|均值|平均|汇总|平均汇总)",
+        ],
+        IntentType.UNDO: [
+            r"(撤销|撤回|回退|取消).{0,8}(刚才|刚刚|上一步|之前|操作|动作|这|那|改|加|删|做)",
+            r"撤销刚才的操作",
+            r"撤销上一步",
+            r"撤回刚才的修改",
+            r"\bundo\b",
         ],
         IntentType.DELETE_CHART: [
             r"(删除|移除|去掉|删掉|删了).{0,20}(图|图表|这个|那个|第.{1,2}个)",
@@ -503,6 +511,18 @@ class IntentClassifier:
                 metric_name = "新增指标"
             analysis["extracted_params"]["metric_name"] = metric_name
 
+            # night13 Item1（ISS-056 布局上下文）：解析"在X旁边 / 顶部 / 卡片区"落位指令，
+            # 让"顶部卡片区 / 坏账率卡旁"可被规划器与执行器解析（位置交给 action_executor 落位）。
+            _near = re.search(
+                r"在\s*([^，。；！？\s]{1,12}?)\s*(的)?\s*"
+                r"(旁边|边上|附近|一侧|右侧|左侧|左边|右边|隔壁|边上)",
+                message or ""
+            )
+            if _near:
+                analysis["extracted_params"]["near_title"] = _near.group(1).strip()
+            if re.search(r"顶部|最上面|卡片区|指标区|kpi区|卡片|顶部卡片", message or ""):
+                analysis["extracted_params"]["position"] = "top"
+
             # === 增强：LLM/规则结构化提取多图（带真实字段），支持顿号拆分 ===
             fps = (context.get("dataset_info") or {}).get("field_profiles") or context.get("field_profiles") or []
             if fps:
@@ -546,6 +566,28 @@ class IntentClassifier:
                     if title_keyword:
                         params["title_keyword"] = title_keyword
                     analysis["extracted_params"] = params
+        
+        elif intent_type == IntentType.UNDO:
+            # night13 Item1：撤销语义，无额外参数（具体回退对象由会话 AI 动作栈决定）
+            analysis["extracted_params"] = {}
+            analysis["extracted_params"]["undo"] = True
+
+        # night13 Item1：指代消解「你新增的/刚才加的/最近新增的」→ 标记 delete_last_ai，
+        # 由 chat.py 从会话 AI 动作栈定位「最近一次 AI 新增的图 id」再真正删除，绝不猜删哪张。
+        _ep_del = analysis.get("extracted_params") or {}
+        _deictic = re.search(
+            r"(你|ai|刚|刚刚|刚才|最近|新).{0,4}(新增|加|生成|做|创建|添)"
+            r"|新(增|加)的?(这)?(个|张|图|图表)"
+            r"|刚才(的)?(这)?(个|张|图|图表)"
+            r"|我刚(新增|加|做)",
+            message or ""
+        )
+        if _deictic:
+            _ep_del["delete_last_ai"] = True
+            # 清掉误抽的 chart_type/title_keyword，交给 chat.py 从动作栈精确定位
+            _ep_del.pop("chart_type", None)
+            _ep_del.pop("title_keyword", None)
+            analysis["extracted_params"] = _ep_del
         
         elif intent_type == IntentType.REORDER_CHART:
             # 提取排序目标
@@ -1039,6 +1081,27 @@ def classify_intent(message: str, context: Dict[str, Any] = None) -> Dict:
             "is_confident": True
         }
     """
+    # night13 Item1 (K-4)："去掉/删除/移除 + 你(AI)/刚/刚才/最近 + 新增/加/生成 + 图/图表/卡片"
+    # 这类句子同时命中 ADD_CHART(新增) 与 DELETE_CHART(去掉) 两条规则，
+    # 此前 ADD 胜出 → K-4「去掉你新增的图表」被当成"新增"执行（图没删掉）。
+    # 此处显式优先判为"删除 AI 最近新增"，由 chat.py 的 ai_action_stack 解析目标图。
+    if message:
+        _m = message.strip()
+        if re.match(r"^\s*(去掉|删除|移除|删掉|删了|去掉了)", _m) and re.search(
+                r"(你|AI|ai|Ai|刚|刚刚|刚才|最近)\s*(新增|新加|加|生成|做|创建|添加)", _m):
+            _params = {"delete_last_ai": True, "intent": "delete_chart"}
+            return {
+                "intent_type": IntentType.DELETE_CHART.value,
+                "confidence": 90,
+                "analysis": {
+                    "raw_message": _m,
+                    "extracted_params": _params,
+                    "matched_keywords": [],
+                    "classified_by": "rule_deictic_delete",
+                },
+                "is_confident": True,
+                "classified_by": "rule_deictic_delete",
+            }
     intent_type, confidence, analysis = IntentClassifier.classify(message, context)
     
     classified_by = analysis.get("classified_by", "rule")

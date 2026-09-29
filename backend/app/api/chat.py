@@ -279,6 +279,41 @@ def _apply_honesty_guard(llm_msg: str, action_executed: bool = False) -> str:
     return llm_msg
 
 
+# ============== night13 Item1：对话动作栈 / 布局摘要辅助 ==============
+def _build_layout_summary(config: Dict[str, Any]) -> Dict[str, Any]:
+    """ISS-056：看板结构摘要，让'顶部/卡片区/XX旁边'可解析。"""
+    charts = (config or {}).get("charts", []) or []
+    kpis = []
+    chart_list = []
+    for c in charts:
+        _t = c.get("title") or "未命名"
+        _ct = c.get("chart_type") or ""
+        if _ct == "kpi":
+            kpis.append({"title": _t, "metric": c.get("y_field") or c.get("value_field") or c.get("metric_field") or ""})
+        chart_list.append({
+            "id": c.get("id"),
+            "title": _t,
+            "chart_type": _ct,
+            "x_field": c.get("x_field") or c.get("category_field") or "",
+            "y_field": c.get("y_field") or c.get("value_field") or "",
+        })
+    return {"kpi_cards": kpis, "charts": chart_list}
+
+
+def _extract_position_hints(message: str) -> Dict[str, Any]:
+    """ISS-056：从用户口语抽取位置/邻近落位提示，作 planner 兜底。"""
+    import re
+    out = {"position": None, "near_title": None}
+    if not message:
+        return out
+    _near = re.search(r"在\s*([^，。；！？\s]{1,12}?)\s*(的)?\s*(旁边|边上|附近|一侧|右侧|左侧|左边|右边|隔壁)", message or "")
+    if _near:
+        out["near_title"] = _near.group(1).strip()
+    if re.search(r"顶部|最上面|卡片区|指标区|kpi区|卡片|顶部卡片", message or ""):
+        out["position"] = "top"
+    return out
+
+
 # ============== LLM 自然语言回复生成 ==============
 
 def _rule_guidance_message(context: Dict[str, Any]) -> str:
@@ -669,7 +704,8 @@ async def send_message_stream(
             "grain": dataset_grain,
             "field_profiles": field_profiles
         },
-        "current_config": current_config
+        "current_config": current_config,
+        "layout_summary": _build_layout_summary(current_config)
     }
 
     # P0-1：注入对话历史 + 纠正记忆，使"再来一个/就改成"能承接上一句
@@ -935,6 +971,8 @@ async def send_message_stream(
         last_new_config = None
         render_updates = []
 
+        # night13 Item1：载入本会话 AI 动作栈（undo / 删除AI新增图 跨轮解析）
+        ai_action_stack = (((session.context or {}) if session else {}).get("ai_action_stack", []) or [])
         if actions and dashboard_id and (intent_result["is_confident"] or any(a.get("type") == "clarify" for a in actions)):
             # 同一看板的读-改-写用 per-dashboard 锁串行化，避免并发覆盖丢更新
             lock = _dashboard_lock(dashboard_id)
@@ -954,6 +992,85 @@ async def send_message_stream(
                         one["message"] = "已取消，未对看板做任何修改。"
                         action_results.append(one)
                         continue
+
+                    # night13 Item1：undo 动作（撤销最近一次 AI 操作）
+                    if act.get("type") == "undo":
+                        if not ai_action_stack:
+                            one["success"] = True
+                            one["message"] = "当前没有可撤销的AI操作（你还没让我改过这个看板）。"
+                            action_results.append(one)
+                            continue
+                        _entry = ai_action_stack.pop()
+                        _rev = _entry.get("reverse")
+                        _descs = _rev if isinstance(_rev, list) else ([_rev] if isinstance(_rev, dict) else [])
+                        _ok = True
+                        _msgs = []
+                        for _rd in _descs:
+                            if not isinstance(_rd, dict):
+                                continue
+                            try:
+                                async with async_session_factory() as _sdb:
+                                    _dr = await _sdb.execute(select(Dashboard).where(Dashboard.id == dashboard_id))
+                                    _dash = _dr.scalar_one_or_none()
+                                    if not _dash:
+                                        _ok = False
+                                        _msgs.append("看板不存在")
+                                        break
+                                    _cfg = _dash.config or {}
+                                    from app.core.action_executor import execute_action as _exec
+                                    _r2 = _exec(_rd.get("type"), _rd.get("params", {}), _cfg, context)
+                                    if _r2.get("success"):
+                                        _dash.config = _r2.get("new_config") or _cfg
+                                        _dash.updated_by = current_user
+                                        _dash.updated_at = datetime.utcnow()
+                                        from sqlalchemy.orm.attributes import flag_modified as _fm2
+                                        _fm2(_dash, "config")
+                                        await _sdb.commit()
+                                        _msgs.append(_r2.get("message") or "已撤销")
+                                        if _r2.get("render_updates"):
+                                            render_updates.extend(_r2.get("render_updates"))
+                                    else:
+                                        _ok = False
+                                        _msgs.append(_r2.get("error") or "撤销失败")
+                                        ai_action_stack.append(_entry)
+                                        break
+                            except Exception as _e:
+                                _ok = False
+                                _msgs.append(f"撤销异常：{str(_e)[:160]}")
+                                ai_action_stack.append(_entry)
+                                break
+                        one["success"] = _ok
+                        one["message"] = ("已撤销刚才的操作。" if _ok else "撤销失败：") + " ".join(_msgs)
+                        action_results.append(one)
+                        continue
+
+                    # night13 Item1：删除 AI 最近新增的图表（K-4：去掉你新增的这个图表）
+                    if act.get("type") == "delete_chart" and act.get("params", {}).get("delete_last_ai"):
+                        _ai_add = next((e for e in reversed(ai_action_stack) if e.get("action_type") == "add_chart"), None)
+                        if not _ai_add:
+                            _cur = (current_config or {}).get("charts", [])
+                            _names = "、".join((c.get("title") or "未命名") for c in _cur[:10]) or "（空）"
+                            one["success"] = True
+                            one["message"] = f"我没有新增过图表，暂无可移除的图表。当前看板有：{_names}"
+                            action_results.append(one)
+                            continue
+                        _rev = _ai_add.get("reverse")
+                        _cid = None
+                        if isinstance(_rev, list):
+                            for _d in reversed(_rev):
+                                if isinstance(_d, dict) and _d.get("type") == "delete_chart":
+                                    _cid = (_d.get("params") or {}).get("chart_id")
+                                    break
+                        elif isinstance(_rev, dict) and _rev.get("type") == "delete_chart":
+                            _cid = (_rev.get("params") or {}).get("chart_id")
+                        if not _cid:
+                            one["success"] = True
+                            one["message"] = "未找到要移除的图表。"
+                            action_results.append(one)
+                            continue
+                        act["params"]["chart_id"] = _cid
+                        act["params"].pop("delete_last_ai", None)
+
                     try:
                         # 每个动作都重新从 db 读最新配置：保证前一个动作的落库被后一个看到
                         async with async_session_factory() as stream_db:
@@ -970,6 +1087,15 @@ async def send_message_stream(
                                     one["error"] = "看板已有50个图表，已达上限，无法继续新增"
                                 else:
                                     from app.core.action_executor import execute_action
+                                    # night13 Item1 (ISS-056)：位置/邻近指令兜底（防 planner 丢落位信息）
+                                    if act.get("type") == "add_chart":
+                                        _pp = act.setdefault("params", {})
+                                        if not _pp.get("position") and not _pp.get("near_title"):
+                                            _hh = _extract_position_hints(act.get("clause") or request.message)
+                                            if _hh.get("position"):
+                                                _pp["position"] = _hh["position"]
+                                            if _hh.get("near_title"):
+                                                _pp["near_title"] = _hh["near_title"]
                                     r = execute_action(
                                         act.get("type"),
                                         act.get("params", {}),
@@ -992,6 +1118,13 @@ async def send_message_stream(
                                         flag_modified(dashboard, "config")
                                         await stream_db.commit()
                                         render_updates.extend(r.get("render_updates") or [])
+                                        # night13 Item1：记录可撤销动作（reverse 描述符）
+                                        _rev = r.get("reverse")
+                                        if _rev is not None:
+                                            ai_action_stack.append({
+                                                "action_type": act.get("type"),
+                                                "reverse": _rev,
+                                            })
                     except Exception as e:
                         # 单动作异常不影响后续动作
                         one["error"] = f"动作执行异常：{str(e)[:160]}"
@@ -1090,6 +1223,8 @@ async def send_message_stream(
                                 "last_action": _last_act,
                                 "updated_at": datetime.utcnow().isoformat()
                             }
+                        # night13 Item1：持久化 AI 动作栈（undo / 删除AI新增图 跨轮可用）
+                        _sctx["ai_action_stack"] = ai_action_stack
                         if _clarify_pending:
                             _sctx["pending_clarify"] = _clarify_pending
                         elif _last_act:
