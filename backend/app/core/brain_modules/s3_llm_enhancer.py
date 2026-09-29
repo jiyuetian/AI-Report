@@ -241,6 +241,80 @@ class S3LLMEnhancer:
                 "ratio": ratio,
             }
         return charts
+
+    @staticmethod
+    def _fix_scatter_axis(
+        charts: List[Dict], derived_metrics: Optional[Dict[str, Any]]
+    ) -> List[Dict]:
+        """
+        ISS-049 修复（AI 路径）：散点图 x/y 轴绑定一致性护栏。
+
+        根因：AI 模式 LLM 自由选 x_field/y_field，常把「率 vs 率」相关性散点
+        绑到比率字段的底层金额分量列（如 担保代偿率 → 期末代偿余额 ≈180亿），
+        导致坐标轴呈金额量级（0~180亿 / 0~60亿）与「率」标题矛盾。
+        规则引擎 night8 已有「次指标不重复选派生指标的分量列」护栏（s3_chart_engine_v2.py:409-414），
+        AI 路径此前缺位。
+
+        修复：利用 derived_metrics 映射，把「分量金额」反绑回「比率字段」（分量本就是该比率的分子，
+        反绑永远语义正确）；并当标题显式表达比率意图（含「率/占比/比例」）时，保证两轴同族（都为率），
+        不让比率字段与一个无关金额列混在同一张散点图里。
+        """
+        if not derived_metrics or not charts:
+            return charts
+        ratio_set = set(derived_metrics.keys())
+        # 比率字段 → 其分量金额集合
+        ratio_to_comps: Dict[str, List[str]] = {
+            m: list(info.get("components") or []) for m, info in derived_metrics.items()
+        }
+        # 分量金额 → 比率字段（多比率共享同一分量时取最后一个，仅作兜底）
+        comp_to_ratio: Dict[str, str] = {}
+        for m, info in derived_metrics.items():
+            for comp in (info.get("components") or []):
+                comp_to_ratio[comp] = m
+
+        for ch in charts:
+            if not isinstance(ch, dict):
+                continue
+            if ch.get("chart_type") != "scatter":
+                continue
+            xf = ch.get("x_field")
+            yf = ch.get("y_field")
+            if not xf and not yf:
+                continue
+            title = str(ch.get("title") or "")
+            # 标题中显式点名的比率字段（强信号：这张散点图就是关于这些「率」的）
+            named_ratios = [r for r in ratio_set if r in title]
+            # 比率意图：标题点名了具体比率，或含泛化比率词（率/占比/比例）
+            ratio_intent = bool(named_ratios) or ("率" in title) or ("占比" in title) or ("比例" in title)
+            if not ratio_intent:
+                continue  # 纯金额 / 非比率意图散点：不改动，避免误绑
+
+            def _resolve(axis: Any) -> Any:
+                if not axis or axis in named_ratios:
+                    return axis  # 已是点名比率，保持
+                # 该轴是某个「被点名比率」的分量金额 → 反绑回该比率（分量即分子，语义正确）
+                for r in named_ratios:
+                    if axis in ratio_to_comps.get(r, []):
+                        return r
+                # 该轴是某个「未被点名比率」的分量：
+                #  - 标题已点名具体比率 → 不擅自发明，保留原金额列（标题可能就是金额意图，如「率 vs 担保规模」）
+                #  - 标题仅有泛化比率词、未点名具体比率 → 反绑到其所属比率，统一成率视角
+                if axis in comp_to_ratio:
+                    return axis if named_ratios else comp_to_ratio[axis]
+                return axis
+
+            nx, ny = _resolve(xf), _resolve(yf)
+            if nx != xf or ny != yf:
+                print(f"[S3-LLM-FIXSCATTER] 散点轴纠正: x {xf!r}→{nx!r}, y {yf!r}→{ny!r}")
+                ch["x_field"] = nx
+                ch["y_field"] = ny
+                cfg = ch.get("config")
+                if isinstance(cfg, dict):
+                    if "x" in cfg:
+                        cfg["x"] = nx
+                    if "y" in cfg:
+                        cfg["y"] = ny
+        return charts
     
     def _build_prompt(
         self,
@@ -498,6 +572,8 @@ class S3LLMEnhancer:
             print(f"[S3-LLM] 生成成功（尝试{attempt + 1}次）")
             # 派生指标反哺：补加工公式 + 纠正比率类被写成求和的聚合口径
             charts = self._apply_derived_metrics(charts, self.derived_metrics)
+            # ISS-049：AI 路径散点轴一致性护栏（规则引擎 night8 已修，AI 路径补齐）
+            charts = self._fix_scatter_axis(charts, self.derived_metrics)
             
             return {
                 "success": True,
