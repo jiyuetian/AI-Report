@@ -18,7 +18,7 @@ import { useChartTheme } from '../../components/charts/ThemeProvider';
 import { themeChartOption } from '../../components/charts/chartThemeApply';
 import ChartErrorBoundary from '../../components/charts/ChartErrorBoundary';
 // night11 Item3：统一比率/数值格式化（ISS-046/047/048）
-import { formatMetricDisplay, formatKpiValue } from '../../utils/metricFormat';
+import { formatMetricDisplay, formatKpiValue, formatPercent, isRatioField } from '../../utils/metricFormat';
 
 // KPI卡片组件
 interface KPICardProps {
@@ -353,6 +353,7 @@ const DashboardPage: React.FC = () => {
   const [chatCollapsed, setChatCollapsed] = useState(false); // 折叠右侧对话，看板全屏
   const [primaryDs, setPrimaryDs] = useState<string>(''); // 主数据集ID（用于血缘跳转）
   const [detailChart, setDetailChart] = useState<ChartConfig | null>(null); // A03-02-01 图表详情子页
+  const [detailShowFull, setDetailShowFull] = useState(false); // ISS-050 night12：明细预览/完整数据切换
 
   // 1.7 暗色模式：跟随全局主题，图表 option 注入明/暗令牌
   const { theme } = useChartTheme();
@@ -1250,14 +1251,20 @@ const DashboardPage: React.FC = () => {
     );
   };
 
-  // 渲染明细表格
+  // 渲染明细表格（ISS-050 night12 收尾：数据明细预览）
+  // 默认预览前 10 行 × 全部列；置顶「查看完整数据」入口展开全量（分页 20/页）。
   const renderDetailTable = () => {
     if (!chartData || !chartData.data || chartData.data.length === 0) {
       return null;
     }
 
+    const totalRows = chartData.data.length;
+    const totalCols = chartData.columns.length;
+    const isPreview = !detailShowFull;
+    const previewRows = isPreview ? chartData.data.slice(0, 10) : chartData.data;
+
     // night11 Item3 ISS-048：明细表单元格用统一格式化（比率→百分比，避免 17 位小数裸奔）
-    // night11 Item5 ISS-050：展示全部列（横向滚动），不再截断前 6 列；全量行分页浏览。
+    // night12 Item4 ISS-050：预览态比率字段固定 2 位小数（formatPercent(v, 2)），完整态沿用默认精度
     const columns = chartData.columns.map((col: any) => ({
       title: col,
       dataIndex: col,
@@ -1266,27 +1273,46 @@ const DashboardPage: React.FC = () => {
       render: (v: any) => {
         const num = typeof v === 'number' ? v : parseFloat(String(v));
         if (isNaN(num)) return v;
+        if (isPreview && isRatioField(col)) return formatPercent(num, 2);
         return formatMetricDisplay(col, num);
       }
     }));
 
     return (
       <div className="detail-layer">
-        <h3 className="layer-title">数据明细</h3>
+        <h3 className="layer-title">数据明细预览</h3>
+        <div style={{ margin: '4px 0 12px', color: '#666', fontSize: 13 }}>
+          {isPreview
+            ? `预览：前 ${previewRows.length} 行 × 全部 ${totalCols} 列`
+            : `完整数据：全部 ${totalRows} 行 × 全部 ${totalCols} 列`}
+        </div>
         <Row gutter={[16, 16]}>
           <Col xs={24}>
             <Card className="chart-card">
-              <Table 
-                columns={columns} 
-                dataSource={chartData.data} 
+              <Table
+                columns={columns}
+                dataSource={previewRows}
                 size="small"
                 rowKey={(_: any, i?: number) => String(i ?? 0)}
-                pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 行` }}
+                pagination={detailShowFull
+                  ? { pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 行` }
+                  : false}
                 scroll={{ x: 'max-content' }}
               />
             </Card>
           </Col>
         </Row>
+        {totalRows > 10 && (
+          <div style={{ marginTop: 8 }}>
+            <Button
+              type="link"
+              style={{ paddingLeft: 0 }}
+              onClick={() => setDetailShowFull(!detailShowFull)}
+            >
+              {detailShowFull ? '收起为预览（前 10 行）' : '查看完整数据'}
+            </Button>
+          </div>
+        )}
       </div>
     );
   };
