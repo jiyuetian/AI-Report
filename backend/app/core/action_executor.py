@@ -309,6 +309,12 @@ class ActionExecutor:
         """
         if not fp:
             return False
+        # night13 Item2 (K-7)：数字串字段 / 高基数(>50)数值字段 —— 明确禁止做分类轴
+        if ActionExecutor._looks_like_digit_string(fp):
+            return False
+        _dc50 = fp.get("distinct_count")
+        if _dc50 is not None and _dc50 > 50 and ActionExecutor._is_numeric_field(fp):
+            return False
         nm = (fp.get("name") or fp.get("column") or "")
         if ActionExecutor._is_numeric_field(fp):
             dc = fp.get("distinct_count")
@@ -319,6 +325,74 @@ class ActionExecutor:
                 return False
             return False  # 高基数数值 → 不适格
         return True
+
+    # ---------------- night13 Item2：输出护栏（标题语义 + 维度质量）----------------
+
+    # K-6：用户口语片段特征词（位置/指代/祈使/动作），命中即不得作为图表标题
+    _SPEECH_MARKERS = (
+        "旁边", "边上", "附近", "一侧", "左侧", "右侧", "左边", "右边", "隔壁",
+        "顶部", "最上面", "最下面", "底部", "下面", "上面", "这里", "那里",
+        "这个", "那个", "刚才", "刚刚", "现在", "帮我", "给我", "加上", "加个",
+        "新增", "添加", "改成", "换成", "换个", "换一个", "一下", "我要", "我想",
+        "展示", "显示", "看看", "来一个", "再来", "请帮",
+    )
+    _SPEECH_PUNCT = ("，", "。", "！", "？", "、", "；", "：", "（", "）",
+                     "(", ")", "\"", "'", "\u201c", "\u201d")
+    _DIGIT_STRING_RATIO = 0.8
+
+    @staticmethod
+    def _is_speech_fragment_title(title: str) -> bool:
+        """ISS-055 / K-6：判断标题是否为用户口语片段（如「总销量的旁边加上一个销售额」）。
+
+        规范标题应为「指标名+维度」。命中任一特征即判为口语片段，交由 _canonical_title 重写。
+        """
+        t = (title or "").strip()
+        if not t:
+            return False
+        if any(p in t for p in ActionExecutor._SPEECH_PUNCT):
+            return True
+        if len(t) > 16:
+            return True
+        return any(m in t for m in ActionExecutor._SPEECH_MARKERS)
+
+    @staticmethod
+    def _canonical_title(chart_type: str, dim: str, metric: str, aggregation: str = None) -> str:
+        """ISS-055 / K-6：生成「指标名+维度」规范标题（绝不回显用户口语）。"""
+        m = (metric or "").strip() or "指标"
+        if chart_type == "kpi":
+            agg = (aggregation or "").lower()
+            if agg in ("max", "latest", "last", "first", "cumulative"):
+                return f"{m}\uff08\u6700\u65b0\uff09"
+            if agg in ("avg", "mean", "average"):
+                return f"{m}\uff08\u5747\u503c\uff09"
+            if agg in ("sum", "count", "total"):
+                return f"{m}\uff08\u5408\u8ba1\uff09"
+            return m
+        d = (dim or "").strip()
+        suffix = {"bar": "\u5bf9\u6bd4", "line": "\u8d8b\u52bf", "pie": "\u5360\u6bd4",
+                  "scatter": "\u5173\u7cfb", "table": "\u660e\u7ec6",
+                  "histogram": "\u5206\u5e03"}.get(chart_type, "\u5206\u5e03")
+        return f"{m}\u6309{d}{suffix}" if d else f"{m}{suffix}"
+
+    @staticmethod
+    def _looks_like_digit_string(fp) -> bool:
+        """K-7：文本型但取值是长数字串（如 3111814397.55）→ 不得做分类轴。
+
+        判据：① 名称像编号/编码/ID；② 采样值绝大多数为纯数字（含小数）。
+        """
+        if not fp:
+            return False
+        nm = (fp.get("name") or fp.get("column") or "")
+        if re.search(r"(\u53f7|id|\u7f16\u53f7|\u7f16\u7801|\u5e8f\u53f7|\u4ee3\u7801|code)", nm, re.I):
+            return True
+        samples = fp.get("sample_values") or fp.get("samples") or fp.get("sample") or []
+        if isinstance(samples, str):
+            samples = [samples]
+        vals = [str(s).strip() for s in samples if s is not None and str(s).strip()][:20]
+        if not vals:
+            return False
+        digit_like = sum(1 for v in vals if re.fullmatch(r"[-+]?\d+(\.\d+)?", v))
+        return digit_like >= max(1, int(len(vals) * ActionExecutor._DIGIT_STRING_RATIO))
 
     @staticmethod
     def _build_chart(chart_type: str, title: str, dim: str, metric: str, dataset_id: str, seq: int, aggregation: str = None) -> Dict[str, Any]:
@@ -466,6 +540,10 @@ class ActionExecutor:
                     skipped += 1
                     continue
                 title = title or f"{dim or '数据'}分布"
+                # night13 Item2 (ISS-055/K-6)：LLM 常把用户口语原句当标题
+                # （实测出现过「总销量的旁边加上一个销售额」），此处强制改写为「指标名+维度」。
+                if spec.get("title") and ActionExecutor._is_speech_fragment_title(title):
+                    title = ActionExecutor._canonical_title(ct, dim, metric, spec.get("aggregation"))
                 # N1-D3'：同标题+同图型已存在则跳过，避免纠正类重复指令叠加成翻倍卡片
                 if any(c.get("title") == title and c.get("chart_type") == ct
                        for c in current_config.get("charts", [])):
@@ -512,9 +590,38 @@ class ActionExecutor:
             title = metric_name if (chart_type == "kpi" and metric_name) else (
                 params.get("title") or f"新增{ActionExecutor._get_chart_type_name(chart_type)}"
             )
+            # night13 Item2 (K-7)：单图规则路径此前完全没有维度质量护栏，
+            # 高基数数值/数字串字段会被直接拿去做 X 轴。此处与多图路径对齐。
+            _dim_fp = next((fp for fp in field_profiles
+                            if (fp.get("name") or fp.get("column")) == dim), None)
+            if chart_type in ("pie", "bar", "line", "scatter", "table") and dim \
+                    and not ActionExecutor._is_good_dimension(_dim_fp):
+                if metric:
+                    # 维度不适格但有指标 → 降级为 KPI 单值卡（比出 30+ 彩虹柱好）
+                    chart_type = "kpi"
+                    dim = ""
+                    if not metric_name and not params.get("title"):
+                        title = ""
+                else:
+                    skipped += 1
+                    dim = metric = ""
+            # ISS-052 ③：维度基数超限 → bar/line 自动 Top-N
+            top_n = None
+            if chart_type in ("bar", "line") and dim:
+                _dc2 = (_dim_fp or {}).get("distinct_count")
+                if _dc2 is not None and _dc2 > ActionExecutor.MAX_DIM_CATS:
+                    top_n = ActionExecutor.MAX_DIM_CATS
+            # night13 Item2 (ISS-055/K-6)：标题语义校验（含默认标题「新增XX」也需规范化）
+            if (not title) or ActionExecutor._is_speech_fragment_title(title):
+                title = ActionExecutor._canonical_title(chart_type, dim, metric, params.get("aggregation"))
             if existing < limit:
                 seq = existing + 1
-                new_charts.append(ActionExecutor._build_chart(chart_type, title, dim, metric, dataset_id, seq, params.get("aggregation")))
+                _nc = ActionExecutor._build_chart(chart_type, title, dim, metric, dataset_id,
+                                                  seq, params.get("aggregation"))
+                if top_n:
+                    _nc["config"]["top_n"] = top_n
+                    _nc["config"]["sort"] = "desc"
+                new_charts.append(_nc)
 
         if "charts" not in current_config:
             current_config["charts"] = []
