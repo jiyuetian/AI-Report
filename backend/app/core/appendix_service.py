@@ -161,6 +161,8 @@ async def _clean_log(sql_db: AsyncSession, dataset_ids: List[str]) -> List[Dict[
             "dataset_id": r.dataset_id,
             "rule_type": r.rule_type,
             "strategy": params.get("strategy", ""),
+            # night11 Item5 ISS-051：透出底层问题类型，供前端按字段把影响行数拆分「空值/异常/重复」
+            "issue_type": (params.get("issue_type") or r.rule_type or ""),
             "target_field": r.target_field or "-",
             "affected_rows": affected,
             "detail": "；".join(detail_parts) or "-",
@@ -179,6 +181,8 @@ async def _clean_log(sql_db: AsyncSession, dataset_ids: List[str]) -> List[Dict[
             "dataset_id": ds,
             "rule_type": "质检发现",
             "strategy": typ,
+            # night11 Item5 ISS-051：透出底层问题类型（typ 即 iss.type，如 null/duplicate/format/range/winsorize）
+            "issue_type": typ,
             "target_field": field or "-",
             "affected_rows": cnt,
             "detail": f"状态 {status_label.get(status, status)}",

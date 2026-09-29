@@ -115,39 +115,84 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
     );
   });
 
-  /* ── B. 清洗与质检日志 ── */
-  const cleanLogTable = (
-    <Table
-      size="small"
-      scroll={{ y: 360 }}
-      rowKey="seq"
-      pagination={false}
-      dataSource={data.clean_log || []}
-      locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本看板暂无清洗与质检记录" /> }}
-      columns={[
-        { title: '序号', dataIndex: 'seq', key: 'seq', width: 60 },
-        {
-          title: '阶段',
-          dataIndex: 'stage',
-          key: 'stage',
-          width: 90,
-          render: (s: string) =>
-            s === 'apply' ? <Tag color="blue">已清洗</Tag> : <Tag>质检发现</Tag>,
-        },
-        {
-          title: '算子',
-          dataIndex: 'rule_type',
-          key: 'rule_type',
-          width: 120,
-          render: (t: string) => <Tag color={severityColor(t)}>{RuleTypeLabel[t] || t}</Tag>,
-        },
-        { title: '策略', dataIndex: 'strategy', key: 'strategy', width: 130, render: (s: string) => s || '-' },
-        { title: '目标字段', dataIndex: 'target_field', key: 'target_field', width: 160 },
-        { title: '影响行数', dataIndex: 'affected_rows', key: 'affected_rows', width: 100, render: numFmt, align: 'right' as const },
-        { title: '说明', dataIndex: 'detail', key: 'detail' },
-      ]}
-    />
-  );
+  /* ── B. 清洗与质检：按字段叙事卡片（ISS-051 night11）──
+     把后端 clean_log 平铺记录（每字段多条）重组为「字段名 | 清洗动作 | 清洗前(空值x/异常y/重复z) | 清洗后」，
+     数据全部来自管线元数据（clean_log 的 issue_type/affected_rows/stage），非新计算。 */
+  const classifyIssue = (it: string): 'null' | 'abnormal' | 'duplicate' => {
+    const t = (it || '').toLowerCase();
+    if (t.includes('null') || t.includes('空') || t.includes('missing') || t.includes('empty') || t.includes('nan'))
+      return 'null';
+    if (t.includes('duplicate') || t.includes('重复') || t.includes('dup')) return 'duplicate';
+    return 'abnormal';
+  };
+
+  const cleanLogCards = (() => {
+    const log: any[] = data.clean_log || [];
+    if (!log.length) {
+      return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本看板暂无清洗与质检记录" />;
+    }
+    // 按字段聚合
+    const byField: Record<string, any[]> = {};
+    for (const e of log) {
+      const f = e.target_field || '-';
+      if (!byField[f]) byField[f] = [];
+      byField[f].push(e);
+    }
+    const fields = Object.keys(byField).sort((a, b) => {
+      const sa = byField[a].reduce((s: number, e: any) => s + (e.affected_rows || 0), 0);
+      const sb = byField[b].reduce((s: number, e: any) => s + (e.affected_rows || 0), 0);
+      return sb - sa;
+    });
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {fields.map((f) => {
+          const entries = byField[f];
+          let nullN = 0, abnormalN = 0, dupN = 0;
+          let fixed = 0, ignored = 0, todo = 0;
+          const actions = new Set<string>();
+          for (const e of entries) {
+            const cat = classifyIssue(e.issue_type || e.rule_type || e.strategy);
+            const n = e.affected_rows || 0;
+            if (cat === 'null') nullN += n;
+            else if (cat === 'duplicate') dupN += n;
+            else abnormalN += n;
+            const label = RuleTypeLabel[e.rule_type] || e.rule_type || '-';
+            if (e.stage === 'apply' && e.strategy) actions.add(`${label}·${e.strategy}`);
+            else actions.add(label);
+            // 清洗后状态统计
+            if (e.stage === 'apply') fixed += n;
+            else {
+              const st = e.detail || '';
+              if (st.includes('已修复') || st.includes('done')) fixed += n;
+              else if (st.includes('已忽略') || st.includes('ignored')) ignored += n;
+              else if (st.includes('待处理') || st.includes('todo')) todo += n;
+            }
+          }
+          return (
+            <Card key={f} size="small" style={{ borderRadius: 10 }} styles={{ body: { padding: '12px 16px' } }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                <Text strong style={{ fontSize: 14 }}>{f}</Text>
+                {[...actions].map((a, i) => <Tag key={i} color="blue">{a}</Tag>)}
+              </div>
+              <div style={{ fontSize: 13, lineHeight: 1.9, color: 'rgba(0,0,0,.65)' }}>
+                <div>
+                  <Text type="secondary">清洗前：</Text>
+                  空值 <b>{numFmt(nullN)}</b> 行 · 异常 <b>{numFmt(abnormalN)}</b> 行 · 重复 <b>{numFmt(dupN)}</b> 行
+                </div>
+                <div>
+                  <Text type="secondary">清洗后：</Text>
+                  {fixed ? <Tag color="green">已修复 {numFmt(fixed)} 行</Tag> : null}
+                  {ignored ? <Tag>已忽略 {numFmt(ignored)} 行</Tag> : null}
+                  {todo ? <Tag color="orange">待处理 {numFmt(todo)} 行</Tag> : null}
+                  {!fixed && !ignored && !todo ? <Text>-</Text> : null}
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    );
+  })();
 
   /* ── C. 指标计算明细（产品化：SQL 翻译成口径公式，SQL 仅作可折叠技术细节） ── */
   const metricsTable = (
@@ -212,7 +257,7 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
         defaultActiveKey="dict"
         items={[
           { key: 'dict', label: 'A. 字段字典', children: fieldDictTables },
-          { key: 'clean', label: `B. 清洗与质检${(data.clean_log || []).length ? ` (${data.clean_log.length})` : ''}`, children: cleanLogTable },
+          { key: 'clean', label: `B. 清洗与质检${(data.clean_log || []).length ? ` (${data.clean_log.length})` : ''}`, children: cleanLogCards },
           { key: 'metric', label: 'C. 指标计算明细', children: metricsTable },
         ]}
       />

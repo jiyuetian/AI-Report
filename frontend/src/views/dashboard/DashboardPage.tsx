@@ -1250,10 +1250,12 @@ const DashboardPage: React.FC = () => {
     }
 
     // night11 Item3 ISS-048：明细表单元格用统一格式化（比率→百分比，避免 17 位小数裸奔）
-    const columns = chartData.columns.slice(0, 6).map((col: any) => ({
+    // night11 Item5 ISS-050：展示全部列（横向滚动），不再截断前 6 列；全量行分页浏览。
+    const columns = chartData.columns.map((col: any) => ({
       title: col,
       dataIndex: col,
       key: col,
+      ellipsis: true,
       render: (v: any) => {
         const num = typeof v === 'number' ? v : parseFloat(String(v));
         if (isNaN(num)) return v;
@@ -1269,9 +1271,10 @@ const DashboardPage: React.FC = () => {
             <Card className="chart-card">
               <Table 
                 columns={columns} 
-                dataSource={chartData.data.slice(0, 5)} 
+                dataSource={chartData.data} 
                 size="small"
-                pagination={{ pageSize: 5 }}
+                rowKey={(_: any, i?: number) => String(i ?? 0)}
+                pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 行` }}
                 scroll={{ x: 'max-content' }}
               />
             </Card>
@@ -1460,10 +1463,18 @@ const DashboardPage: React.FC = () => {
               <div style={{ marginTop: 16 }}>
                 <p style={{ fontWeight: 600 }}>数据明细</p>
                 <Table
-                  columns={chartData.columns.slice(0, 6).map((col: any) => ({ title: col, dataIndex: col, key: col }))}
-                  dataSource={chartData.data.slice(0, 20)}
+                  columns={chartData.columns.map((col: any) => ({
+                    title: col, dataIndex: col, key: col, ellipsis: true,
+                    render: (v: any) => {
+                      const num = typeof v === 'number' ? v : parseFloat(String(v));
+                      if (isNaN(num)) return v;
+                      return formatMetricDisplay(col, num);
+                    }
+                  }))}
+                  dataSource={chartData.data}
                   size="small"
-                  pagination={{ pageSize: 10 }}
+                  rowKey={(_: any, i?: number) => String(i ?? 0)}
+                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 行` }}
                   scroll={{ x: 'max-content' }}
                 />
               </div>

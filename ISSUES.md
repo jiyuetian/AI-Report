@@ -196,13 +196,15 @@
 ## ISS-050 明细只 6 列
 
 - **现象（用户实测）**：数据明细表只展示 6 列，宽表被截断。
-- **决策**：night11 Item5 改为全列横向滚动（或表头标「预览：前N行×前M列」+ 完整数据入口）。
-- **状态**：`[OPEN]` 待 night11 Item5。
+- **根因**：`DashboardPage.tsx` 两处 `chartData.columns.slice(0, 6)` 截断列、`data.slice(0, 5/20)` 截断行，宽表（如 risk_demo_v2_03 共 29 列）只看到前 6 列。
+- **修复（night11 Item5）**：明细表（`renderDetailTable` + 图表详情弹窗）改为展示**全部列** + `scroll={{ x: 'max-content' }}` 横向滚动；数据行全量分页（每页 20、可切页、显示总行数）。明细单元格仍走 Item3 统一比率格式化（`formatMetricDisplay`）。
+- **状态**：`[DONE]` night11 Item5。
 
 ## ISS-051 清洗策略平铺看不懂
 
 - **现象（用户实测）**：附录 B 78 条清洗策略平铺罗列，可读性差。
-- **决策**：night11 Item5 改为按列叙事卡片（字段名 | 清洗动作 | 清洗前 空值x/异常y/重复z | 清洗后）；数据来自管线元数据，仅重组展示非新计算。
-- **状态**：`[OPEN]` 待 night11 Item5。
+- **根因**：`AppendixPanel.tsx` 把 `clean_log` 直接渲染成扁平 Table（序号/阶段/算子/策略/目标字段/影响行数/说明），每字段多条记录铺开，无按字段聚合。
+- **修复（night11 Item5）**：后端 `appendix_service._clean_log` 透出每条记录的 `issue_type`（apply 取 `params.issue_type`，detect 取 `iss.type`，均来自已有管线元数据、非新计算）；前端 `AppendixPanel` 改为**按字段叙事卡片**：`字段名 | 清洗动作(算子·策略 Tag) | 清洗前(空值x/异常y/重复z 行，按 issue_type 归类 affected_rows) | 清洗后(已修复/已忽略/待处理 行)`。按字段影响行数降序排列，78 条平铺→每字段一卡。
+- **状态**：`[DONE]` night11 Item5。
 
 > 维护方式：每条待办记录「现象 / 决策 / 到期或触发条件 / 状态」。解决后把状态改为 `[DONE]` 或删除该行。
