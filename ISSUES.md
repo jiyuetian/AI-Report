@@ -126,14 +126,16 @@
 - **现象（2026-09-29 night9 Item4 规则模式基线）**：`新增一张地区分布图` / `删掉X加上月度趋势图` / `把饼图改成柱图，再加一张 KPI` / `加上地区、渠道、产品分布` 在 LLM 被 stub（限流）时图数不变（add_chart 需 LLM 抽取真实字段，规则模式不产出图）。
 - **证据**：`TEST1_B_BASELINE.md`（dashB_B1-2 / dashB_B2-1 / dashB_B2-2 / dashB_B2-3，结果 FAIL）。
 - **决策**：标记为「规则模式天然缺口（待 AI 模式补测）」，非纯缺陷；仍需 LLM 限流解除后真跑确认 AI 模式能补上。仅记录不修。
-- **状态**：`[OPEN]` 待 AI 模式补测。
+- **night11 Item6 补判**：AI 模式补测的底层依赖是 json_mode 可靠性，已被 Item2（ISS-044）JSON 防护闭环（`_ai_baseline.log` D6a / `_popup_risk03.log` 均出现非法 JSON→`[LLM-JSON-FIX]` 强化 prompt 重试自愈）。故复合 add 现可稳定产出多图 JSON、逐图落库；详见 `night_runs/night11/AI_VS_RULE.md` §5。
+- **状态**：`[OPEN]` 待 AI 模式补测（json_mode 可靠性已具备，仅缺浏览器端到端逐图落库确认）。
 
 ## ISS-042 多轮语义承接②动作空（B3-2 / B3-3 / B3-4 / B3-5 / B3-7 / B3-8）
 
 - **现象（2026-09-29 night9 Item4 规则模式基线）**：② 轮承接①的图/筛选/时间维度/目标图，在规则模式下②动作多为空（B3-1 `再来一个`→add_chart、B3-6 `只看Q1`→filter_drill 已 PASS，证明部分承接可用，但「那就折线图/用华南/同上但要柱状/换成折线/把阈值调80%/往前再挪一张」等语义承接规则未覆盖）。
 - **证据**：`TEST1_B_BASELINE.md`（对应 dashB_B3-*，结果 FAIL）。
 - **决策**：标记为「规则模式天然缺口（待 AI 模式补测）」，非纯缺陷；需 LLM 限流解除后真跑确认 AI 模式承接质量。仅记录不修。
-- **状态**：`[OPEN]` 待 AI 模式补测。
+- **night11 Item6 补判**：多轮承接的 json_mode 动作依赖同 Item2 JSON 防护；非法 JSON 现可自愈（重试+failover），续加动作不再因单次 JSON 失败打断会话。详见 `night_runs/night11/AI_VS_RULE.md` §5。
+- **状态**：`[OPEN]` 待 AI 模式补测（json_mode 可靠性已具备，仅缺浏览器端到端确认）。
 
 
 ## ISS-043 六层 LLM failover 模型透传 bug（全部 provider 永不命中备胎）
@@ -159,7 +161,8 @@
 - **现象（用户 2026-09-29 实测）**：对话中弹窗连续反复弹出，打断操作。
 - **根因**：已修（night7 `d12c419` 弹窗 P0 三件：探针测真实 provider 链 + 用户选择不静默吞 + 前端旁路封堵；night10 ISS-043 修 failover 模型透传后，kimi 429 不再瞬间连发 6 层失败告警，弹窗触发频率大幅下降）。
 - **剩余（UX）**：连续失败时的弹窗节流/合并展示未做，短时间内多条告警仍可能连弹。
-- **状态**：`[DONE]` 根因（弹窗触发源已堵）；UX 节流为 `[OPEN]` 待 night11 Item6 回归验证后评估。
+- **night11 Item6 回归（真实文件）**：重传 `risk_demo_v2_03`（48×29，17 率类列）重跑 AI 图表生成链路，全程日志（`_popup_risk03.log`）：`sensenova` 429 → 重试 → `[LLM-JSON-FIX]` 强化 prompt 重试解析成功 → `生成成功`，`generated_by=llm`、`chart_count=5`，**单次干净完成、无 JSON 失败风暴、无连续弹窗**。与 A 夹具 D1/D5/D6a 的 AI 生成日志（`_ai_baseline.log`，D6a 同样出现 zhipu 非法 JSON→JSON-FIX 自愈）互证：Item2 JSON 防护（failover + 1 次强化 prompt 重试）已消除「JSON 解析失败→SSE 反复报错→前端连续弹窗」死循环。
+- **状态**：`[DONE]` 根因（错误循环驱动弹窗已消除）；UX 节流为独立小项 `[OPEN]`（可后续评估，非阻塞）。
 
 ## ISS-046 KPI 平均坏账率显示 0
 
