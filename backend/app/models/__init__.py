@@ -16,6 +16,7 @@ from app.models.brain import BrainTrace, BrainConfig, BrainTraceSummary
 from app.models.prompt import Prompt
 from app.models.blacklist import TokenBlacklist
 from app.models.analysis_template import AnalysisTemplate
+from app.models.ai_action_log import AiActionLog
 
 __all__ = [
     "Base",
@@ -35,4 +36,5 @@ __all__ = [
     "Prompt",
     "TokenBlacklist",
     "AnalysisTemplate",
+    "AiActionLog",
 ]

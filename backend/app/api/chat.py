@@ -11,6 +11,7 @@ from sqlalchemy import select, desc, and_, func
 import json
 import asyncio
 import re
+import time
 from datetime import datetime
 
 from app.core.database import get_db
@@ -18,6 +19,7 @@ from app.core.security import get_current_user
 from app.core.intent_classifier import classify_intent, IntentType
 from app.core.action_executor import ActionExecutor, ActionType
 from app.core.moderation import check_moderation, ContentModerator, BoundaryType
+from app.core.ai_action_log import log_ai_action
 from app.models.chat import ChatSession, ChatMessage, TokenQuota
 from app.models.dashboard import Dashboard
 from app.models.dataset import Dataset
@@ -586,6 +588,9 @@ async def send_message_stream(
     from app.core.feasibility_checker import check_feasibility
     from app.core.event_logger import log_user_action
 
+    # night14 Task1：AI 行为埋点计时起点（覆盖分类→执行整轮）
+    _turn_start = time.monotonic()
+
     # ==== ISS-034 探针：请求到达 /chat/message 入口即落日志，不依赖后续任何流程 ====
     # 定位"用户在前端看到消息、但 chat_messages 无对应记录"的丢消息 bug：
     #   - 本探针命中 + 下游三分支(L659/753/966)缺失 → 后端静默丢弃（L774 路径）
@@ -982,6 +987,7 @@ async def send_message_stream(
                         "seq": len(action_results) + 1,
                         "type": act.get("type"),
                         "clause": act.get("clause"),
+                        "params": act.get("params", {}),
                         "success": False,
                         "message": None,
                         "error": None,
@@ -1155,7 +1161,52 @@ async def send_message_stream(
             if last_new_config is not None:
                 response_data["new_config"] = last_new_config
             response_data["action_results"] = action_results
-        
+
+        # night14 Task1：AI 行为埋点（fail-fast：写入失败只告警，不阻断对话）
+        # 动作轮：逐动作写一行；非动作轮（clarify / fallback / unknown 自然回复）：写一行汇总。
+        # 以 asyncio.create_task fire-and-forget 注入，零延迟、不阻塞 SSE 响应。
+        _latency = int(round((time.monotonic() - _turn_start) * 1000))
+        if action_results:
+            for _ar in action_results:
+                try:
+                    asyncio.create_task(log_ai_action(
+                        session_id=session_id,
+                        dashboard_id=dashboard_id,
+                        user_id=current_user,
+                        intent=(intent_result or {}).get("intent_type"),
+                        action_type=_ar.get("type"),
+                        params_summary=_ar.get("params"),
+                        result_status="success" if _ar.get("success") else "failed",
+                        error_msg=_ar.get("error"),
+                        llm_layer=(intent_result or {}).get("classified_by"),
+                        latency_ms=_latency,
+                    ))
+                except RuntimeError:
+                    pass  # 无运行中的事件循环 → 跳过埋点
+        else:
+            # 非动作轮：判定 clarify / fallback / unknown
+            _a_type = "unknown"
+            _a_status = "success"
+            if response_data.get("ai_error"):
+                _a_type, _a_status = "fallback", "failed"
+            elif response_data.get("action_error"):
+                _a_type, _a_status = "action_error", "failed"
+            try:
+                asyncio.create_task(log_ai_action(
+                    session_id=session_id,
+                    dashboard_id=dashboard_id,
+                    user_id=current_user,
+                    intent=(intent_result or {}).get("intent_type"),
+                    action_type=_a_type,
+                    params_summary={"message": (request.message or "")[:200]},
+                    result_status=_a_status,
+                    error_msg=response_data.get("action_error") or (response_data.get("ai_error") or {}).get("error"),
+                    llm_layer=(intent_result or {}).get("classified_by"),
+                    latency_ms=_latency,
+                ))
+            except RuntimeError:
+                pass
+
         # 7. 发送最终响应
         # 注意：无论是否有动作、是否高置信（含 unknown 走 LLM 自然回复的分支），
         # 都必须在此统一构造完整响应，否则低置信/unknown 路径会因 full_response 未定义而抛 UnboundLocalError，
@@ -1258,6 +1309,28 @@ async def send_message_stream(
         except Exception as e:
             import traceback
             print(f"[Chat] 流生成异常(已兜底): {e}\n{traceback.format_exc()}")
+            # 兜底分支埋点：流生成抛异常时也记录一行，便于事后排查（fail-fast，不阻断对话）。
+            try:
+                _intent_type = None
+                _classified_by = None
+                try:
+                    _intent_type = (intent_result or {}).get("intent_type")
+                    _classified_by = (intent_result or {}).get("classified_by")
+                except Exception:
+                    pass
+                try:
+                    _latency = int(round((time.monotonic() - _turn_start) * 1000))
+                except Exception:
+                    _latency = None
+                asyncio.create_task(log_ai_action(
+                    session_id=session_id, dashboard_id=dashboard_id, user_id=current_user,
+                    intent=_intent_type, action_type="stream_error",
+                    params_summary={"message": (request.message or "")[:200]},
+                    result_status="failed", error_msg=str(e)[:2000],
+                    llm_layer=_classified_by, latency_ms=_latency,
+                ))
+            except RuntimeError:
+                pass
             try:
                 yield await sse_event("error", {
                     "message": f"对话生成中断：{str(e)[:160]}。请稍后重试，或换一种问法。"
