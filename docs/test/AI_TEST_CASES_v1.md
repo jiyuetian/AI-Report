@@ -128,6 +128,27 @@
 | B5-3 | AI 问"要加吗" → 用户 "确认" | 识别为确认、真执行 | 图数 +1 | P0 |
 | B5-4 | AI 承诺但未执行（造假） | 免责声明"仅口头建议" | 回复含免责文案 | P0 |
 
+### 模块 B AI 模式补测状态（night14 Task3，真实 LLM 网关）
+
+> night9 规则基线：35 条 = PASS 17 / FAIL 10 / N/A 8。10 FAIL 为规则模式固有缺口（add_chart 缺字段抽取 + 多轮语义承接②动作空），待 AI 模式补测。
+> night14 AI 模式补测（真实 6 层网关，不 stub LLM，仅 stub 内容审核；隔离临时 SQLite 真跑 `send_message_stream`）：10 条逐条真跑、如实记录，结果如下。完整逐条证据（classified_by / assistant / 动作）见 `night_runs/night14/TEST2_B_AIMODE.md`。
+
+| 编号 | 输入 | AI 模式结果 | 证据 / 诊断 |
+|------|------|-----------|------------|
+| B1-2 | 新增一张地区分布图 | **FAIL** | 意图正确识别 add_chart，但种子看板无 dataset schema（`primary_dataset_id=None` → `field_profiles=[]`），`execute_action` 按「禁止臆造垃圾图」护栏 skip 该图 → 图数 1→1。控制实验：给定 field_profiles 时同参数新增成功（n_added=1）。**属隔离种子限制（无真实数据集），非逻辑回归** |
+| B2-1 | 删掉地区分布图，加上月度趋势图 | **FAIL** | delete_chart 生效（地区分布图消失）；add_chart（月度趋势图）因同上无 field_profiles 被 skip → 图数 2→1 |
+| B2-2 | 把饼图改成柱图，再加一张 KPI | **FAIL** | change_chart 生效（含柱图）；+KPI 的 add_chart 因无 field_profiles skip → 图数 1→1 |
+| B2-3 | 加上地区、渠道、产品分布 | **FAIL** | add_chart 因无 dataset schema 无法绑定字段被 skip → 图数 1→1（同 B1-2） |
+| B3-2 | 加一张地区分布图 → 那就折线图 | **PASS** | ②动作=['change_chart']（承接①的图改图型），会话上下文 + 规则路径已闭环 |
+| B3-3 | 筛选华东 → 用华南 | **PASS** | ②动作=['filter_drill']（承接①改筛选值） |
+| B3-4 | 分析逾期率 → 同上，但要柱状 | **PASS** | ②动作=['change_chart']（承接①分析意图改图型） |
+| B3-5 | 改成柱图 → 换成折线 | **PASS** | ②动作=['change_chart']（承接①目标图） |
+| B3-7 | 只看高风险 → 把阈值调80% | **FAIL** | ②动作=[]：**「把阈值调80%」阈值调整未被映射为任何动作**（zhipu 返回合法 JSON 仍无动作）→ 真实未覆盖功能缺口（ISS 待登记） |
+| B3-8 | 把它放到最上面 → 往前再挪一张 | **PASS** | ②动作=['reorder_chart']（承接①目标图继续前移） |
+
+> 汇总：10 条 AI 模式补测 = **PASS 5 / FAIL 5**。PASS 5 均为多轮语义承接（B3-2/3/4/5/8），night13 代码改进 + 会话上下文已闭环，AI 模式零回归。
+> FAIL 5 中 4 条（B1-2/B2-1/B2-2/B2-3）根因为**测试种子无 dataset schema**（add_chart 意图正确识别，executor 因「禁止臆造垃圾图」护栏在无 field_profiles 时 skip），属隔离基线限制、非产品回归；需在真实数据集看板上复测确认。1 条（B3-7 阈值调整）为真实未覆盖功能缺口。
+
 ---
 
 ## 模块 C：AI 参与每层 L1-L5（15 条 · v1.2 起纳入准出：期二白盒化后计分母）
