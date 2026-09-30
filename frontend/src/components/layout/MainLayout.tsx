@@ -21,7 +21,8 @@ import {
   SunOutlined,
   BellOutlined,
   UserOutlined,
-  LogoutOutlined
+  LogoutOutlined,
+  FileSearchOutlined
 } from '@ant-design/icons'
 import './MainLayout.css'
 
@@ -48,6 +49,12 @@ const navGroups: NavGroup[] = [
     group: '管理',
     children: [
       { key: '/admin', icon: <SettingOutlined />, label: '管理后台', path: '/admin' },
+    ],
+  },
+  {
+    group: '审计',
+    children: [
+      { key: '/ai-log', icon: <FileSearchOutlined />, label: 'AI 操作日志', path: '/ai-log' },
     ],
   },
 ]

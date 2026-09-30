@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills
+from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log
 
 
 def _ensure_dataset_owner(sync_conn):
@@ -212,6 +212,7 @@ app.include_router(admin_prompts.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(skills.router, prefix="/api/v1")
+app.include_router(ai_action_log.router, prefix="/api/v1")
 
 # 1.9：导出文件静态服务（PDF 真实生成后落盘于 data/exports，经此路由下载）
 _EXPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "exports")

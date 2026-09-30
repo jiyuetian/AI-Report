@@ -1,11 +1,11 @@
 
 
 > 覆盖：AI 生成看板 / AI 对话迭代 / AI 参与每层 / 用户视图 / AI 视图 / 边界异常 / 弹窗兜底 / 模型轮换 / 派生指标 / AI 管控
-> 总数：**A–K 143 条 + 模块 L 8 条 = 151 条**（v1.5 · night14 D-018 AI 操作日志白盒化）
+> 总数：**A–K 143 条 + 模块 L 9 条 + 模块 M 6 条 = 158 条**（v1.5 · night14 D-018 AI 操作日志白盒化）
 > v1.2：I 扩至 8 条 / +J 管控 8 条 / C·E 转入准出分母
 > v1.3 变更（AI 最高权限拍板）：C-3 由"用户拍板"改为"AI 直接修改走规则引擎+留痕"；I-2 由"确认前不动数据"改为"直接执行+留痕+可回退"；新增 C-16 下游重算一致性、C-17 修改留痕
 > v1.4 变更：+K 口语复合指令 12 条（09-29 用户真实实测语句）
-> v1.5 变更（night14 D-018）：+L AI 操作日志白盒化 8 条（ai_action_log 埋点全路径 + 异常健壮性）；Task1 实现并自测全绿（L1–L8）
+> v1.5 变更（night14 D-018）：+L AI 操作日志白盒化 9 条（ai_action_log 埋点全路径 + 异常健壮性）；Task1 实现并自测全绿（L1–L9）；Task2 查询 API 新增模块 M 6 条（M1–M6，分页+权限隔离+多维过滤+时间区间）
 > 用法：agent 连续开发自测 → TEST-2 达准出线 → 用户统一验收
 
 ---
@@ -297,7 +297,7 @@
 
 ---
 
-## 模块 L：AI 操作日志白盒化（8 条 · v1.5 新增，night14 D-018 / Task1+Task2 验收模块）
+## 模块 L：AI 操作日志白盒化（9 条 · v1.5 新增，night14 D-018 / Task1+Task2 验收模块）
 
 > 背景：night14 在 `ai_action_log`（SQLite 同库 aibi.db）落「每次 AI 对话动作」白盒埋点，覆盖 chat SSE 主链路、确认词执行、remove/undo、兜底分支。
 > 设计原则（D-018）：fail-fast（写失败只告警不阻断对话）、并发/锁安全（PRAGMA busy_timeout）、超大 params/error 截断为合法 JSON、调用方 `asyncio.create_task` fire-and-forget。
@@ -352,6 +352,36 @@
 | # | 触发 | 预期 | 验证方式 | 优先级 |
 |---|---|---|---|---|
 | L-9 | 写库失败（DB 不可用 / session 异常） | `log_ai_action` 吞异常仅打印 `[AI-ACTION-LOG-WARN] 写入失败(不阻断对话)`，**不向外抛**、不阻断对话主流程 | 注入坏 `async_session_factory` 验证协程正常返回 | P0 |
+
+---
+
+## 模块 M：AI 操作日志查询 API（6 条 · v1.5 新增，night14 D-018 / Task2 验收模块）
+
+> 背景：Task2 在 `app/api/ai_action_log.py` 提供 `GET /api/v1/ai-action-log/list` 的「读」能力：分页 + 多维过滤 + 权限隔离。
+> 设计原则（D-018 Task2）：仅查询不写 `ai_action_log`、不碰业务 DuckDB；普通用户强制只看自己（忽略客户端伪造 user_id），超管可看全部或按 user_id 过滤；时间区间以 naive UTC 与存储一致。
+> 验证方式：隔离临时 SQLite 直接调用 `list_ai_action_logs` handler（绕过 FastAPI 注入），断言权限/过滤/分页/排序；自测脚本 `_verify_task2_api.py` 全绿。
+> 准出标准：100%。
+
+### M1 权限隔离 + 分页（2 条）
+
+| # | 触发 | 预期 | 验证方式 | 优先级 |
+|---|---|---|---|---|
+| M-1 | 普通用户请求（不带/带伪造 user_id） | 仅返回 `user_id==自己` 的行；传入的 user_id 被忽略；按 `created_at` 倒序分页 | 调 handler（current_user 非超管）断言 total/items/user_id | P0 |
+| M-2 | 超管请求（不带 user_id / 带 user_id） | 不带返回全部行；带 user_id 时仅返回该用户行 | 调 handler（current_user 超管）两种场景断言 | P0 |
+
+### M2 多维过滤（3 条）
+
+| # | 触发 | 预期 | 验证方式 | 优先级 |
+|---|---|---|---|---|
+| M-3 | action_type / intent / result_status 单维过滤 | 返回行均匹配该维度值 | 调 handler 分别传 action_type/result_status 断言 | P0 |
+| M-4 | keyword 模糊匹配 | `error_msg` / `action_type` / `intent` 含关键词的行被返回 | 调 handler 传 keyword 断言命中 | P1 |
+| M-5 | session_id / dashboard_id 精确过滤 | 仅返回对应会话/看板的行 | 调 handler 传 session_id 断言 | P1 |
+
+### M3 时间区间（1 条）
+
+| # | 触发 | 预期 | 验证方式 | 优先级 |
+|---|---|---|---|---|
+| M-6 | start_time / end_time（ISO-8601，含端点） | 返回 `created_at` 落在闭区间内的行；边界值包含 | 调 handler 传时间区间断言 total 与边界 | P0 |
 
 ---
 
