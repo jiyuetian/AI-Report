@@ -246,3 +246,18 @@
 - **状态**：`[DONE]`（night12 改向 + 诚实数据缺口说明，commit 见 night12/ROUND_NOW.md 第 3 件）。
 
 > 维护方式：每条待办记录「现象 / 决策 / 到期或触发条件 / 状态」。解决后把状态改为 `[DONE]` 或删除该行。
+
+## ISS-053 Dependabot 高危漏洞（依赖审计 + 安全版本钉固）
+
+- **现象**：night13 第7件立项的依赖安全审计（GitHub Dependabot 告警在沙箱无网络不可直接拉取，改为本地 manifest 静态审计）。
+- **范围**：`backend/requirements.txt`（精确钉版）+ `frontend/package.json`/`package-lock.json`。
+- **后端已钉固的高危/中危（已修，待 `pip install -r backend/requirements.txt` 生效；沙箱无网络未实装）**：
+  | 包 | 旧版本 | 新版本 | CVE | 等级 |
+  |---|---|---|---|---|
+  | python-multipart | 0.0.9 | 0.0.12 | CVE-2024-53981（未限制 part 数→资源耗尽 DoS） | HIGH |
+  | pandas | 2.2.0 | 2.2.2 | CVE-2024-27330 / CVE-2024-27331（read_pickle/read_json 任意代码执行） | HIGH |
+  | jinja2 | 3.1.3 | 3.1.4 | CVE-2024-34064（xmlattr 属性注入） | MODERATE |
+  | email-validator | 2.1.0 | 2.1.1 | CVE-2024-1916（EmailStr ReDoS） | MODERATE |
+  | httpx | 0.26.0 | 0.27.2 | CVE-2024-47081（.netrc 凭据经代理泄漏） | MODERATE |
+- **前端**：`package.json` 全部用 `^` 范围（安装时自动取最新 minor/patch），建议 CI 跑 `npm audit` + `npm update` 并重新生成 `package-lock.json` 落锁；重点核对 `axios`（^1.6.7，锁文件若 <1.7.4 受 CVE-2024-28849、<1.8.0 受 CVE-2025-27152 SSRF）。
+- **状态**：`[DONE-代码]`（钉版已落 `requirements.txt` + 本登记）；**待办**：①`pip install` 实装后端钉版（需联网，沙箱未跑）；②前端 `npm audit`/`npm update` 落锁（待 CI/用户执行）。
