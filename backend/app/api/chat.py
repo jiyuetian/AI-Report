@@ -1091,7 +1091,8 @@ async def send_message_stream(
                                     if act.get("type") == "add_chart":
                                         _pp = act.setdefault("params", {})
                                         if not _pp.get("position") and not _pp.get("near_title"):
-                                            _hh = _extract_position_hints(act.get("clause") or request.message)
+                                            # night13 Item3 K-2：位置线索可能跨 clause，必须用整句 message 兜底
+                                            _hh = _extract_position_hints(request.message)
                                             if _hh.get("position"):
                                                 _pp["position"] = _hh["position"]
                                             if _hh.get("near_title"):

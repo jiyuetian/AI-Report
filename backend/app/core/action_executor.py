@@ -565,9 +565,25 @@ class ActionExecutor:
             # 兼容旧逻辑：单图，字段用 params 真实字段或画像兜底
             # M6-03：若请求中完全解析不出真实字段（如用户提到的字段在数据集里不存在），
             # 拒绝并给出明确提示，绝不臆造无关字段的图表。
-            if not (params.get("dimension_field") or params.get("metric_field")
-                    or params.get("value_field") or params.get("y_field")
-                    or params.get("metric") or params.get("dimension")):
+            # night13 Item3 K-2/K-8：规则路径字段缺失判定。
+            # 既有的真实字段键（dimension_field/metric_field/...）直接放行；
+            # 口语提取的 metric_name（K-2「指标要担保余额」）也接受——但必须经字段画像校验
+            # 真实存在，命中则把 metric 指向该真实字段放行，命不中则与 K-8 一致拒绝臆造。
+            _has_explicit_field = (params.get("dimension_field") or params.get("metric_field")
+                                   or params.get("value_field") or params.get("y_field")
+                                   or params.get("metric") or params.get("dimension"))
+            _mn = (params.get("metric_name") or "").strip()
+            if not _has_explicit_field and _mn:
+                _mn_field = next((fp.get("name") or fp.get("column") for fp in field_profiles
+                                  if (fp.get("name") or fp.get("column")) == _mn), None)
+                if _mn_field:
+                    # metric_name 命中真实字段 → 放行，并把 metric 指向该真实字段
+                    params = dict(params)
+                    params["metric"] = _mn_field
+                    params["metric_field"] = _mn_field
+                    _has_explicit_field = True
+                # 命不中 → 落到下面的拒绝分支（K-8）
+            if not _has_explicit_field:
                 _fns = [fp.get("name") or fp.get("column") for fp in field_profiles if fp.get("name") or fp.get("column")][:12]
                 _avail = "、".join(_fns) if _fns else "（当前数据集没有可用字段画像）"
                 return {

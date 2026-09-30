@@ -554,6 +554,29 @@ def _resolve_history_anaphora(message: str, context: Dict[str, Any]) -> Optional
     return None
 
 
+def _extract_position_hints_from_message(message: str) -> Dict[str, str]:
+    """night13 Item3 K-2：从整句提取位置/邻近线索。
+
+    split_clauses 可能把「在X的旁边」拆到与「加一张图」不同的 clause，
+    导致落位信息丢失。这里从整句 message 兜底提取 near_title / position，
+    写入 add_chart 动作参数，确保新图落在用户指定的图旁。
+    """
+    out: Dict[str, str] = {}
+    # 「在 平均坏账率 的 旁边/附近/后面/之后/上方/上面」→ near_title + 后置
+    m = re.search(
+        r"在\s*([^，。；！？的]{1,20}?)\s*(的)?\s*"
+        r"(旁边|附近|后面|之后|上方|上面|下方|下面|前面|之前)",
+        message or ""
+    )
+    if m:
+        out["near_title"] = m.group(1).strip()
+        out["position"] = "after" if m.group(3) in ("旁边", "附近", "后面", "之后", "上方", "上面") else "before"
+    # 「顶部/最上面/置顶」→ position=top
+    if re.search(r"顶部|最上面|置顶|最前", message or ""):
+        out["position"] = "top"
+    return out
+
+
 def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = False) -> Dict[str, Any]:
     """把一条用户消息规划成有序动作列表。
 
@@ -739,6 +762,20 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
                         if primary is None:
                             primary = result
                         continue
+            # night13 Item3 K-11：歧义换图（换角度/换视角）必须澄清，不能擅自执行。
+            if params.get("ambiguous_change"):
+                _charts = (context or {}).get("current_config", {}).get("charts", []) or []
+                actions.append(_clarify_action(
+                    "ambiguous_change",
+                    "「换一个角度」我还不太确定你想换什么——是换维度（如按担保类型拆分）、换图型（柱状/折线/饼图），"
+                    "还是换指标（看别的字段）？告诉我方向我就改。",
+                    clause,
+                    [{"option": "换维度"}, {"option": "换图型"}, {"option": "换指标"}],
+                    pending={"intent_type": "change_chart", "chart_title_hint": params.get("chart_title_hint")},
+                ))
+                if primary is None:
+                    primary = result
+                continue
             vague = detect_vague_chart_type(clause, params)
             if vague:
                 # P0-3：vague_chart_type 也携带 pending（已知图名时下一轮用图型名接住）
@@ -775,6 +812,15 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
             if primary is None:
                 primary = result
             continue
+
+        # night13 Item3 K-2：位置/邻近线索（"在X的旁边"）可能被 split_clauses 拆到别的 clause，
+        # 必须从整句 message 提取 near_title/position 写入动作参数，避免落位信息丢失。
+        if itype == IntentType.ADD_CHART.value:
+            _ph = _extract_position_hints_from_message(message)
+            if _ph.get("near_title") and not params.get("near_title"):
+                params["near_title"] = _ph["near_title"]
+            if _ph.get("position") and not params.get("position"):
+                params["position"] = _ph["position"]
 
         act = _to_action(itype, analysis, clause, result.get("confidence", 0))
         if act:

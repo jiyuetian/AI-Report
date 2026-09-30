@@ -131,13 +131,16 @@ class IntentClassifier:
         ],
         IntentType.ADD_CHART: [
             # 新增/添加/加/插入/来个 + 可选量词 + 任意描述(维度/指标/占比, 放宽间隙至30) + 图型词
-            r"(新增|添加|再加|加|插入|来个|来一张)\s*(?:一?\s*个|一?\s*张|些)?\s*[^，。；！？]{0,30}?(饼图|柱状图|柱图|条形图|直方图|线图|折线图|散点图|圆环图|环形图|表格|图|图表|指标卡|kpi|KPI)",
+            r"(新增|添加|再加|加|插入|来个|来一张)\s*(?:一?\s*个|一?\s*张|些)?\s*[^，。；！？]{0,30}?(饼图|柱状图|柱图|条形图|直方图|线图|折线图|散点图|圆环图|环形图|表格|图|图表|指标卡|kpi|KPI|卡片)",
             # 再/右边等方位词 + 加/新增 + 图型词
             r"(再|右边|右侧|下面|上面|旁边|追加)\s*(?:一?\s*个|一?\s*张)?\s*(加|放|来|新增)\s*[^，。；]{0,12}?(图|图表|饼图|柱状图|柱图|线图|折线图|散点图|表格|指标|KPI)",
             # 帮我/能不能 + 加图
             r"(能不能|帮我|请帮我)\s*[^，。；]{0,8}?(加|添加|新增|来)\s*[^，。；]{0,12}?(图|图表|指标|KPI)",
             # 新增/加 + 指标类名词(无图型词也识别为加指标图)
             r"(新增|添加|加|插入)\s*[^，。；]{0,20}?(指标|业务量|笔数|总额|总数|余额|金额|数量)\s*(?:指标|卡|KPI)?",
+            # night13 Item3 K-2：「加上一个新卡片/新增一个卡片」此前因"卡片"不在图型同义词
+            # 且 "新卡片" 被逗号截断，规则漏判 add_chart → 落 LLM(429) 变 UNKNOWN。现补"卡片"专属规则。
+            r"(新增|添加|加|插入|来个|来一张)\s*[^，。；！？]{0,10}?(新)?\s*卡片",
             # 来 + 量词 + 图型词
             r"来\s*(一个|一张|个|张)?\s*(图|图表|饼图|柱状图|柱图|线图|折线图|散点图|圆环图|表格)",
             # 2026-09-18：「把不存在的字段做成饼图」此前 ADD_CHART 识别不到（没有"新增/添加"），
@@ -502,7 +505,7 @@ class IntentClassifier:
             mm = re.search(r"([一-龥A-Za-z_]*)(总笔数|总金额|总额|笔数|金额|余额|数量)", message)
             if mm:
                 metric_raw = mm.group(1) + mm.group(2)
-                for stop in ("新增", "添加", "看板", "指标", "一个", "一张", "加", "和"):
+                for stop in ("新增", "添加", "看板", "指标", "一个", "一张", "加", "和", "要", "的"):
                     metric_raw = metric_raw.replace(stop, "")
             metric_name = metric_raw or analysis["extracted_params"].get("metric_name") or "新增指标"
             # 清除括在指标名里的非指标残留
@@ -520,18 +523,44 @@ class IntentClassifier:
             )
             if _near:
                 analysis["extracted_params"]["near_title"] = _near.group(1).strip()
-            if re.search(r"顶部|最上面|卡片区|指标区|kpi区|卡片|顶部卡片", message or ""):
+            # night13 Item3 K-2 修复：bare「卡片」是图型(KPI)同义词，不是顶部落位锚点，
+            # 不能因「加上一个新卡片」就置顶；只有明确的顶部/卡片区/顶部卡片才置顶。
+            if re.search(r"顶部|最上面|卡片区|指标区|kpi区|顶部卡片", message or ""):
                 analysis["extracted_params"]["position"] = "top"
+            # night13 Item3 K-2/K-1：聚合口径提取（"最新一期"优先于"累计"，避免 K-1 退化成合计）。
+            _ag = None
+            if re.search(r"最新|最近一期|最近一?期|latest|当前值|本期", message or ""):
+                _ag = "max"
+            elif re.search(r"累计|累加|总和|合计|汇总|总共|全量|total|sum", message or ""):
+                _ag = "sum"
+            elif re.search(r"平均|均值|mean|avg", message or ""):
+                _ag = "avg"
+            if _ag:
+                analysis["extracted_params"]["aggregation"] = _ag
 
             # === 增强：LLM/规则结构化提取多图（带真实字段），支持顿号拆分 ===
             fps = (context.get("dataset_info") or {}).get("field_profiles") or context.get("field_profiles") or []
             if fps:
-                charts_spec = cls._extract_add_charts(message, fps)
-                if charts_spec:
-                    analysis["extracted_params"]["charts"] = charts_spec
-                    analysis["extracted_params"]["chart_type"] = charts_spec[0]["chart_type"]
-                    analysis["extracted_params"]["metric_name"] = charts_spec[0]["title"]
-                    analysis["extracted_params"]["classified_by"] = "llm_add_chart"
+                # night13 Item3 K-2：会话 context 的 field_profiles 常为占位("示例字段")，
+                # 不能据此判断"真实指标"。改用消息表层信号判定"用户已显式点名单张确定图"，
+                # 这类情况信任规则提取的 metric_name/near_title/aggregation，跳过 _extract_add_charts
+                # （单图时常回落 LLM，在 429/幻觉时把干净参数冲成多张错图，K-2 即此坑）。
+                # 仅当"未显式点名单图指标"时才启用结构化(多图/LLM)提取，保留"加 A、B、C 的均值汇总"多图能力。
+                _top_metric = analysis["extracted_params"].get("metric_name")
+                _top_real = bool(_top_metric) and any(
+                    (fp.get("name") or fp.get("column") or "") == _top_metric for fp in fps)
+                _explicit_single = (
+                    bool(re.search(r"指标要|指标是|指标为|指标：|指标:|加上一个新卡片|新增一个卡片|加一个新卡片|加个新卡片", message or ""))
+                    or bool(analysis["extracted_params"].get("near_title"))
+                    or _top_real
+                )
+                if not _explicit_single:
+                    charts_spec = cls._extract_add_charts(message, fps)
+                    if charts_spec:
+                        analysis["extracted_params"]["charts"] = charts_spec
+                        analysis["extracted_params"]["chart_type"] = charts_spec[0]["chart_type"]
+                        analysis["extracted_params"]["metric_name"] = charts_spec[0]["title"]
+                        analysis["extracted_params"]["classified_by"] = "llm_add_chart"
 
         elif intent_type == IntentType.DELETE_CHART:
             # 2026-09-18 修复：①支持"删掉所有图"的语义识别（此前只删最后一张，还误判）；
@@ -574,20 +603,23 @@ class IntentClassifier:
 
         # night13 Item1：指代消解「你新增的/刚才加的/最近新增的」→ 标记 delete_last_ai，
         # 由 chat.py 从会话 AI 动作栈定位「最近一次 AI 新增的图 id」再真正删除，绝不猜删哪张。
-        _ep_del = analysis.get("extracted_params") or {}
-        _deictic = re.search(
-            r"(你|ai|刚|刚刚|刚才|最近|新).{0,4}(新增|加|生成|做|创建|添)"
-            r"|新(增|加)的?(这)?(个|张|图|图表)"
-            r"|刚才(的)?(这)?(个|张|图|图表)"
-            r"|我刚(新增|加|做)",
-            message or ""
-        )
-        if _deictic:
-            _ep_del["delete_last_ai"] = True
-            # 清掉误抽的 chart_type/title_keyword，交给 chat.py 从动作栈精确定位
-            _ep_del.pop("chart_type", None)
-            _ep_del.pop("title_keyword", None)
-            analysis["extracted_params"] = _ep_del
+        # night13 Item3 K-2 修复：delete_last_ai 仅对「删除/撤销」类意图生效；
+        # ADD_CHART 等新建意图绝不能触发（否则会误 pop chart_type，把 KPI 卡片建成 bar 图）。
+        if intent_type in (IntentType.DELETE_CHART.value, IntentType.UNDO.value):
+            _ep_del = analysis.get("extracted_params") or {}
+            _deictic = re.search(
+                r"(你|ai|刚|刚刚|刚才|最近|新).{0,4}(新增|加|生成|做|创建|添)"
+                r"|新(增|加)的?(这)?(个|张|图|图表)"
+                r"|刚才(的)?(这)?(个|张|图|图表)"
+                r"|我刚(新增|加|做)",
+                message or ""
+            )
+            if _deictic:
+                _ep_del["delete_last_ai"] = True
+                # 清掉误抽的 chart_type/title_keyword，交给 chat.py 从动作栈精确定位
+                _ep_del.pop("chart_type", None)
+                _ep_del.pop("title_keyword", None)
+                analysis["extracted_params"] = _ep_del
         
         elif intent_type == IntentType.REORDER_CHART:
             # 提取排序目标
@@ -1101,6 +1133,31 @@ def classify_intent(message: str, context: Dict[str, Any] = None) -> Dict:
                 },
                 "is_confident": True,
                 "classified_by": "rule_deictic_delete",
+            }
+    # night13 Item3 K-11：「这个图不对，换一个角度」此前命中 CHART_FIX(图...不对) 被当成"修图"，
+    # 执行器拿不到真实图名→失败且无澄清。语义上"换角度"是歧义换图，应澄清而非执行。
+    # 优先级高于 CHART_FIX：歧义换图词命中即判 change_chart(ambiguous_change)，交由规划器澄清。
+    if message:
+        _am = message.strip()
+        if re.search(
+            r"换.{0,4}(角度|视角|看法|方式|思路)|从(另一个|别的|其他)角度|另一个角度看|换个(维度|指标|图型|展现)|换个样子",
+            _am,
+        ):
+            _hint = ""
+            _h = re.search(r"(这个图|那张图|这张图|该图|这张图表|那张图表)", _am)
+            if _h:
+                _hint = _h.group(1)
+            return {
+                "intent_type": IntentType.CHANGE_CHART.value,
+                "confidence": 80,
+                "analysis": {
+                    "raw_message": _am,
+                    "extracted_params": {"ambiguous_change": True, "chart_title_hint": _hint},
+                    "matched_keywords": [],
+                    "classified_by": "rule_ambiguous_change",
+                },
+                "is_confident": True,
+                "classified_by": "rule_ambiguous_change",
             }
     intent_type, confidence, analysis = IntentClassifier.classify(message, context)
     
