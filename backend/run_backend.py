@@ -45,13 +45,66 @@ def _read_pid(pidfile: str):
 
 
 def _pid_alive(pid) -> bool:
+    """跨平台探活：判断 pid 对应进程是否【仍在运行】。
+
+    【ISS-057 根因】原实现用 `os.kill(pid, 0)` 探活，只 catch `OSError`。
+    在 Windows 上这有两处致命缺陷：
+      1) 对【明显不存在】的 PID（如 999999），`os.kill(pid,0)` 抛
+         `OSError(WinError 87)`；虽然本机能被 `except OSError` 兜住，
+         但其他 Python/Windows 构建可能抛 `SystemError`（非 OSError 子类），
+         未捕获即让启动器崩溃。
+      2) 更隐蔽且**在本机 100% 可复现**的 bug：进程被强杀/崩溃退出后，
+         其内核对象（EPROCESS）往往尚未被完全回收，`os.kill(pid,0)`
+         **不抛任何异常** → 旧实现返回 `True`（误判"存活"）→ B5-1 守卫
+         据此拒绝新的启动 → 后端永远起不来（典型症状：上次异常退出后
+         再也起不动，删掉 .backend.pid 又好了）。
+    【修复】Windows 走 ctypes：
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)
+          → 若句柄为空且非 ERROR_ACCESS_DENIED(5) → 进程不存在 → False
+          → 若拿到句柄，再调 GetExitCodeProcess：
+              * 退出码 == STILL_ACTIVE(259) → 真在运行 → True
+              * 否则（已是退出码）→ 进程已终止（句柄只是残留对象）→ False
+      这是 Windows 上唯一能区分"残留句柄"与"真运行"的可靠手段，
+      彻底消除上面的误判。非 Windows 保留 `os.kill(pid, 0)` 语义。
+    任何异常一律视为"进程不可探测 → 视为不存在"从而放行启动
+    （B5-2 端口占用检测仍是双进程的最终兜底）。
+    """
     if pid is None:
         return False
+    pid = int(pid)
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                # 句柄为空：区分"进程不存在"与"进程存在但无权限打开"。
+                # ERROR_ACCESS_DENIED(5) 表示进程存活但当前令牌无权打开 → 视为存活，
+                # 避免误放行重复启动抢占 DuckDB。
+                if getattr(ctypes, "GetLastError", None) and ctypes.GetLastError() == 5:
+                    return True
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess.restype = ctypes.c_int
+                kernel32.GetExitCodeProcess.argtypes = [
+                    ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == STILL_ACTIVE
+                return False
+            finally:
+                kernel32.CloseHandle(handle)
+        except (OSError, SystemError, ValueError, TypeError, AttributeError):
+            return False
+    # 非 Windows：signal 0 仅探测存在性、不发送信号
     try:
-        # Windows 下 signal 0 仅探测进程是否存在，不发送信号
         os.kill(pid, 0)
         return True
-    except OSError:
+    except (OSError, SystemError, ValueError):
         return False
 
 

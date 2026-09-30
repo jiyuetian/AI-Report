@@ -261,3 +261,24 @@
   | httpx | 0.26.0 | 0.27.2 | CVE-2024-47081（.netrc 凭据经代理泄漏） | MODERATE |
 - **前端**：`package.json` 全部用 `^` 范围（安装时自动取最新 minor/patch），建议 CI 跑 `npm audit` + `npm update` 并重新生成 `package-lock.json` 落锁；重点核对 `axios`（^1.6.7，锁文件若 <1.7.4 受 CVE-2024-28849、<1.8.0 受 CVE-2025-27152 SSRF）。
 - **状态**：`[DONE-代码]`（钉版已落 `requirements.txt` + 本登记）；**待办**：①`pip install` 实装后端钉版（需联网，沙箱未跑）；②前端 `npm audit`/`npm update` 落锁（待 CI/用户执行）。
+
+---
+
+## ISS-057 run_backend.py `_pid_alive` 探活在 Windows 不可靠，B5 单实例守卫会误杀重启（P0，night14 Task0）
+
+- **现象（night14 Task0 复现 + 定位）**：`backend/run_backend.py` 的 `_pid_alive(pid)` 用 `os.kill(pid, 0)` 探活、只 `except OSError`。在 Windows 上有两处致命缺陷：
+  ① **明显不存在的 PID（如 999999）**：本机 `Python 3.12.10` 抛 `OSError(WinError 87)`，可被 `except OSError` 兜住；但其他 Python/Windows 构建可能抛 `SystemError`（**非 OSError 子类**，已验证 `issubclass(SystemError, OSError) == False`）→ 未捕获 → 启动器在 B5 守卫前直接崩溃（连 `[B5]` 打印都到不了）。
+  ② **更隐蔽且本机 100% 可复现的真 bug**：进程被强杀/崩溃退出后，其内核对象（EPROCESS）往往尚未被完全回收，`os.kill(pid, 0)` **不抛任何异常** → 旧实现返回 `True`（误判"存活"）→ B5-1 守卫据此拒绝新的启动 → **后端永远起不来**（典型症状：上次异常退出后删掉 `.backend.pid` 又好了）。
+- **根因**：Windows 上 `os.kill(pid, 0)` 语义不可靠——既不保证对死 PID 抛"可捕获"的异常，也不保证对"已退出但内核对象残留"的 PID 返回"不存在"。用"能否发信号"来推断"进程是否存活"在 Windows 上是错的。
+- **修复（已落码）**：Windows 分支改走 ctypes：
+  `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)` →
+  - 句柄为空且 `GetLastError() != ERROR_ACCESS_DENIED(5)` → 进程不存在 → `False`；
+  - 拿到句柄后再 `GetExitCodeProcess`：退出码 `== STILL_ACTIVE(259)` → 真在运行 → `True`；否则（已是具体退出码）→ 进程已终止（句柄只是残留对象）→ `False`。
+  这是 Windows 上唯一能区分"残留句柄"与"真运行"的可靠手段，彻底消除上面的误判。非 Windows 保留 `os.kill(pid, 0)`（catch `OSError/SystemError/ValueError`）。任何异常一律视为"不可探测 → 视为不存在"**放行启动**，B5-2 端口占用检测仍是双进程的最终兜底。
+- **验证（`_verify_iss057.py` 全 PASS，未触碰 8000 活后端）**：
+  - A1 真实 bug（刚被杀 PID）：旧=`True`(误判存活) / 新=`False`(正确放行)；
+  - A2 明显死 PID(999999)：新=`False` 且不崩溃；
+  - A3 活后端 PID（或本进程）：新=`True`（双进程防护仍正确，不误杀真·活进程）；
+  - B1/B2 复刻 `main()` 的 B5-1/B5-2 守卫：残留死 pidfile → 放行启动；
+  - C1/C2 **真实驱动 `main()`**（uvicorn.run 桩，隔离端口 18099）两轮：无 pidfile 与残留死 PID(999999) 均到达 `[B5] 启动后端`——完整跑通原本崩溃/误杀的那段守卫代码。
+- **状态**：`[DONE]`（night14 第 1 件 Task0，commit 见 night14/ROUND_NOW.md，本地未 push，未碰生产 DuckDB）。
