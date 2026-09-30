@@ -500,6 +500,19 @@ class IntentClassifier:
                         analysis["extracted_params"] = {"chart_type": t}
                         break
 
+            # night13 Item3 K-2 / Item5 ISS-033：直接捕获「指标是/为/要/：X」后的指标名，
+            # 覆盖「销售额/销量/利润」等不以 余额/金额/数量 结尾的指标，
+            # 避免退化成"新增指标"被 K-8 字段护栏误拒（K-2 用「指标要担保余额」能中是因为余额在白名单）。
+            _mmk = re.search(r"指标[是为要:：]\s*([一-龥A-Za-z_]{1,16})", message or "")
+            if _mmk:
+                _mn = re.sub(
+                    r"的(累计|累加|总和|合计|汇总|总共|全量|平均|均值|最新|最近一?期|当前|最新一期)?(数值|值)?$",
+                    "", _mmk.group(1),
+                )
+                _mn = _mn.strip("的").strip()
+                if _mn:
+                    analysis["extracted_params"]["metric_name"] = _mn
+
             # 尝试提取指标名（如"借据总笔数""担保总额"）
             metric_raw = ""
             mm = re.search(r"([一-龥A-Za-z_]*)(总笔数|总金额|总额|笔数|金额|余额|数量)", message)
