@@ -162,7 +162,7 @@
 - **根因**：已修（night7 `d12c419` 弹窗 P0 三件：探针测真实 provider 链 + 用户选择不静默吞 + 前端旁路封堵；night10 ISS-043 修 failover 模型透传后，kimi 429 不再瞬间连发 6 层失败告警，弹窗触发频率大幅下降）。
 - **剩余（UX）**：连续失败时的弹窗节流/合并展示未做，短时间内多条告警仍可能连弹。
 - **night11 Item6 回归（真实文件）**：重传 `risk_demo_v2_03`（48×29，17 率类列）重跑 AI 图表生成链路，全程日志（`_popup_risk03.log`）：`sensenova` 429 → 重试 → `[LLM-JSON-FIX]` 强化 prompt 重试解析成功 → `生成成功`，`generated_by=llm`、`chart_count=5`，**单次干净完成、无 JSON 失败风暴、无连续弹窗**。与 A 夹具 D1/D5/D6a 的 AI 生成日志（`_ai_baseline.log`，D6a 同样出现 zhipu 非法 JSON→JSON-FIX 自愈）互证：Item2 JSON 防护（failover + 1 次强化 prompt 重试）已消除「JSON 解析失败→SSE 反复报错→前端连续弹窗」死循环。
-- **状态**：`[DONE]` 根因（错误循环驱动弹窗已消除）；UX 节流为独立小项 `[OPEN]`（可后续评估，非阻塞）。
+- **状态**：`[DONE]` 根因（错误循环驱动弹窗已消除）；UX 节流 `[DONE]`（night13 第6件：前端 `throttledMessage` 节流/合并已落地，`tsc --noEmit` 0 错，UI 自测待用户在浏览器确认）。
 
 ## ISS-046 KPI 平均坏账率显示 0
 

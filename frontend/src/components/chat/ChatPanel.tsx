@@ -6,7 +6,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Input, Button, Badge, List, Typography, Space, Spin,
-  Popover, Progress, Tag, Tooltip, Empty, Upload, message as antMessage,
+  Popover, Progress, Tag, Tooltip, Empty, Upload,
   Alert
 } from 'antd';
 import {
@@ -17,6 +17,7 @@ import {
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { authHeaders, authorizedFetch } from '../../utils/request';
+import { throttledMessage } from '../../utils/throttledMessage';
 import './ChatPanel.css';
 
 const { Text, Title } = Typography;
@@ -97,12 +98,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const handleImageUpload = (file: File) => {
     const isImage = file.type.startsWith('image/');
     if (!isImage) {
-      antMessage.error('请上传图片文件');
+      throttledMessage.error('请上传图片文件', 'img-type');
       return false;
     }
     const isLt10M = file.size / 1024 / 1024 < 10;
     if (!isLt10M) {
-      antMessage.error('图片不能超过10MB');
+      throttledMessage.error('图片不能超过10MB', 'img-size');
       return false;
     }
     const reader = new FileReader();
@@ -181,7 +182,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
     // 检查Token是否耗尽
     if (tokenStatus?.is_exhausted) {
-      antMessage.warning('Token已耗尽，请申请加量');
+      throttledMessage.warning('Token已耗尽，请申请加量', 'token-empty');
       return;
     }
 
@@ -209,7 +210,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     }
 
     if (!sid) {
-      antMessage.error('创建会话失败');
+      throttledMessage.error('创建会话失败', 'create-session');
       setIsLoading(false);
       return;
     }
@@ -302,7 +303,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
     } catch (e) {
       console.error('发送消息失败:', e);
-      antMessage.error('发送失败，请重试');
+      throttledMessage.error('发送失败，请重试', 'send-fail');
     } finally {
       setIsLoading(false);
     }
