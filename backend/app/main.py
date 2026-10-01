@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log
+from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log, chart_templates
 
 
 def _ensure_dataset_owner(sync_conn):
@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
         from app.models import (
             User, File, Dataset, QualityIssue, CleanRule,
             Chart, Dashboard, ChatSession, ChatMessage, TokenQuota, TokenApplication,
-            AuditLog, Prompt, TokenBlacklist, AnalysisTemplate, AiActionLog
+            AuditLog, Prompt, TokenBlacklist, AnalysisTemplate, AiActionLog, ChartTemplate
         )
         
         # 迁移：datasets.duckdb_table 放宽为可空（文档型数据集不建表）
@@ -146,6 +146,14 @@ async def lifespan(app: FastAPI):
             await init_prompt_records(init_db)
             await init_db.commit()
         print("✅ Prompt 中心已初始化")
+
+        # 图表模板库：启动时补种 8 个 system 预置模板（night14 Task B）
+        async with async_session_factory() as tpl_db:
+            from app.core.chart_template_seed import init_chart_templates
+            added = await init_chart_templates(tpl_db)
+            await tpl_db.commit()
+            if added:
+                print(f"✅ 图表模板预置 {added} 条已补种")
     
     yield
     
@@ -213,6 +221,7 @@ app.include_router(reports.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(skills.router, prefix="/api/v1")
 app.include_router(ai_action_log.router, prefix="/api/v1")
+app.include_router(chart_templates.router, prefix="/api/v1")
 
 # 1.9：导出文件静态服务（PDF 真实生成后落盘于 data/exports，经此路由下载）
 _EXPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "exports")

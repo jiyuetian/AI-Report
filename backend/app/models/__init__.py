@@ -17,6 +17,7 @@ from app.models.prompt import Prompt
 from app.models.blacklist import TokenBlacklist
 from app.models.analysis_template import AnalysisTemplate
 from app.models.ai_action_log import AiActionLog
+from app.models.chart_template import ChartTemplate
 
 __all__ = [
     "Base",
@@ -37,4 +38,5 @@ __all__ = [
     "TokenBlacklist",
     "AnalysisTemplate",
     "AiActionLog",
+    "ChartTemplate",
 ]
