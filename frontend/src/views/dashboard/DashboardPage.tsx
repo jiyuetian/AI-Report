@@ -7,12 +7,13 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Row, Col, Card, Statistic, Badge, Spin, Empty, Table, message, Typography, Breadcrumb, Modal, Descriptions, Alert, Button, Space } from 'antd';
 import ReactECharts from 'echarts-for-react';
-import { WarningOutlined, RiseOutlined, FallOutlined, ArrowLeftOutlined, BulbOutlined } from '@ant-design/icons';
+import { WarningOutlined, RiseOutlined, FallOutlined, ArrowLeftOutlined, BulbOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { http } from '../../utils/request';
 import './DashboardPage.css';
 import ChatPanel from '../../components/chat/ChatPanel';
 import AppendixPanel from '../../components/appendix/AppendixPanel';
 import DashboardOps from './DashboardOps';
+import ChartTemplatePanel from './ChartTemplatePanel';
 import { sanitizeChartOption } from '../../components/charts/sanitizeChartOption';
 import { useChartTheme } from '../../components/charts/ThemeProvider';
 import { themeChartOption } from '../../components/charts/chartThemeApply';
@@ -354,6 +355,7 @@ const DashboardPage: React.FC = () => {
   const [primaryDs, setPrimaryDs] = useState<string>(''); // 主数据集ID（用于血缘跳转）
   const [detailChart, setDetailChart] = useState<ChartConfig | null>(null); // A03-02-01 图表详情子页
   const [detailShowFull, setDetailShowFull] = useState(false); // ISS-050 night12：明细预览/完整数据切换
+  const [tplPanelOpen, setTplPanelOpen] = useState(false); // night14 Task B：图表模板库面板开关
 
   // 1.7 暗色模式：跟随全局主题，图表 option 注入明/暗令牌
   const { theme } = useChartTheme();
@@ -549,7 +551,40 @@ const DashboardPage: React.FC = () => {
         .catch((err: any) => console.warn('保存配置到后端失败:', err));
     }
   }, [config, urlId, primaryDs]);
-  
+
+  // night14 Task B：模板库套用结果合并（与 handleAction 的 add_chart 合并逻辑一致：
+  // 仅把后端渲染链命中的真实图表追加进 config，命不中跳过）。后端已落库，这里只更新界面。
+  const handleTemplateApplied = useCallback((res: any) => {
+    if (!config || !urlId) return;
+    const updates = (res?.render_updates || []).filter(
+      (u: any) => u.type === 'add_chart' && u.chart
+    );
+    if (!updates.length) {
+      message.info(res?.message || '模板图表字段与当前数据集不匹配，未新增图表');
+      return;
+    }
+    const next = JSON.parse(JSON.stringify(config));
+    for (const u of updates) {
+      const c = u.chart;
+      next.charts.push({
+        id: c.id || `chart_${next.charts.length + 1}`,
+        chart_type: c.chart_type || 'bar',
+        title: c.title || '新增图表',
+        dataset_id: c.dataset_id || urlId,
+        x_field: c.x_field,
+        y_field: c.y_field,
+        category_field: c.category_field,
+        value_field: c.value_field,
+        config: c.config || {},
+      });
+    }
+    setConfig(next);
+    // 保存到后端（与 handleAction 一致，避免刷新后丢失）
+    http.patch(`/dashboards/${urlId}`, { config: next })
+      .catch((err: any) => console.warn('保存模板套用结果失败:', err));
+    message.success(`已套用模板，新增 ${updates.length} 个图表`);
+  }, [config, urlId]);
+
   // 标准化图表类型名（中文转英文）
   const normalizedChartType = (typeName: string): string => {
     const mapping: Record<string, string> = {
@@ -1403,6 +1438,7 @@ const DashboardPage: React.FC = () => {
           // onDelete 由 DashboardOps 内部在删除成功后跳转到 /dashboards；
           // 这里不再置空 config，避免跳转前闪屏"看板不存在"
           onDelete={() => {}}
+          onOpenTemplateLibrary={() => setTplPanelOpen(true)}
         />
 
         {/* 3.4 整看板空态：config 已加载但无任何可绘制图表 / 数据源为空时，
@@ -1446,6 +1482,14 @@ const DashboardPage: React.FC = () => {
         {/* 附录：A 字段字典 / B 清洗日志 / C 指标计算明细 / D 数据血缘（对齐方案B白盒交付） */}
         {urlId && <AppendixPanel dashboardId={urlId} />}
       </div>
+
+      {/* night14 Task B：图表模板库面板（浏览 8 业务域预置模板 + 一键套用） */}
+      <ChartTemplatePanel
+        open={tplPanelOpen}
+        onClose={() => setTplPanelOpen(false)}
+        dashboardId={urlId}
+        onApplied={handleTemplateApplied}
+      />
 
       {/* 右侧对话面板 */}
       <div className="dashboard-chat-sidebar">

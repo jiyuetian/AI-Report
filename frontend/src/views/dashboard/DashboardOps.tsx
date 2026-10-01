@@ -5,7 +5,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeftOutlined, EditOutlined, ShareAltOutlined, ExportOutlined, HistoryOutlined,
-  ApartmentOutlined, DeleteOutlined, MoreOutlined, CopyOutlined, DownloadOutlined, RollbackOutlined, CheckOutlined, FileTextOutlined, FileAddOutlined,
+  ApartmentOutlined, DeleteOutlined, MoreOutlined, CopyOutlined, DownloadOutlined, RollbackOutlined, CheckOutlined, FileTextOutlined, FileAddOutlined, AppstoreOutlined,
 } from '@ant-design/icons'
 
 import './DashboardOps.css'
@@ -19,6 +19,7 @@ interface DashboardOpsProps {
   generationMode?: 'ai' | 'rule' | string  // 问题1：看板生成方式（绿标/灰标）
   s2GeneratedBy?: 'llm' | 'rule' | string  // 2.3：目标生成方式（"目标区"小标）
   onConfigReload?: () => void  // 问题3修复：版本回退成功后触发看板详情重载，界面立即生效
+  onOpenTemplateLibrary?: () => void  // night14 Task B：打开图表模板库面板
 }
 
 interface VersionItem {
@@ -47,7 +48,7 @@ const mockHistory = [
   { id: 'h4', title: '季度不良率目标达成', time: '08-10 09:22', summary: '按季度拆解不良率目标与实际达成对比' },
 ]
 
-export default function DashboardOps({ id, title, onRename, onDelete, generationMode, s2GeneratedBy, onConfigReload }: DashboardOpsProps) {
+export default function DashboardOps({ id, title, onRename, onDelete, generationMode, s2GeneratedBy, onConfigReload, onOpenTemplateLibrary }: DashboardOpsProps) {
   const nav = useNavigate()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
@@ -401,6 +402,7 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
             icon={<FileAddOutlined />}
             onClick={() => { setTplName(title); setTplDesc(''); setTplApproved(false); setTplOpen(true) }}
           >保存为模板</Button>
+          <Button icon={<AppstoreOutlined />} onClick={onOpenTemplateLibrary}>图表模板库</Button>
           <Dropdown menu={menuItems} trigger={['click']}>
             <Button icon={<MoreOutlined />} />
           </Dropdown>
