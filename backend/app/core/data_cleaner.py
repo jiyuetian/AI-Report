@@ -397,10 +397,21 @@ class DataCleaner:
     def _fix_enum_normalize(self, table_name: str, column: str, alias_map: Dict) -> Dict:
         if not alias_map:
             return {"affected_rows": 0, "status": "no_aliases", "sql": None}
-        sets = " OR ".join(f'"{column}" = ?' for _ in alias_map)
-        params = list(alias_map.keys())
-        self.db.conn.execute(f'UPDATE {table_name} SET "{column}" = ? WHERE {sets}', params + list(alias_map.values()))
-        return {"affected_rows": -1, "status": "success", "sql": f"UPDATE {table_name} SET {column}=... WHERE ..."}
+        # 修复：原实现 SET 只用 1 个占位却传入 2*N 个参数（源+目标），DuckDB 报
+        # "Parameter argument/count mismatch"；且单条 UPDATE 无法把多个 source→target
+        # 映射一次性套用。改为 CASE WHEN 批量映射（仅更新命中 IN 的行，其余保持原值）。
+        esc = lambda s: str(s).replace("'", "''")
+        cases = " ".join(
+            f"WHEN '{esc(k)}' THEN '{esc(v)}'" for k, v in alias_map.items()
+        )
+        in_clause = ", ".join("?" for _ in alias_map)
+        sql = (
+            f'UPDATE {table_name} SET "{column}" = '
+            f'CASE "{column}" {cases} ELSE "{column}" END '
+            f'WHERE "{column}" IN ({in_clause})'
+        )
+        self.db.conn.execute(sql, list(alias_map.keys()))
+        return {"affected_rows": -1, "status": "success", "sql": sql}
 
     def _fix_unit_unify(self, table_name: str, column: str, target_unit: str) -> Dict:
         factor = {"元": 1, "万元": 10000, "千元": 1000}.get(target_unit, 1)

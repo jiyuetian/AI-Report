@@ -1,0 +1,29 @@
+# night14 Task C 示例清洗链路
+# 用一份 YAML 描述一组有序的数据清洗规则，由 CleanChainEngine 顺序执行：
+# - fail_fast: true  → 任一条规则异常即停止整条链路（fail-fast）
+# - 每条规则带唯一 rule_id → 执行结果与回滚均按 rule_id 回链
+# - 引擎在每条规则执行前对目标表做快照（<table>_chainbak_<rule_id>），改 schema/数据前即备份
+fail_fast: true
+rules:
+  - rule_id: r1_mark_outlier        # 先标记异常行（schema 变更：新增标记列）
+    table: ds_demo
+    issue_type: outlier
+    column: amount
+    strategy: mark
+  - rule_id: r2_fill_missing         # 再按区域分组填充缺失金额（数据变更）
+    table: ds_demo
+    issue_type: missing
+    column: amount
+    strategy: fill_median
+    params:
+      group_by: region
+  - rule_id: r3_enum_normalize       # 最后归一渠道枚举（数据变更）
+    table: ds_demo
+    issue_type: inconsistent_enum
+    column: channel
+    strategy: enum_normalize
+    params:
+      alias_map:
+        wx: 微信
+        wechat: 微信
+        zfb: 支付宝
