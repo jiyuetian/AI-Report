@@ -2,6 +2,7 @@
 Token管理API - M3-03
 配额查询、消耗、重置、APScheduler调度
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
@@ -208,7 +209,7 @@ async def get_full_status(
 
 # ============== 测试接口 ==============
 
-@router.post("/_internal/test-consume", response_model=Dict)
+@router.post("/_internal/test-consume", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def test_consume_tokens(
     tokens: int = 100,
     db: AsyncSession = Depends(get_db),
@@ -241,7 +242,7 @@ async def test_consume_tokens(
     }
 
 
-@router.post("/_internal/test-warning", response_model=Dict)
+@router.post("/_internal/test-warning", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def test_warning_state(
     db: AsyncSession = Depends(get_db),
     current_user: str = "test_warning_user"
@@ -281,7 +282,7 @@ async def test_warning_state(
     }
 
 
-@router.post("/_internal/test-exhausted", response_model=Dict)
+@router.post("/_internal/test-exhausted", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def test_exhausted_state(
     db: AsyncSession = Depends(get_db),
     current_user: str = "test_exhausted_user"

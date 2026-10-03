@@ -1,6 +1,7 @@
 """
 S3 图表推荐引擎 API - M2-05
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -53,7 +54,7 @@ class DashboardGenerateResponse(BaseModel):
     message: str
 
 
-@router.post("/recommend", response_model=ChartRecommendResponse)
+@router.post("/recommend", response_model=ChartRecommendResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def recommend_charts_endpoint(
     request: ChartRecommendRequest,
     db: AsyncSession = Depends(get_db)
@@ -82,7 +83,7 @@ async def recommend_charts_endpoint(
     )
 
 
-@router.post("/generate-dashboard", response_model=DashboardGenerateResponse)
+@router.post("/generate-dashboard", response_model=DashboardGenerateResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def generate_dashboard_endpoint(
     request: DashboardGenerateRequest,
     db: AsyncSession = Depends(get_db)
@@ -117,7 +118,7 @@ async def generate_dashboard_endpoint(
     )
 
 
-@router.get("/rules")
+@router.get("/rules", dependencies=[Depends(internal_endpoint_guard)])
 async def get_chart_rules():
     """获取图表规则配置（YAML内容）"""
     import yaml
@@ -147,7 +148,7 @@ async def get_chart_rules():
         }
 
 
-@router.get("/field-types")
+@router.get("/field-types", dependencies=[Depends(internal_endpoint_guard)])
 async def get_field_types():
     """获取支持的字段类型"""
     return {
@@ -162,7 +163,7 @@ async def get_field_types():
     }
 
 
-@router.get("/chart-types")
+@router.get("/chart-types", dependencies=[Depends(internal_endpoint_guard)])
 async def get_chart_types():
     """获取支持的图表类型"""
     return {
@@ -180,7 +181,7 @@ async def get_chart_types():
     }
 
 
-@router.post("/_internal/test-01-table")
+@router.post("/_internal/test-01-table", dependencies=[Depends(internal_endpoint_guard)])
 async def test_01_table_dashboard():
     """
     测试01表看板生成（内部接口）
@@ -218,7 +219,7 @@ async def test_01_table_dashboard():
     }
 
 
-@router.post("/_internal/test-grain-constraints")
+@router.post("/_internal/test-grain-constraints", dependencies=[Depends(internal_endpoint_guard)])
 async def test_grain_constraints():
     """
     测试粒度限制（内部接口）
@@ -280,7 +281,7 @@ class LLMGenerateResponse(BaseModel):
     fallback_reason: Optional[str] = None
 
 
-@router.post("/generate-llm", response_model=LLMGenerateResponse)
+@router.post("/generate-llm", response_model=LLMGenerateResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def generate_with_llm(
     request: LLMGenerateRequest,
     db: AsyncSession = Depends(get_db)
@@ -315,7 +316,7 @@ async def generate_with_llm(
     )
 
 
-@router.post("/validate-grain")
+@router.post("/validate-grain", dependencies=[Depends(internal_endpoint_guard)])
 async def validate_chart_grain_endpoint(
     chart_config: Dict[str, Any],
     grain: str
@@ -337,7 +338,7 @@ async def validate_chart_grain_endpoint(
     }
 
 
-@router.get("/grain-recommendations/{grain}")
+@router.get("/grain-recommendations/{grain}", dependencies=[Depends(internal_endpoint_guard)])
 async def get_grain_recommendations(grain: str):
     """获取粒度推荐的图表类型"""
     recommendations = GrainChecker.get_grain_recommendation(grain)
@@ -350,7 +351,7 @@ async def get_grain_recommendations(grain: str):
     }
 
 
-@router.post("/_internal/test-self-healing")
+@router.post("/_internal/test-self-healing", dependencies=[Depends(internal_endpoint_guard)])
 async def test_self_healing(db: AsyncSession = Depends(get_db)):
     """
     测试Schema自愈（内部接口）

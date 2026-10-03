@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-secret-key-here"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # B 类内部端点 env 闸门（ISS-025 Batch2）：prod 默认 False（收口，需鉴权）；
+    # dev 设 on/true/1 可放开内部端点匿名访问（便利）。仅开关，不影响业务逻辑。
+    ENABLE_INTERNAL_ENDPOINTS: bool = False
+
     # 调试
     DEBUG: bool = True
 

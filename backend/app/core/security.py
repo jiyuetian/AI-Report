@@ -303,3 +303,40 @@ class Roles:
     @classmethod
     def all(cls):
         return [cls.ADMIN, cls.ANALYST, cls.VIEWER, cls.OPERATOR]
+
+
+# ============== B 类内部端点 env 闸门（ISS-025 Batch2） =============
+# 设计：prod 默认关闭（ENABLE_INTERNAL_ENDPOINTS=False）→ 内部端点必须鉴权，关闭匿名访问缺口；
+# dev 设 ENABLE_INTERNAL_ENDPOINTS=on/true/1 → 允许匿名访问内部端点（开发便利）。
+# 只做开关，不改任何业务逻辑；依赖此函数即视为已收口。
+async def internal_endpoint_guard(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> None:
+    """B 类内部/系统端点（/brain/*、/llm/*、/exceptions/*、/dependency-graph、/trigger、/recover 等）的 env 闸门。
+
+    - ENABLE_INTERNAL_ENDPOINTS=on（dev）：放行匿名访问，不改变既有行为。
+    - 关闭（prod 默认）：要求有效 bearer 令牌，否则 401。已吊销令牌亦拒。
+    不改变被装饰 handler 的任何业务逻辑，仅做入口鉴权开关。
+    """
+    if settings.ENABLE_INTERNAL_ENDPOINTS:
+        return
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="内部端点已收口（prod 默认需鉴权）；dev 可设 ENABLE_INTERNAL_ENDPOINTS=on 放开",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    payload = decode_token(credentials.credentials)
+    if payload is None or payload.get("sub") is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="内部端点已收口，令牌无效",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    jti = payload.get("jti")
+    if jti and is_token_blacklisted(jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="令牌已吊销，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

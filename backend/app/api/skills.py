@@ -3,7 +3,9 @@
 启动时把各 Phase 的 skill 模块统一注册进全局 registry；registry 本身零侵入现有管线。
 详见 docs/组件化改造设计文档_2026-09-18.md（v0.2-aligned）。
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter
+from fastapi import Depends
 
 from app.core.skills.registry import registry
 from app.core.skills.chart_skills import register_chart_skills
@@ -20,7 +22,7 @@ register_brain_skills(registry)     # Phase 4(安全部分)：understand:theme /
 router = APIRouter()
 
 
-@router.get("/skills")
+@router.get("/skills", dependencies=[Depends(internal_endpoint_guard)])
 async def list_skills():
     metas = registry.all_meta()
     return {"count": len(metas), "skills": metas}

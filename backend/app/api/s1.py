@@ -1,6 +1,7 @@
 """
 S1 主题识别器 API - M2-03
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -39,7 +40,7 @@ class V2TableThemeRequest(BaseModel):
     fields: List[str]
 
 
-@router.post("/detect", response_model=ThemeDetectResponse)
+@router.post("/detect", response_model=ThemeDetectResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def detect_theme_endpoint(
     request: ThemeDetectRequest,
     db: AsyncSession = Depends(get_db)
@@ -72,7 +73,7 @@ async def detect_theme_endpoint(
     )
 
 
-@router.post("/detect-v2-table", response_model=ThemeDetectResponse)
+@router.post("/detect-v2-table", response_model=ThemeDetectResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def detect_v2_table_theme(
     request: V2TableThemeRequest,
     db: AsyncSession = Depends(get_db)
@@ -106,7 +107,7 @@ async def detect_v2_table_theme(
     )
 
 
-@router.get("/dictionary")
+@router.get("/dictionary", dependencies=[Depends(internal_endpoint_guard)])
 async def get_theme_dictionary(db: AsyncSession = Depends(get_db)):
     """获取当前主题词典"""
     detector = S1ThemeDetector()
@@ -120,7 +121,7 @@ async def get_theme_dictionary(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/_internal/test-v2-tables")
+@router.post("/_internal/test-v2-tables", dependencies=[Depends(internal_endpoint_guard)])
 async def test_v2_tables(db: AsyncSession = Depends(get_db)):
     """
     测试v2五表识别（内部接口）

@@ -1,4 +1,5 @@
 """策略大脑配置API - M1-15"""
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
@@ -33,7 +34,7 @@ class ThresholdUpdateRequest(BaseModel):
     value: float
 
 
-@router.get("/configs")
+@router.get("/configs", dependencies=[Depends(internal_endpoint_guard)])
 async def get_brain_configs(current_user: Dict = Depends(require_admin)):
     """获取所有策略大脑配置（G3：仅管理员）"""
     return {
@@ -58,7 +59,7 @@ async def get_category_config(category: str, current_user: Dict = Depends(requir
     }
 
 
-@router.post("/configs/update")
+@router.post("/configs/update", dependencies=[Depends(internal_endpoint_guard)])
 async def update_threshold(request: ThresholdUpdateRequest):
     """
     更新阈值配置（M1-15）
@@ -137,7 +138,7 @@ async def get_processing_report(
     }
 
 
-@router.get("/report/{dataset_id}/export")
+@router.get("/report/{dataset_id}/export", dependencies=[Depends(internal_endpoint_guard)])
 async def export_report(dataset_id: str, format: str = "pdf"):
     """
     导出处理报告

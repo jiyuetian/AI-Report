@@ -2,6 +2,7 @@
 LLM 网关 API - M2-02a/b/c
 提供LLM调用、模板渲染、限流状态查询等接口
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
@@ -72,7 +73,7 @@ class UsageResponse(BaseModel):
 
 # ============== API端点 ==============
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def chat_complete(
     request: ChatRequest,
     db: AsyncSession = Depends(get_db)
@@ -126,7 +127,7 @@ async def chat_complete(
     )
 
 
-@router.post("/chat/completions", response_model=ChatResponse)
+@router.post("/chat/completions", response_model=ChatResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def openai_compatible_chat(
     request: Request,
     db: AsyncSession = Depends(get_db)
@@ -176,7 +177,7 @@ async def openai_compatible_chat(
     )
 
 
-@router.post("/template/render")
+@router.post("/template/render", dependencies=[Depends(internal_endpoint_guard)])
 async def render_template(
     request: TemplateRenderRequest,
     db: AsyncSession = Depends(get_db)
@@ -215,7 +216,7 @@ async def render_template(
         )
 
 
-@router.get("/rate-limit/status", response_model=RateLimitStatus)
+@router.get("/rate-limit/status", response_model=RateLimitStatus, dependencies=[Depends(internal_endpoint_guard)])
 async def get_rate_limit_status():
     """
     获取限流队列状态
@@ -260,7 +261,7 @@ async def get_llm_config(current_user: Dict = Depends(require_admin)):
     }
 
 
-@router.post("/_internal/test-retry")
+@router.post("/_internal/test-retry", dependencies=[Depends(internal_endpoint_guard)])
 async def test_retry_mechanism(
     fail_count: int = 2,
     user_id: str = "test"
@@ -283,7 +284,7 @@ async def test_retry_mechanism(
 
 # ============== R3返工: Mock字段测试 ==============
 
-@router.get("/_internal/test-mock-response")
+@router.get("/_internal/test-mock-response", dependencies=[Depends(internal_endpoint_guard)])
 async def test_mock_response_fields():
     """
     测试Mock响应字段名 (R3返工)
@@ -326,7 +327,7 @@ async def test_mock_response_fields():
     }
 
 
-@router.get("/_internal/test-mock-s1")
+@router.get("/_internal/test-mock-s1", dependencies=[Depends(internal_endpoint_guard)])
 async def test_mock_s1_fields():
     """
     测试S1 Mock字段 (R3返工)

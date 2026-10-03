@@ -2,6 +2,7 @@
 对话 API - M3-01
 SSE流式 + 意图分类 + 上下文管理
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -1728,7 +1729,7 @@ async def execute_action_api(
         }
 
 
-@router.get("/test/action-examples")
+@router.get("/test/action-examples", dependencies=[Depends(internal_endpoint_guard)])
 async def get_action_test_examples():
     """
     获取5类动作测试示例 - M3-02
@@ -1774,7 +1775,7 @@ async def get_action_test_examples():
     }
 
 
-@router.get("/test/intent-examples")
+@router.get("/test/intent-examples", dependencies=[Depends(internal_endpoint_guard)])
 async def get_intent_test_examples():
     """
     获取5类意图测试示例
@@ -1817,7 +1818,7 @@ async def get_intent_test_examples():
     }
 
 
-@router.post("/test/moderation", response_model=Dict)
+@router.post("/test/moderation", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def test_moderation(
     message: str,
     db: AsyncSession = Depends(get_db)
@@ -1845,7 +1846,7 @@ async def test_moderation(
     }
 
 
-@router.post("/test/retry", response_model=Dict)
+@router.post("/test/retry", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def test_retry_mechanism(
     db: AsyncSession = Depends(get_db),
     current_user: str = "test_user"

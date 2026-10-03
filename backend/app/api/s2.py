@@ -1,6 +1,7 @@
 """
 S2 目标生成器 API - M2-04
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -39,7 +40,7 @@ class V2TableGoalRequest(BaseModel):
     fields: List[str]
 
 
-@router.post("/generate", response_model=GoalGenerateResponse)
+@router.post("/generate", response_model=GoalGenerateResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def generate_goals(
     request: GoalGenerateRequest,
     db: AsyncSession = Depends(get_db)
@@ -71,7 +72,7 @@ async def generate_goals(
     )
 
 
-@router.post("/generate-v2-table", response_model=GoalGenerateResponse)
+@router.post("/generate-v2-table", response_model=GoalGenerateResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def generate_v2_table_goals(
     request: V2TableGoalRequest,
     db: AsyncSession = Depends(get_db)
@@ -113,7 +114,7 @@ async def generate_v2_table_goals(
     )
 
 
-@router.get("/prompt-template")
+@router.get("/prompt-template", dependencies=[Depends(internal_endpoint_guard)])
 async def get_prompt_template(db: AsyncSession = Depends(get_db)):
     """获取当前目标生成Prompt模板"""
     from app.core.brain_config_manager import BrainConfigManager
@@ -139,7 +140,7 @@ async def get_prompt_template(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/_internal/test-v2-tables")
+@router.post("/_internal/test-v2-tables", dependencies=[Depends(internal_endpoint_guard)])
 async def test_v2_table_goals(db: AsyncSession = Depends(get_db)):
     """
     测试v2五表目标生成
@@ -195,7 +196,7 @@ async def test_v2_table_goals(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/types")
+@router.get("/types", dependencies=[Depends(internal_endpoint_guard)])
 async def get_goal_types():
     """获取目标类型说明"""
     return {

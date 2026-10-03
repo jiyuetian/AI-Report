@@ -1,6 +1,7 @@
 """
 S4 编排器 + S5 评分卡 API - M2-07
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
@@ -72,7 +73,7 @@ class OrchestrateAndScoreResponse(BaseModel):
 
 # ============== API端点 ==============
 
-@router.post("/s4/orchestrate", response_model=OrchestrateResponse)
+@router.post("/s4/orchestrate", response_model=OrchestrateResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def orchestrate_endpoint(
     request: OrchestrateRequest,
     db: AsyncSession = Depends(get_db)
@@ -100,7 +101,7 @@ async def orchestrate_endpoint(
     )
 
 
-@router.post("/s5/score", response_model=ScoreResponse)
+@router.post("/s5/score", response_model=ScoreResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def score_endpoint(
     request: ScoreRequest,
     db: AsyncSession = Depends(get_db)
@@ -132,7 +133,7 @@ async def score_endpoint(
     )
 
 
-@router.post("/s4s5/orchestrate-and-score", response_model=OrchestrateAndScoreResponse)
+@router.post("/s4s5/orchestrate-and-score", response_model=OrchestrateAndScoreResponse, dependencies=[Depends(internal_endpoint_guard)])
 async def orchestrate_and_score_endpoint(
     request: OrchestrateAndScoreRequest,
     db: AsyncSession = Depends(get_db)
@@ -158,7 +159,7 @@ async def orchestrate_and_score_endpoint(
     )
 
 
-@router.get("/s5/score-config")
+@router.get("/s5/score-config", dependencies=[Depends(internal_endpoint_guard)])
 async def get_score_config(db: AsyncSession = Depends(get_db)):
     """获取评分配置"""
     scorer = S5ScoreCard()
@@ -173,7 +174,7 @@ async def get_score_config(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/_internal/test-score")
+@router.post("/_internal/test-score", dependencies=[Depends(internal_endpoint_guard)])
 async def test_score_calculation(db: AsyncSession = Depends(get_db)):
     """
     测试评分计算（内部接口）
@@ -206,7 +207,7 @@ async def test_score_calculation(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/_internal/test-orchestrate")
+@router.post("/_internal/test-orchestrate", dependencies=[Depends(internal_endpoint_guard)])
 async def test_orchestrate():
     """
     测试编排（内部接口）
@@ -244,7 +245,7 @@ async def test_orchestrate():
     }
 
 
-@router.post("/_internal/test-retry")
+@router.post("/_internal/test-retry", dependencies=[Depends(internal_endpoint_guard)])
 async def test_retry_mechanism(db: AsyncSession = Depends(get_db)):
     """
     测试重排机制（内部接口）

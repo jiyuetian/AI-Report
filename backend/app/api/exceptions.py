@@ -2,6 +2,7 @@
 异常场景 API - M5-01
 12场景检测接口
 """
+from app.core.security import internal_endpoint_guard
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -56,7 +57,7 @@ class GrainValidateRequest(BaseModel):
 
 
 # ========== 1. 孤儿行检测 ==========
-@router.post("/orphan-rows/detect")
+@router.post("/orphan-rows/detect", dependencies=[Depends(internal_endpoint_guard)])
 async def detect_orphan_rows(
     request: OrphanRowRequest,
     db: AsyncSession = Depends(get_db)
@@ -69,7 +70,7 @@ async def detect_orphan_rows(
 
 
 # ========== 2. 数据膨胀检测 ==========
-@router.post("/data-bloat/detect")
+@router.post("/data-bloat/detect", dependencies=[Depends(internal_endpoint_guard)])
 async def detect_data_bloat(
     dataset_id: str,
     threshold_percent: float = 50.0,
@@ -83,7 +84,7 @@ async def detect_data_bloat(
 
 
 # ========== 3. 键类型校验 ==========
-@router.post("/key-type/validate")
+@router.post("/key-type/validate", dependencies=[Depends(internal_endpoint_guard)])
 async def validate_key_type(request: KeyTypeRequest):
     """校验主键类型"""
     result = ExceptionHandler.validate_key_type(
@@ -93,7 +94,7 @@ async def validate_key_type(request: KeyTypeRequest):
 
 
 # ========== 4. Schema自愈 ==========
-@router.post("/schema/heal")
+@router.post("/schema/heal", dependencies=[Depends(internal_endpoint_guard)])
 async def schema_self_healing(
     request: SchemaHealingRequest,
     db: AsyncSession = Depends(get_db)
@@ -106,7 +107,7 @@ async def schema_self_healing(
 
 
 # ========== 5. 空看板检测 ==========
-@router.get("/empty-dashboard/{dashboard_id}")
+@router.get("/empty-dashboard/{dashboard_id}", dependencies=[Depends(internal_endpoint_guard)])
 async def detect_empty_dashboard(
     dashboard_id: str,
     db: AsyncSession = Depends(get_db)
@@ -117,7 +118,7 @@ async def detect_empty_dashboard(
 
 
 # ========== 6. 类目值校验 ==========
-@router.post("/category/validate")
+@router.post("/category/validate", dependencies=[Depends(internal_endpoint_guard)])
 async def validate_category(request: CategoryValidateRequest):
     """校验枚举类目值"""
     result = ExceptionHandler.validate_category_values(
@@ -127,7 +128,7 @@ async def validate_category(request: CategoryValidateRequest):
 
 
 # ========== 7. 敏感数据检测 ==========
-@router.post("/sensitive/detect")
+@router.post("/sensitive/detect", dependencies=[Depends(internal_endpoint_guard)])
 async def detect_sensitive_data(request: SensitiveDetectRequest):
     """检测敏感数据（身份证/手机号等）"""
     result = ExceptionHandler.detect_sensitive_data(
@@ -137,7 +138,7 @@ async def detect_sensitive_data(request: SensitiveDetectRequest):
 
 
 # ========== 8. 并发冲突检测 ==========
-@router.post("/conflict/detect")
+@router.post("/conflict/detect", dependencies=[Depends(internal_endpoint_guard)])
 async def detect_edit_conflict(request: EditConflictRequest):
     """检测并发编辑冲突"""
     result = ExceptionHandler.detect_edit_conflict(
@@ -171,7 +172,7 @@ async def check_session_kickout(
 
 
 # ========== 10. 异步任务超时检测 ==========
-@router.post("/async/timeout-check")
+@router.post("/async/timeout-check", dependencies=[Depends(internal_endpoint_guard)])
 async def check_async_timeout(
     start_time: datetime,
     timeout_seconds: float = 5.0
@@ -182,7 +183,7 @@ async def check_async_timeout(
 
 
 # ========== 11. 资源过期清理 ==========
-@router.post("/expired/cleanup")
+@router.post("/expired/cleanup", dependencies=[Depends(internal_endpoint_guard)])
 async def cleanup_expired_resources(db: AsyncSession = Depends(get_db)):
     """清理过期资源（分享链接/导出文件）"""
     result = await ExceptionHandler.check_expired_resources(db)
@@ -190,7 +191,7 @@ async def cleanup_expired_resources(db: AsyncSession = Depends(get_db)):
 
 
 # ========== 12. 数据粒度校验 ==========
-@router.post("/grain/validate")
+@router.post("/grain/validate", dependencies=[Depends(internal_endpoint_guard)])
 async def validate_data_grain(request: GrainValidateRequest):
     """校验数据粒度一致性"""
     result = ExceptionHandler.validate_data_grain(
@@ -203,7 +204,7 @@ async def validate_data_grain(request: GrainValidateRequest):
 
 
 # ========== 批量检测接口 ==========
-@router.post("/batch-check")
+@router.post("/batch-check", dependencies=[Depends(internal_endpoint_guard)])
 async def batch_check_exceptions(
     checks: List[Dict[str, Any]],
     db: AsyncSession = Depends(get_db)
@@ -263,7 +264,7 @@ async def batch_check_exceptions(
 
 
 # ========== 12场景汇总报告 ==========
-@router.get("/report/{dataset_id}")
+@router.get("/report/{dataset_id}", dependencies=[Depends(internal_endpoint_guard)])
 async def get_exception_report(
     dataset_id: str,
     db: AsyncSession = Depends(get_db)

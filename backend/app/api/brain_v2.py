@@ -3,6 +3,7 @@
 brain_configs: 配置存储+版本+热更新+回滚
 brain_traces: 五阶段全链路trace落库
 """
+from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
@@ -92,7 +93,7 @@ async def list_configs(
     }
 
 
-@router.get("/configs/{config_key}", response_model=Dict)
+@router.get("/configs/{config_key}", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def get_config(
     config_key: str,
     db: AsyncSession = Depends(get_db)
@@ -119,7 +120,7 @@ async def get_config(
     }
 
 
-@router.post("/configs", response_model=Dict)
+@router.post("/configs", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def create_or_update_config(
     request: ConfigCreateRequest,
     db: AsyncSession = Depends(get_db)
@@ -143,7 +144,7 @@ async def create_or_update_config(
     return result
 
 
-@router.post("/configs/{config_key}/rollback", response_model=Dict)
+@router.post("/configs/{config_key}/rollback", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def rollback_config(
     config_key: str,
     target_version: int,
@@ -183,7 +184,7 @@ async def get_config_history(
 
 # ============== Trace管理API ==============
 
-@router.post("/trace/run/start", response_model=Dict)
+@router.post("/trace/run/start", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def start_run(
     request: StartRunRequest,
     db: AsyncSession = Depends(get_db)
@@ -210,7 +211,7 @@ async def start_run(
     }
 
 
-@router.post("/trace/stage/start", response_model=Dict)
+@router.post("/trace/stage/start", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def start_stage(
     request: StartStageRequest,
     db: AsyncSession = Depends(get_db)
@@ -245,7 +246,7 @@ async def start_stage(
     }
 
 
-@router.post("/trace/stage/complete", response_model=Dict)
+@router.post("/trace/stage/complete", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def complete_stage(
     request: CompleteStageRequest,
     db: AsyncSession = Depends(get_db)
@@ -265,7 +266,7 @@ async def complete_stage(
     }
 
 
-@router.post("/trace/run/complete", response_model=Dict)
+@router.post("/trace/run/complete", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def complete_run(
     request: CompleteRunRequest,
     db: AsyncSession = Depends(get_db)
@@ -287,7 +288,7 @@ async def complete_run(
     }
 
 
-@router.get("/trace/{run_id}", response_model=Dict)
+@router.get("/trace/{run_id}", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def get_run_traces(
     run_id: str,
     db: AsyncSession = Depends(get_db)
@@ -309,7 +310,7 @@ async def get_run_traces(
     }
 
 
-@router.get("/trace/{run_id}/summary", response_model=Dict)
+@router.get("/trace/{run_id}/summary", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def get_run_summary(
     run_id: str,
     db: AsyncSession = Depends(get_db)
@@ -331,7 +332,7 @@ async def get_run_summary(
 
 # ============== 初始化数据 ==============
 
-@router.post("/_internal/init-configs")
+@router.post("/_internal/init-configs", dependencies=[Depends(internal_endpoint_guard)])
 async def init_default_configs(db: AsyncSession = Depends(get_db)):
     """
     初始化默认配置（内部接口）
