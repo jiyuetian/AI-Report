@@ -613,3 +613,36 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 
 ### ⑥ 状态
 - `[DONE]` 2026-10-03（本地未 push；登记用本 commit）。
+
+
+---
+
+## §33 night24 Task D · 依赖钉版上提（ISS-025 Batch / ISS-053 收口）
+
+> 红线：零 DB 写、不 push、不联网（pip-audit/Dependabot 网络部分待 CI）；requirements.txt 仅钉版上提不降级。
+> 结论：5 个钉版上提；静态扫描后端无 pandas 3.0 已移除 API 使用；联网全链路验证（pandas 3.x install + pytest / pip-audit / npm audit）待用户本机或 CI。
+
+### ① 钉版上提（均“上提不降级”）
+| 包 | 原 | 新 | 依据 |
+|---|---|---|---|
+| python-multipart | 0.0.12 | 0.0.32 | CVE-2024-53981 修复（0.0.32） |
+| pandas | 2.2.2 | 3.0.3 | 上提 3.x（CVE 已在 2.2.2 修复；3.x 为版本上提） |
+| email-validator | 2.1.1 | 2.3.0 | CVE-2024-1916 已修复（2.1.1+）上提 |
+| jinja2 | 3.1.4 | 3.1.6 | CVE-2024-34064 已修复（3.1.4+）上提 |
+| httpx | 0.27.2 | 0.28.1 | CVE-2024-47081 已修复（0.27.0+）上提 |
+
+### ② 静态扫描（pandas 3.0 兼容性，离线）
+- 全仓 grep：`read_pickle` / `iteritems(` / `pd.np` / `convert_objects` / `downcast=` / `pd.Panel` / `DataFrame.append` / `to_pickle` / `inplace=True` / `pd.concat` = 0 处（实际代码；仅 `_night24_fix_d.py` 注释含 read_pickle 字样）。
+- 结论：后端代码未使用 pandas 3.0 已移除/强变更 API，估计升级冲击小；但 copy-on-write 默认行为变更需在运行时（CI）最终确认。
+
+### ③ 待联网验证（本沙箱无网络，移交用户本机/CI）
+- `pip install -r requirements.txt`（pandas==3.0.3 实测安装 + import 通）。
+- `pytest backend/tests`（pandas 3.x 全链路跑通）。
+- `pip-audit`（依赖漏洞复核）+ `npm audit`（frontend）。
+- Dependabot 配置：当前仓库若未启用，建议在 .github/dependabot.yml 增设 pip + npm 周扫描。
+
+### ④ 复现脚本（gitignored）
+- `backend/_night24_fix_d.py`（钉版上提，确定性替换 + assert）。
+
+### ⑤ 状态
+- `[DONE-离线]` 2026-10-03（钉版已上提并静态扫描；联网验证待 CI；本地未 push；登记用本 commit）。
