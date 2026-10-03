@@ -400,3 +400,56 @@ py_compile backend/app/api/{chat,exceptions,golden,lineage,loadtest,quality,repo
 - `tests/test_acceptance.py` / `tests/test_core_chain.py`：`req()` 助手注入 dev JWT（保 suite 绿；POST /reports、POST /quality/check 现需鉴权）。
 - `docs/project_record/night_runs/_verify_iss025_batch1.py`：gitignored 过程文件（22 端点静态扫描）。
 - **状态**：`[DONE]` 2026-10-03，commit `8f6c56d`（本地未 push）。Batch2（B 类 73 端点 env 闸门）见 Task E。
+
+---
+
+## 二十六、night23 Task A：ISS-025 Batch2 B 类 73 端点 env 闸门（落地实施）
+
+> 依据 `docs/project_record/22-ISS025无鉴权端点全量扫描.md` B 类 73 条内部/系统端点。红线同 night22：零 DB 写、不 push、不改 SSE、禁真 LLM（仅静态 AST + dev JWT mock）。
+
+### ① 改前现象（扫描核实）
+- B 类 73 条（`/brain/*`、`/llm/*`、`/exceptions/*`、`/dependency-graph`、`/trigger`、`/recover`、`/skills`、`/stats`、`/status`、`/chat/test/*`、`/tokens/_internal/*` 等）**全部无鉴权**，匿名可访问，是匿名缺口。
+
+### ② 改后现象（实施）
+- 新增 `app.core.security.internal_endpoint_guard`（读 `settings.ENABLE_INTERNAL_ENDPOINTS`）：默认关（False）→ 内部端点必须有效 bearer 令牌否则 401；dev 设 `on/true/1` 放行匿名。
+- 只做开关，不改任何业务逻辑；73 个 handler 装饰器加 `dependencies=[Depends(internal_endpoint_guard)]`；`config.py` 加 `ENABLE_INTERNAL_ENDPOINTS: bool = False`。
+- 前端调用点核查：仅 `GET /api/v1/skills` 被 FE 引用且经 `http.get` 自动带 token → 收口后仍放行，安全无破坏。
+
+### ③ 复现 / 验证（零 DB、离线）
+```
+python backend/_night23_verify_a.py   -> 检查 73 个目标端点；漏网 0 个 / PASS（功能 4 场景全 PASS；from app.main import app 222 路由正常）
+```
+- 防复发静态扫描 73/73，0 漏网。
+
+### ④ 改动文件
+- `backend/app/api/*`（12 文件）+ `config.py` + `security.py`：14 文件 +129/−74。
+- `backend/_night23_verify_a.py`：gitignored 验证脚本。
+- **状态**：`[DONE]` 2026-10-03，commit `1fc41f3`（本地未 push）。
+
+---
+
+## 二十七、night23 Task B：ISS-041 / ISS-042 端到端补齐（落地实施）
+
+> 红线：零 DB 写、不 push、不改 SSE、禁真 LLM（全 mock 确定性用例）。
+
+### ① 改前现象（核实）
+- **ISS-041（复合 add_chart）**：机制已具备（`split_clauses` 按中文连接词切分 → 逐 clause `classify_intent` → `plan_actions` 聚合），「删X再加趋势图」「加X再改图」可一句拆 2 动作；无需改代码。
+- **ISS-042（多轮语义承接）**：①「那就折线图」(vague_chart_type) 已能解析为 change_chart；②「用华南」(filter 值承接) **此前无路径** → 短答案无法回填 pending_clarify 的 filter_field，只能落兜底澄清或丢弃。
+
+### ② 改后现象（实施，仅 `backend/app/core/action_planner.py`）
+- 新增 `_dimension_categories(context, field)`：取维度字段真实取值候选（无候选 `[]`），用于发射「聚焦哪个值」澄清。
+- 新增 `_infer_filter_field(message, context)`：分类器未给 filter_field 时从「按/根据/筛选/过滤/聚焦/只看 + 维度字段名」反推（限 context 真实字段）。
+- `_resolve_pending_clarify` 关键词匹配键加 `or _o.get("value")`；新增 `which_filter_value` 分支：短答案/序号解析成 `filter_drill`（filter_field 取 pending、filter_value 取选项值）。
+- `plan_actions` 主循环新增 FILTER_DRILL 澄清发射：有 filter_field、无 filter_value、维度带 categories → 主动发射 which_filter_value 澄清（列候选值，提示「回复具体值即可，例如『华南』」）。
+- 未改业务执行语义（仅补多轮承接路径）。
+
+### ③ 复现 / 验证（零 DB、禁真 LLM）
+```
+python backend/_night23_verify_b.py   -> RESULT: PASS=22 FAIL=0（ISS-041 复合 2 + ISS-042 承接 5 + 回归 3 + 边界 1 = 11 组/22 断言）
+```
+- T1 删+加 / T2 加+改：复合拆分正确；T3「那就折线图」→change_chart 锚点保留；T4「第二张」→options[1]=销售额趋势；T5「用华南」→filter_field=地区/filter_value=华南；T5b 发射 which_filter_value 澄清；T6 单句 change_chart 回归；T7 无匹配短答案返回 None 不抛 NameError。
+
+### ④ 改动文件
+- `backend/app/core/action_planner.py`：+66/−2（vs HEAD `1fc41f3`），唯一 tracked 改动；`intent_classifier.py` 仅 debug 编辑后已还原（py_compile 通过）。
+- `backend/_night23_verify_b.py`：gitignored 验证脚本。
+- **状态**：`[DONE]` 2026-10-03，commit `c4f7727`（本地未 push）。

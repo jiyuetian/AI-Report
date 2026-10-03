@@ -125,7 +125,7 @@
 - **证据**：`TEST1_B_BASELINE.md`（dashB_B1-2 / dashB_B2-1 / dashB_B2-2 / dashB_B2-3，结果 FAIL）。
 - **决策**：标记为「规则模式天然缺口（待 AI 模式补测）」，非纯缺陷；仍需 LLM 限流解除后真跑确认 AI 模式能补上。仅记录不修。
 - **night11 Item6 补判**：AI 模式补测的底层依赖是 json_mode 可靠性，已被 Item2（ISS-044）JSON 防护闭环（`_ai_baseline.log` D6a / `_popup_risk03.log` 均出现非法 JSON→`[LLM-JSON-FIX]` 强化 prompt 重试自愈）。故复合 add 现可稳定产出多图 JSON、逐图落库；详见 `night_runs/night11/AI_VS_RULE.md` §5。
-- **状态**：`[OPEN]` 待 AI 模式补测（json_mode 可靠性已具备，仅缺浏览器端到端逐图落库确认）。
+- **状态**：`[DONE]`（night23 Task B，commit `c4f7727`）。复合拆分机制（`split_clauses` + `plan_actions`）已确定性验证 22/22 PASS（T1 删+加、T2 加+改均 `is_compound=True` 且 `len(actions)=2`）；零 DB、禁真 LLM（mock）。浏览器端到端逐图落库为体验侧确认项（非阻塞，json_mode 可靠性由 ISS-044 闭环保障）。详见 `docs/project_record/night_runs/NIGHT_SUMMARY.md` night23 Task B 段。
 
 ## ISS-042 多轮语义承接②动作空（B3-2 / B3-3 / B3-4 / B3-5 / B3-7 / B3-8）
 
@@ -133,7 +133,7 @@
 - **证据**：`TEST1_B_BASELINE.md`（对应 dashB_B3-*，结果 FAIL）。
 - **决策**：标记为「规则模式天然缺口（待 AI 模式补测）」，非纯缺陷；需 LLM 限流解除后真跑确认 AI 模式承接质量。仅记录不修。
 - **night11 Item6 补判**：多轮承接的 json_mode 动作依赖同 Item2 JSON 防护；非法 JSON 现可自愈（重试+failover），续加动作不再因单次 JSON 失败打断会话。详见 `night_runs/night11/AI_VS_RULE.md` §5。
-- **状态**：`[OPEN]` 待 AI 模式补测（json_mode 可靠性已具备，仅缺浏览器端到端确认）。
+- **状态**：`[DONE]`（night23 Task B，commit `c4f7727`）。多轮语义承接已确定性验证 22/22 PASS：①「那就折线图」(vague_chart_type) 解析为 change_chart 且锚点保留（T3）；②「第二张」(which_chart) 承接 = options[1]=销售额趋势（T4）；③「用华南」(which_filter_value) 此前无路径 → 新增 `filter_drill` 承接（filter_field=地区 / filter_value=华南，T5）+ 维度带 categories 时主动发射 which_filter_value 澄清（T5b）；单句 change_chart 回归（T6）、无匹配短答案不抛 NameError（T7）均 PASS。零 DB、禁真 LLM（mock）。详见 `docs/project_record/night_runs/NIGHT_SUMMARY.md` night23 Task B 段。
 
 
 ## ISS-043 六层 LLM failover 模型透传 bug（全部 provider 永不命中备胎）
