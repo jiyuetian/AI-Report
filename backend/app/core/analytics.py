@@ -3,6 +3,7 @@ AI 使用统计 - 分析工具（night17 Task J-8）
 纯函数式分析工具，无状态，可单测
 """
 
+import time
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict
