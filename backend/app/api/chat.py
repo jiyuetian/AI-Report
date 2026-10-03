@@ -1131,7 +1131,8 @@ async def send_message_stream(
                                                 one["message"] = (one.get("message") or "") + f"\n批量更新隔离执行失败：{_bk.get('error')}"
                                         except Exception as _be:
                                             one["message"] = (one.get("message") or "") + f"\n批量更新隔离执行异常：{str(_be)[:160]}"
-                                    if one["success"]:
+                                    # night15-16 Task H：read_only 动作（如指标计算）不落库、不刷新 updated_at
+                                    if one["success"] and not r.get("read_only"):
                                         last_new_config = r.get("new_config") or current_config
                                         dashboard.config = last_new_config
                                         dashboard.updated_by = current_user

@@ -515,6 +515,8 @@ def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confiden
         IntentType.DELETE_CONFIG.value: "delete_config",
         IntentType.BULK_UPDATE_DATA.value: "bulk_update_data",
         IntentType.MANAGE_PERMISSIONS.value: "manage_permissions",
+        # ---- night15-16 Task H：派生指标查询 ----
+        IntentType.QUERY_METRIC.value: "calculate_metric",
     }
     act = mapping.get(intent_type)
     if not act:

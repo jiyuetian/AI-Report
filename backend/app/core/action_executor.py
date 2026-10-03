@@ -34,6 +34,8 @@ class ActionType(str, Enum):
     DELETE_CONFIG = "delete_config"            # 删除配置项
     BULK_UPDATE_DATA = "bulk_update_data"      # 批量数据更新（仅隔离临时库，红线④，绝不碰 aibi.db）
     MANAGE_PERMISSIONS = "manage_permissions"  # 权限变更（硬护栏：仅超管，全量 ai_action_log 留痕）
+    # ---- night15-16 Task H：派生指标计算（纯计算，不碰 DB，read_only）----
+    CALCULATE_METRIC = "calculate_metric"      # 指标查询/对比/趋势/解释（基于 metric_registry，红线④）
 
 
 class ChartType(str, Enum):
@@ -117,6 +119,8 @@ class ActionExecutor:
             ActionType.DELETE_CONFIG: ActionExecutor._execute_delete_config,
             ActionType.BULK_UPDATE_DATA: ActionExecutor._execute_bulk_update_data,
             ActionType.MANAGE_PERMISSIONS: ActionExecutor._execute_manage_permissions,
+            # ---- night15-16 Task H：派生指标计算 ----
+            ActionType.CALCULATE_METRIC: ActionExecutor._execute_calculate_metric,
         }
         
         executor = executors.get(action_type)
@@ -2076,6 +2080,53 @@ class ActionExecutor:
             "new_config": current_config,
             "render_updates": [],
             "message": f"已记录权限变更（{op} {role} → {target_user}）并留痕，待超管后台二次确认生效。",
+        }
+
+    @staticmethod
+    def _execute_calculate_metric(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """派生指标计算（night15-16 Task H）：纯计算，不碰 DB，read_only。
+
+        支持 operation：query(单期) / explain(解释) / compare(多期对比) / trend(趋势预测)。
+        metric 可用中文名/英文键/别名（由 MetricRegistry 解析）；数据由调用方以 dict 显式提供，
+        满足红线④「不碰生产 DuckDB」。
+        """
+        from app.core.metric_registry import METRIC_REGISTRY
+        metric = params.get("metric")
+        if not metric:
+            return {"success": False, "action_type": "calculate_metric", "error": "缺少指标名(metric)"}
+        operation = (params.get("operation") or "query").lower()
+        data = params.get("data") or {}
+        try:
+            res = METRIC_REGISTRY.calculate(
+                metric, data, operation=operation, use_cache=params.get("use_cache", True)
+            )
+        except Exception as e:
+            return {"success": False, "action_type": "calculate_metric",
+                    "error": f"指标计算异常：{str(e)[:160]}", "metric": metric}
+        if not res.get("success"):
+            return {"success": False, "action_type": "calculate_metric",
+                    "error": res.get("error"), "metric": metric}
+        if operation == "query":
+            msg = f"{res.get('name')} = {res.get('value')}{res.get('unit')}（公式：{res.get('formula')}）"
+        elif operation == "explain":
+            msg = (f"{res.get('name')}：{res.get('formula')}；来源：{res.get('data_source')}；"
+                   f"含义：{res.get('description')}")
+        else:
+            msg = res.get("message") or "已计算"
+        return {
+            "success": True,
+            "action_type": "calculate_metric",
+            "operation": operation,
+            "read_only": True,                 # 关键：chat.py 动作轮据此跳过 dashboard.config 落库
+            "metric_result": res,
+            "changes": [],
+            "new_config": current_config,
+            "render_updates": [],
+            "message": msg,
         }
 
     @staticmethod

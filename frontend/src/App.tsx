@@ -50,6 +50,7 @@ import SharePage from './views/share/SharePage'
 import AdminPage from './views/admin/AdminPage'
 import ReportPage from './views/report/ReportPage'
 import AiLogPage from './views/ai-log/AiLogPage'
+import MetricPage from './views/metrics/MetricPage'
 import { Card, Button } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -129,6 +130,7 @@ function App() {
                   <Route path="/share" element={<SharePage />} />
                   <Route path="/report" element={<ReportPage />} />
                   <Route path="/ai-log" element={<AiLogPage />} />
+                  <Route path="/metrics" element={<MetricPage />} />
                   {/* 原型演示占位屏 */}
                   <Route path="/demo/:key" element={<DemoPage />} />
                   <Route path="/admin" element={

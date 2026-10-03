@@ -66,6 +66,8 @@ class IntentType(str, Enum):
     DELETE_CONFIG = "delete_config"            # 删除配置/规则
     BULK_UPDATE_DATA = "bulk_update_data"      # 批量数据更新
     MANAGE_PERMISSIONS = "manage_permissions"  # 权限变更
+    # ---- night15-16 Task H：派生指标查询意图 ----
+    QUERY_METRIC = "query_metric"             # 指标查询/对比/趋势/解释（中文名/英文键/别名）
     UNKNOWN = "unknown"
 
 
@@ -144,6 +146,19 @@ class IntentClassifier:
             r"设为(超级)?管理员",
             r"(修改|调整).{0,4}(权限|角色)",
             r"(设为|赋予|给).{0,10}(权限|角色|管理员|超管)",
+        ],
+        # ---- night15-16 Task H：派生指标查询（必须排在 ATTRIBUTION 前，否则「解释毛利率的变化」被归因抢走）----
+        IntentType.QUERY_METRIC: [
+            # 解释/公式/含义/计算方法
+            r"(解释|说明|含义|怎么算|计算方法|公式)\s*[^，。；]{0,10}?(投资回报率|净资产收益率|毛利率|净利率|ebitda利润率|不良率|拨备覆盖率|资本充足率|流动性比率|客户增长率|交易量|客单价|复购率|市场份额|指标|roi|roe|ebitda)",
+            # 对比/环比/同比
+            r"(对比|比较|环比|同比)\s*[^，。；]{0,12}?(投资回报率|净资产收益率|毛利率|净利率|ebitda利润率|不良率|拨备覆盖率|资本充足率|流动性比率|客户增长率|交易量|客单价|复购率|市场份额|roi|roe|ebitda)",
+            # 趋势/预测/未来/走势
+            r"(趋势|预测|预估|未来|走势|外推)\s*[^，。；]{0,12}?(投资回报率|净资产收益率|毛利率|净利率|ebitda利润率|不良率|拨备覆盖率|资本充足率|流动性比率|客户增长率|交易量|客单价|复购率|市场份额|增长|roi|roe|ebitda)",
+            # 查询/是多少/算一下
+            r"(查询|查一下|算一下|计算|是多少|多少)\s*[^，。；]{0,14}?(投资回报率|净资产收益率|毛利率|净利率|ebitda利润率|不良率|拨备覆盖率|资本充足率|流动性比率|客户增长率|交易量|客单价|复购率|市场份额|指标|roi|roe|ebitda)",
+            # 裸指标名 + 是/为 + 多少
+            r"(投资回报率|净资产收益率|毛利率|净利率|ebitda利润率|不良率|拨备覆盖率|资本充足率|流动性比率|客户增长率|客单价|复购率|市场份额|roi|roe|ebitda)\s*(是|为)?\s*(多少|是多少)",
         ],
         # 2026-09-18 新增：必须排在 ADD_CHART 之前，否则「补充一段结论」里的"加"
         # 会被 ADD_CHART 的"(新增|添加|加|插入)"抢走，导致补结论动作被丢弃。
@@ -457,6 +472,8 @@ class IntentClassifier:
             IntentType.DELETE_CONFIG: ["删除配置", "移除配置", "删掉配置", "删配置", "删除规则"],
             IntentType.BULK_UPDATE_DATA: ["批量更新", "批量修改", "批量写入", "批量导入", "更新数据", "批量处理"],
             IntentType.MANAGE_PERMISSIONS: ["权限", "授权", "赋权", "修改权限", "调整角色", "设为管理员", "权限变更"],
+            # ---- night15-16 Task H：派生指标查询关键词 ----
+            IntentType.QUERY_METRIC: ["查询", "是多少", "对比", "趋势", "预测", "解释", "公式", "毛利率", "净利率", "不良率", "roi", "roe", "客单价", "复购率", "市场份额"],
         }
         return keywords.get(intent_type, [])
     
@@ -845,6 +862,34 @@ class IntentClassifier:
                     crud["role"] = rm.group(1)
                 crud["operation"] = "revoke" if re.search(r"(收回|撤销|revoke)", message) else "grant"
             analysis["extracted_params"] = crud
+
+        elif intent_type == IntentType.QUERY_METRIC:
+            # night15-16 Task H：指标查询参数提取（指标名 + 操作类型 + 周期/horizon 线索）
+            from app.core.metric_registry import METRIC_REGISTRY
+            ep = {}
+            if re.search(r"(对比|比较|环比|同比)", message):
+                ep["operation"] = "compare"
+            elif re.search(r"(趋势|预测|预估|未来|走势|外推)", message):
+                ep["operation"] = "trend"
+            elif re.search(r"(解释|说明|含义|怎么算|计算方法|公式)", message):
+                ep["operation"] = "explain"
+            else:
+                ep["operation"] = "query"
+            # 指标名：按别名长度降序扫描，优先命中最长/最具体的名（如「毛利率」优先于「收入」）
+            matched_key = None
+            for alias in sorted(METRIC_REGISTRY._alias_map.keys(), key=len, reverse=True):
+                if alias and alias in message:
+                    matched_key = METRIC_REGISTRY._alias_map[alias]
+                    break
+            if matched_key:
+                ep["metric"] = matched_key
+            pm = re.search(r"(本|这|上|当|该)\s*(季度|月|年|期|周)", message)
+            if pm:
+                ep["period_hint"] = pm.group(0)
+            hm = re.search(r"(未来|今后|接下来)\s*(\d+)\s*(个)?\s*(季度|月|年|期)", message)
+            if hm:
+                ep["horizon"] = int(hm.group(2))
+            analysis["extracted_params"] = ep
 
         # 添加上下文信息
         if context:

@@ -57,6 +57,12 @@ const navGroups: NavGroup[] = [
       { key: '/ai-log', icon: <FileSearchOutlined />, label: 'AI 操作日志', path: '/ai-log' },
     ],
   },
+  {
+    group: '分析',
+    children: [
+      { key: '/metrics', icon: <BarChartOutlined />, label: '派生指标', path: '/metrics' },
+    ],
+  },
 ]
 
 interface MainLayoutProps {
