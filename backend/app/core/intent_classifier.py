@@ -60,6 +60,7 @@ class IntentType(str, Enum):
     CHART_FIX = "chart_fix"            # 图表问题诊断/修复（空图、没数据）
     SEMANTIC_ACTION = "semantic_action"  # P0-2：规则未命中的看板操作语义，交由 LLM 主导规划动作
     UNDO = "undo"                      # night13 Item1：撤销最近一次 AI 操作（会话级 AI 动作栈回退）
+    ADJUST_THRESHOLD = "adjust_threshold"  # night18 ISS-058：对话阈值调整（"把阈值调80%"）
     # ---- night15-16 Task G：最高权限 CRUD 意图 ----
     CREATE_CONFIG = "create_config"            # 新建配置/规则
     UPDATE_CONFIG = "update_config"            # 修改配置/规则
@@ -232,6 +233,16 @@ class IntentClassifier:
             r"(移动|排序|调整|调换).{0,5}(图|图表|位置|顺序|排序)",
             r"把.{0,10}(移到|放到|挪到|放在)",
             r"(上移|下移|置顶|置底)",
+        ],
+        # ---- night18 ISS-058：阈值调整（必须排在 FILTER_DRILL 前，避免"只看"抢走）----
+        IntentType.ADJUST_THRESHOLD: [
+            # 直接命中：把/将/将阈值调到/改为/设为 X（%）
+            r"(阈值|风险阈值|评分阈值|得分阈值|分数线|评分线|准入线)\s*(调|调高|调低|改|改成|改为|设为|设置为|设成|设|定|变|放到|放到)\s*(到|为|成)?\s*\d+(?:\.\d+)?\s*[%％]?",
+            r"(把|将)\s*(风险)?阈值\s*(调|改|设|放)\s*(到|为|成)?\s*\d+(?:\.\d+)?\s*[%％]?",
+            # 承接式（"把阈值调80%"，动词后直接跟数）
+            r"(把|将).{0,4}阈值\s*(调|改|设|放|升|降|加|减)\s*\d+(?:\.\d+)?\s*[%％]?",
+            # 数字 + 百分号 + 阈值（少见但存在："80%的阈值"）
+            r"\d+(?:\.\d+)?\s*[%％]\s*(的)?\s*(阈值|风险阈值)",
         ],
         IntentType.FILTER_DRILL: [
             r"(只看|只查|只显示|只查看|过滤掉|排除)[^，。；]*?(的|数据|记录)?",
@@ -717,6 +728,54 @@ class IntentClassifier:
                 direction = "bottom"
             analysis["extracted_params"] = {"direction": direction}
         
+        elif intent_type == IntentType.ADJUST_THRESHOLD:
+            # night18 ISS-058：抽取阈值目标字段（可选）+ 数值（原始百分数/裸数）
+            # 语义：阈值 = 数值型筛选条件，落到 config.thresholds[field] 而非 config.filters（避免与枚举 filter_drill 冲突）
+            # 数值归一化策略：
+            #   * 带 % / ％ → value_raw 保留百分数（如 80），normalized = 0.80
+            #   * 无 % 且 0<x<=1 → 直接视为比例（0.8）
+            #   * 无 % 且 x>1 → 视为百分数（80 → 0.80）
+            # 目标字段：优先从整句抽"（风险|评分|得分|准入）?阈值"，若句子里出现"XX 阈值"则取 XX 作 field；
+            #   否则回落到默认 field="score"（前端/看板通用"风险分/评分"字段，与 risk_demo_v2_03 兼容）
+            _field = "score"
+            # 先剥掉前缀停用词（把/将/把/将/给/为/对/把把/把将…），
+            # 避免贪婪正则把"把"吃进字段名（"把逾期率阈值调50%" 里 field 会被误抽成"把逾期率"）。
+            _PREFIX_STOP = re.compile(
+                r"^[\s把将给为对]+")
+            _fm = re.search(r"([\u4e00-\u9fa5A-Za-z_]{1,12})\s*阈值", message)
+            if _fm:
+                _cand = _fm.group(1).strip()
+                _cand = _PREFIX_STOP.sub("", _cand).strip()
+                # 排除纯动词（改/调/设/放/变/升/降 单独出现视为无字段信息）
+                _PURE_VERBS = ("改", "调", "设", "放", "变", "升", "降",
+                               "改成", "调成", "设成", "改成", "改为", "调为", "设为",
+                               "调整", "设值", "修改", "设置")
+                if _cand and _cand not in _PURE_VERBS:
+                    _field = _cand
+            _vm = re.search(r"(\d+(?:\.\d+)?)\s*([%％])?", message)
+            _value_raw = None
+            _normalized = None
+            if _vm:
+                try:
+                    _num = float(_vm.group(1))
+                    _is_percent = bool(_vm.group(2))
+                    _value_raw = _num
+                    if _is_percent or _num > 1:
+                        _normalized = _num / 100.0
+                    else:
+                        _normalized = _num
+                except Exception:
+                    _normalized = None
+            if _normalized is None:
+                analysis["extracted_params"] = {}
+            else:
+                analysis["extracted_params"] = {
+                    "threshold_field": _field,
+                    "value": _normalized,
+                    "value_raw": _value_raw,
+                    "operator": "gte",
+                }
+
         elif intent_type == IntentType.FILTER_DRILL:
             # 2026-09-29 night10 Item1(ISS-039)：年份筛选「只看2025年数据」
             _yr = re.search(r"(20\d{2}|19\d{2})\s*年?", message)

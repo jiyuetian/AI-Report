@@ -186,7 +186,7 @@ def detect_contradictory_grain(message: str) -> Optional[Dict[str, Any]]:
 
 _ALLOWED_SEMANTIC_TYPES = (
     "change_chart", "add_chart", "delete_chart", "reorder_chart",
-    "filter_drill", "edit_title", "attribution",
+    "filter_drill", "edit_title", "attribution", "adjust_threshold",
 )
 
 # 模块级 LLM 调用封装，便于测试时 monkeypatch（返回解析后的 dict 或 None）
@@ -509,6 +509,7 @@ def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confiden
         IntentType.CHART_FIX.value: "chart_fix",
         IntentType.QUALITY_FIX.value: "quality_fix",
         IntentType.UNDO.value: "undo",        # night13 Item1：撤销最近一次 AI 操作
+        IntentType.ADJUST_THRESHOLD.value: "adjust_threshold",  # night18 ISS-058：阈值调整
         # ---- night15-16 Task G：最高权限 CRUD ----
         IntentType.CREATE_CONFIG.value: "create_config",
         IntentType.UPDATE_CONFIG.value: "update_config",

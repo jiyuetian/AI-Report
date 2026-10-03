@@ -37,6 +37,7 @@ class ActionType(str, Enum):
     # ---- night15-16 Task H：派生指标计算（纯计算，不碰 DB，read_only）----
     CALCULATE_METRIC = "calculate_metric"      # 指标查询/对比/趋势/解释（基于 metric_registry，红线④）
     RECALC_METRIC = "recalc_metric"          # 下游重算一致性（C-16）：触发/状态/错误恢复/性能（基于 recalc_engine，红线④）
+    ADJUST_THRESHOLD = "adjust_threshold"    # night18 ISS-058：对话阈值调整（写 config.thresholds，走动作栈支持 undo）
 
 
 class ChartType(str, Enum):
@@ -124,6 +125,7 @@ class ActionExecutor:
             ActionType.CALCULATE_METRIC: ActionExecutor._execute_calculate_metric,
             # ---- night15-16 Task I：下游重算一致性（C-16）----
             ActionType.RECALC_METRIC: ActionExecutor._execute_recalc_metric,
+            ActionType.ADJUST_THRESHOLD: ActionExecutor._execute_adjust_threshold,
         }
         
         executor = executors.get(action_type)
@@ -2205,6 +2207,157 @@ class ActionExecutor:
             "recalc_result": exe,
             "changes": [],
             "message": (note.get("message") or "") + f"\n{exe.get('message')}",
+        }
+
+    # =========================================================================
+    # night18 ISS-058：对话阈值调整（"把阈值调80%"）
+    # 设计要点：
+    #   1) 写 current_config["thresholds"][field] = {"operator":"gte","value":x}
+    #      而非 config.filters —— 避免与 filter_drill 的枚举筛选语义冲突。
+    #   2) 数值规范化在 intent_classifier._extract_params 已完成（"80%" → 0.8），
+    #      这里再做一次 float 化 + 区间校验（0, 1]，非法值走 requires_clarify。
+    #   3) 返回 reverse 描述符，chat.py ai_action_stack 自动入栈 → "撤销" 可回滚
+    #      （若原字段无阈值，reverse.value=None 表示删除）。
+    #   4) 不写 DB —— chat.py 动作轮统一负责把 new_config 提交到 dashboard.config。
+    # =========================================================================
+    @staticmethod
+    def _execute_adjust_threshold(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """调整阈值（写 config.thresholds[field]，走动作栈支持 undo）。"""
+        threshold_field = params.get("threshold_field")
+        raw_value = params.get("value")
+
+        if not threshold_field:
+            return {
+                "success": False,
+                "action_type": "adjust_threshold",
+                "requires_clarify": True,
+                "new_config": current_config,
+                "message": "未识别到要调整的阈值字段，请说明具体是哪个阈值（如 score / 逾期率）。",
+            }
+
+        # undo 短路：撤销「首次设阈值」时 reverse.value=None 且 remove_on_undo=True，
+        # 直接把该字段从 thresholds 里删除，不进入下方区间校验。
+        if raw_value is None and params.get("remove_on_undo") is True:
+            new_config_undo = copy.deepcopy(current_config) if current_config else {}
+            thresholds_undo = new_config_undo.get("thresholds")
+            if isinstance(thresholds_undo, dict) and threshold_field in thresholds_undo:
+                removed = thresholds_undo.pop(threshold_field)
+                _msg = f"已撤销：删除「{threshold_field}」阈值。"
+            else:
+                removed = None
+                _msg = f"已撤销（「{threshold_field}」阈值已不存在，无需变更）。"
+            return {
+                "success": True,
+                "action_type": "adjust_threshold",
+                "changes": [{"op": "remove_threshold", "field": threshold_field}],
+                "new_config": new_config_undo,
+                "render_updates": [{"type": "update_thresholds",
+                                    "thresholds": new_config_undo.get("thresholds", {})}],
+                "message": _msg,
+                # 反向反向 = 恢复原值
+                "reverse": {
+                    "type": "adjust_threshold",
+                    "params": {
+                        "threshold_field": threshold_field,
+                        "value": removed.get("value") if isinstance(removed, dict) else None,
+                        "operator": removed.get("operator") if isinstance(removed, dict) else None,
+                    },
+                },
+            }
+
+        # 规范化为 float；None/非法值直接拒绝
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "action_type": "adjust_threshold",
+                "requires_clarify": True,
+                "new_config": current_config,
+                "message": f"阈值「{raw_value}」不是合法数值，请给出 0-100% 区间内的数字。",
+            }
+
+        # 区间护栏：阈值语义为 0-100% 比例，规范化后必须在 (0, 1]
+        if not (0 < value <= 1.0):
+            return {
+                "success": False,
+                "action_type": "adjust_threshold",
+                "requires_clarify": True,
+                "new_config": current_config,
+                "message": (
+                    f"阈值 {raw_value}（规范化后 {value}）超出 0-100% 有效范围，"
+                    "请给出正确数值。"
+                ),
+            }
+
+        # 深拷贝避免污染传入的 config；写入 thresholds[field]
+        new_config = copy.deepcopy(current_config) if current_config else {}
+        if "thresholds" not in new_config or not isinstance(new_config["thresholds"], dict):
+            new_config["thresholds"] = {}
+        old_entry = new_config["thresholds"].get(threshold_field)
+        old_value = old_entry.get("value") if isinstance(old_entry, dict) else None
+
+        operator = params.get("operator") or "gte"
+        new_config["thresholds"][threshold_field] = {
+            "operator": operator,
+            "value": value,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+        # 生成用户可读的展示值（原值若是百分数则回显为 %）
+        raw_display = params.get("value_raw")
+        if raw_display is not None:
+            try:
+                _rf = float(raw_display)
+                if abs(_rf - value * 100) < 1e-9:
+                    display_val = f"{_rf:g}%"
+                else:
+                    display_val = f"{_rf:g}"
+            except (TypeError, ValueError):
+                display_val = f"{value:g}"
+        else:
+            display_val = f"{value * 100:g}%"
+
+        # reverse 描述符：value=None 表示「原来无阈值，撤销即删除该字段」
+        reverse_params = {
+            "threshold_field": threshold_field,
+            "value": old_value,
+        }
+        if old_value is None:
+            reverse_params["remove_on_undo"] = True
+
+        if old_value is None:
+            msg = f"已把「{threshold_field}」阈值设为 {display_val}。"
+        else:
+            try:
+                old_display = f"{float(old_value) * 100:g}%"
+            except (TypeError, ValueError):
+                old_display = str(old_value)
+            msg = f"已把「{threshold_field}」阈值从 {old_display} 调整为 {display_val}。"
+
+        return {
+            "success": True,
+            "action_type": "adjust_threshold",
+            "changes": [{
+                "threshold_field": threshold_field,
+                "old_value": old_value,
+                "new_value": value,
+                "operator": operator,
+            }],
+            "new_config": new_config,
+            "render_updates": [{
+                "type": "update_thresholds",
+                "thresholds": new_config["thresholds"],
+            }],
+            "message": msg,
+            "reverse": {
+                "type": "adjust_threshold",
+                "params": reverse_params,
+            },
         }
 
     @staticmethod
