@@ -183,7 +183,7 @@ async def test_chart_10k(iterations: int = 5, current_user: Dict = Depends(get_c
 
 
 @router.get("/report/{report_id}")
-async def get_loadtest_report(report_id: str):
+async def get_loadtest_report(report_id: str,current_user: Dict = Depends(get_current_user)):
     """获取压测报告"""
     if report_id not in _test_cache:
         raise HTTPException(status_code=404, detail="报告不存在")
@@ -195,7 +195,7 @@ async def get_loadtest_report(report_id: str):
 
 
 @router.get("/reports/latest")
-async def get_latest_report():
+async def get_latest_report(current_user: Dict = Depends(get_current_user)):
     """获取最新压测报告"""
     if not _test_cache:
         raise HTTPException(status_code=404, detail="暂无压测报告")
@@ -209,7 +209,7 @@ async def get_latest_report():
 
 
 @router.get("/acceptance-check")
-async def check_acceptance():
+async def check_acceptance(current_user: Dict = Depends(get_current_user)):
     """检查验收标准"""
     if not _test_cache:
         return {

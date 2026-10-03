@@ -99,11 +99,11 @@ async def get_my_applications(
     status: Optional[str] = None,  # pending/approved/rejected
     limit: int = 10,
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """获取我的加量申请列表"""
     query = select(TokenApplication).where(
-        TokenApplication.user_id == current_user
+        TokenApplication.user_id == current_user["user_id"]
     )
     
     if status:
@@ -125,7 +125,7 @@ async def get_my_applications(
 async def get_application_detail(
     application_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """获取申请详情"""
     result = await db.execute(
@@ -133,7 +133,7 @@ async def get_application_detail(
         .where(
             and_(
                 TokenApplication.id == application_id,
-                TokenApplication.user_id == current_user
+                TokenApplication.user_id == current_user["user_id"]
             )
         )
     )
@@ -333,11 +333,11 @@ async def get_all_applications(
 @router.get("/check-active", response_model=Dict)
 async def check_active_extra_quota(
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """检查当前有效的加量"""
     result = await db.execute(
-        select(TokenQuota).where(TokenQuota.user_id == current_user)
+        select(TokenQuota).where(TokenQuota.user_id == current_user["user_id"])
     )
     quota = result.scalar_one_or_none()
     

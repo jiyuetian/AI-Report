@@ -209,7 +209,7 @@ async def list_reports(
     dashboard_id: str = Query(..., description="看板ID，查该看板的历史报告版本"),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-):
+    current_user: Dict = Depends(get_current_user)):
     """
     回看历史版本：列出指定看板的全部报告版本（按生成时间倒序）
     """
@@ -241,7 +241,7 @@ async def list_reports(
 
 
 @router.get("/{report_id}/html")
-async def get_report_html(report_id: str):
+async def get_report_html(report_id: str,current_user: Dict = Depends(get_current_user)):
     """获取报告HTML内容"""
     reports_dir = os.path.join(_PROJECT_ROOT, "data", "reports")
     html_path = os.path.join(reports_dir, f"{report_id}.html")
@@ -252,7 +252,7 @@ async def get_report_html(report_id: str):
 
 
 @router.get("/{report_id}/json")
-async def get_report_json(report_id: str, db: AsyncSession = Depends(get_db)):
+async def get_report_json(report_id: str, db: AsyncSession = Depends(get_db),current_user: Dict = Depends(get_current_user)):
     """获取报告JSON数据"""
     from app.models.brain import BrainTraceSummary
     result = await db.execute(

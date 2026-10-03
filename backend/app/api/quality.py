@@ -236,7 +236,7 @@ async def check_quality(
 
 
 @router.get("/check/ai/{dataset_id}")
-async def get_ai_check_result(dataset_id: str):
+async def get_ai_check_result(dataset_id: str,current_user: Dict = Depends(get_current_user)):
     """
     轮询AI补充检测结果
     
@@ -613,7 +613,7 @@ async def test_quality_check(current_user: Dict = Depends(get_current_user)):
 async def debug_clean_stats(
     dataset_id: str,
     column: Optional[str] = None,
-):
+    current_user: Dict = Depends(get_current_user)):
     """
     只读查询清洗层实时统计 - 用于从外部(HTTP)验证去重/清洗是否真实写入 DuckDB。
     查询在 uvicorn 进程内复用全局 DuckDB 连接，不受单进程文件锁限制。

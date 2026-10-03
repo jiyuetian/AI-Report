@@ -16,6 +16,7 @@ from app.core.llm_gateway import (
     get_llm_gateway, llm_chat
 )
 from app.core.brain_config_manager import BrainConfigManager
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/llm", tags=["LLM"])
 
@@ -232,7 +233,9 @@ async def get_rate_limit_status():
 
 
 @router.get("/usage/{user_id}", response_model=UsageResponse)
-async def get_usage(user_id: str):
+async def get_usage(user_id: str,current_user: Dict = Depends(get_current_user)):
+    if current_user.get("user_id") != user_id and not current_user.get("is_superuser"):
+        raise HTTPException(status_code=403, detail="无权查询该用户的 LLM 用量")
     """
     获取用户Token使用量
     

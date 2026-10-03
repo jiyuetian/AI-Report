@@ -28,7 +28,7 @@ _test_cache: Dict[str, Any] = {}
 async def list_golden_datasets(
     type: Optional[str] = None,
     tag: Optional[str] = None
-):
+    ,current_user: Dict = Depends(get_current_user)):
     """
     获取Golden数据集列表
     
@@ -64,7 +64,7 @@ async def list_golden_datasets(
 
 
 @router.get("/datasets/{dataset_id}")
-async def get_golden_dataset_detail(dataset_id: str):
+async def get_golden_dataset_detail(dataset_id: str,current_user: Dict = Depends(get_current_user)):
     """获取单个Golden数据集详情"""
     tester = GoldenRegressionTester()
     dataset = tester.get_dataset_by_id(dataset_id)
@@ -147,7 +147,7 @@ async def run_single_golden_test(
 
 
 @router.get("/report/{report_id}")
-async def get_golden_report(report_id: str):
+async def get_golden_report(report_id: str,current_user: Dict = Depends(get_current_user)):
     """获取测试报告"""
     if report_id not in _test_cache:
         raise HTTPException(status_code=404, detail="报告不存在或已过期")
@@ -159,7 +159,7 @@ async def get_golden_report(report_id: str):
 
 
 @router.get("/reports/latest")
-async def get_latest_report():
+async def get_latest_report(current_user: Dict = Depends(get_current_user)):
     """获取最新测试报告"""
     if not _test_cache:
         raise HTTPException(status_code=404, detail="暂无测试报告")
@@ -173,7 +173,7 @@ async def get_latest_report():
 
 
 @router.get("/stats/summary")
-async def get_golden_stats_summary():
+async def get_golden_stats_summary(current_user: Dict = Depends(get_current_user)):
     """获取Golden测试统计摘要"""
     tester = GoldenRegressionTester()
     all_datasets = tester.get_all_datasets()
@@ -239,7 +239,7 @@ async def export_golden_report(report_id: str, format: str = "json", current_use
 
 
 @router.get("/acceptance-check")
-async def check_acceptance_criteria():
+async def check_acceptance_criteria(current_user: Dict = Depends(get_current_user)):
     """
     检查验收标准
     

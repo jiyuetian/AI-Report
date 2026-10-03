@@ -574,3 +574,42 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - `python backend/_night24_verify_b.py` → `RESULT: PASS`（7 重点 + 4 chat/test + 22 写，0 漏网）。
 - 改前=改后：无代码改动（仅验证脚本 gitignored）。
 - **状态**：`[DONE]` 2026-10-03（零代码改动，本地未 push；登记用本 commit）。
+
+
+---
+
+## §32 night24 Task C · ISS-025 Batch3 A 类读端点 26 条收口（含 /llm/usage PII 403）
+
+> 红线：零 DB 写、不 push（本地 commit 等确认）、不改 SSE 事件结构、禁真 LLM；验证脚本 gitignored（`_*.py`）。
+> 结论：26 个 A 类读端点全部带鉴权依赖（get_current_user / require_admin）；/llm/usage/{user_id} 加 PII 归属 403 校验；`_night24_verify_c2.py` 26/26 PASS。
+
+### ① 收口清单（10 个 api 文件）
+- 注入式（8 文件，经 `_night24_fix_c.py` 在 def 闭合行注入 `current_user: Dict = Depends(get_current_user)`）：
+  exports.py / golden.py / lineage.py / llm.py / loadtest.py / quality.py / recalc_queue.py / reports.py。
+- 手动式（2 文件，`_night24_fix_c_tokens.py`，函数级作用域替换，避免误伤 `_internal/test-*`）：
+  tokens.py（GET /tokens/quota、GET /tokens/can-send）、
+  token_applications.py（GET /tokens/applications/check-active、/my-applications、/my-applications/{application_id}）。
+
+### ② tokens/* 5 端点具体改法（原匿名默认 → 真鉴权）
+- 签名：`current_user: str = "anonymous"` → `current_user: Dict = Depends(get_current_user)`。
+- body：`current_user`（字符串）用法 → `current_user["user_id"]`（与 night22 Task B 对 /tokens/consume 的同类修正一致）：
+  - /tokens/quota：`TokenManager.get_quota_status(db, current_user)` → `...current_user["user_id"]`
+  - /tokens/can-send：`TokenManager.can_send_message(db, current_user)` → `...current_user["user_id"]`
+  - /tokens/applications/my-applications：`TokenApplication.user_id == current_user` → `...current_user["user_id"]`
+  - /tokens/applications/my-applications/{application_id}：同上
+  - /tokens/applications/check-active：`TokenQuota.user_id == current_user` → `...current_user["user_id"]`
+
+### ③ /llm/usage/{user_id} PII 归属校验（llm.py）
+- 非本人且非超管：raise HTTPException(403, "无权查询该用户的 LLM 用量")。堵住越权查他人用量泄露。
+
+### ④ 安全网（未误伤）
+- 全仓 grep `current_user: str = "anonymous"` = 0（5 个全部转换）。
+- `_internal/test-*` 处理器（current_user: str = "test_user" 等，受 internal_endpoint_guard 护闸）保持字符串用法，未被本任务改动。
+
+### ⑤ 验证
+- `python backend/_night24_verify_c2.py` → `RESULT: PASS`（26/26 读端点鉴权 + /llm/usage PII 403）。
+- `python -m py_compile` 全部 10 个 api 文件 = OK。
+- 复现脚本（gitignored）：`_night24_fix_c.py`（8 文件注入器）、`_night24_fix_c_tokens.py`（5 端点函数级修复）、`_night24_verify_c2.py`（复核）。
+
+### ⑥ 状态
+- `[DONE]` 2026-10-03（本地未 push；登记用本 commit）。

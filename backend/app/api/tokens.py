@@ -44,14 +44,14 @@ class TokenStatusResponse(BaseModel):
 @router.get("/quota", response_model=TokenStatusResponse)
 async def get_token_quota(
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     获取Token配额状态
     
     用于前端显示Token余量条
     """
-    status = await TokenManager.get_quota_status(db, current_user)
+    status = await TokenManager.get_quota_status(db, current_user["user_id"])
     
     return TokenStatusResponse(
         user_id=status["user_id"],
@@ -92,7 +92,7 @@ async def consume_tokens(
 @router.get("/can-send", response_model=Dict)
 async def can_send_message(
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     检查是否能发送消息
@@ -105,7 +105,7 @@ async def can_send_message(
             "disable_reason": "Token已耗尽..."
         }
     """
-    allowed, reason = await TokenManager.can_send_message(db, current_user)
+    allowed, reason = await TokenManager.can_send_message(db, current_user["user_id"])
     
     return {
         "allowed": allowed,

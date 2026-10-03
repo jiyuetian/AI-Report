@@ -14,6 +14,8 @@ from fastapi import Depends
 from pydantic import BaseModel
 
 from app.core.recalc_engine import RECLAC_ENGINE
+from fastapi import HTTPException
+from app.core.security import get_current_user
 
 
 class RecalcQueue:
@@ -64,7 +66,7 @@ async def status(recalc_id: Optional[str] = None):
 
 
 @router.get("/history")
-async def history():
+async def history(current_user: Dict = Depends(get_current_user)):
     return RECLAC_ENGINE.list_history()
 
 

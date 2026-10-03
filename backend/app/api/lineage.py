@@ -72,7 +72,7 @@ class ImpactAnalysisResponse(BaseModel):
 
 
 @router.get("/resolve")
-async def resolve_default_dataset(db: AsyncSession = Depends(get_db)):
+async def resolve_default_dataset(db: AsyncSession = Depends(get_db),current_user: Dict = Depends(get_current_user)):
     """解析血缘页默认展示的数据集：最近一个"有看板"的数据集（保证指标/图表层有内容）；
     没有任何看板时退回最近上传的数据集。"""
     from sqlalchemy import select
@@ -199,7 +199,7 @@ async def verify_lineage(
 async def get_impact_analysis(
     node_id: str,
     db: AsyncSession = Depends(get_db)
-):
+    ,current_user: Dict = Depends(get_current_user)):
     """影响分析：查询指定节点的下游影响"""
     result = await LineageService.get_impact_analysis(db, node_id)
     

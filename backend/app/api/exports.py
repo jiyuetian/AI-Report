@@ -149,7 +149,7 @@ async def export_async(
 async def get_export_status(
     task_id: str,
     db: AsyncSession = Depends(get_db)
-):
+    ,current_user: Dict = Depends(get_current_user)):
     """查询导出任务状态"""
     # 模拟状态查询
     return {
