@@ -311,3 +311,18 @@
 - **状态**：`[DONE]` — 教练验收轮（2026-10-03）根因级修复，commit `（见 AI_CHANGES.md §十六）`。
   - **修复范围（比原建议扩大）**：不止 `compute_stats` / `compare_two_periods`，而是 `analytics.py` **全文件**事件字段防御化——`bucket_events` / `get_model_usage_stats` / `get_action_usage_stats` / `get_peak_usage_hour` / `get_slowest_model` / `get_top_actions` 一并改 `.get(...)` 兜底（`data` 用 `(event.get("data") or {})`）。
   - **验证**：新增 `_verify_iss059.py`（隔离，gitignored）9/9 PASS（缺 `data` / `success` / `event_type` / `latency_ms` 事件全不崩）；回归 `_verify_taskjk.py` 17/17、`_verify_iss058.py` 5/5、`_verify_taskg.py` ALL、`_verify_taski.py` 32/0 全 PASS；`py_compile` EXIT=0。
+
+## ISS-060 澄清收敛话术后「确认」无法采纳（night21，P0 回归）
+
+- **现象（教练核实）**：night19 任务B 的澄清收敛话术 "请回复「确认」采用该方案" 与代码行为矛盾——收敛即清除 pending（`params.converged=True` → chat.py 走 pop 分支），下一轮用户回「确认」时 `_pending` 为 None，跳过 `detect_confirmation` 承接分支，无法采纳。收敛话术承诺了一个不存在的确认路径。
+- **根因（4 处）**：
+  1. `action_planner.py:_converge_clarify` 返回 `type=clarify` + `params.converged=True`，`params.pending` 只带 `{intent_type, partial_params}`，**无 proposal**；options 仅置于 params 顶层。
+  2. `chat.py`（收敛扫描分支）遇 `params.converged` 仅置 `_converged=True; break`，**不写** `_clarify_pending`。
+  3. `chat.py`（`elif _converged` 分支）`pending_clarify` 被 pop 清空。
+  4. 下一轮「确认」：`_pending` 为 None → 跳过 `plan_actions` 的 confirm 承接分支（L687-714）→ 无法采纳。
+- **修复（已落码 + 13/13 验证通过）**：
+  - `_converge_clarify` 增加 **proposal**：调 `_resolve_pending_clarify("第一个", ...)` 取最佳项可执行动作 → 非 clarify 即 `proposal={intent_type, partial_params}`；`vague_chart_type` 缺图锚点时用 `options[0]` 图型 + 已有锚点/第一张图 拼可执行 `change_chart` proposal（补 `title_keyword`/`chart_id`）；无选项/无锚点则收敛文案**改不引导"确认"**，改引导用户直接给图名/序号。
+  - `chat.py` 收敛分支改为**持久化带 proposal 的 pending**（含 `proposal` + `clarify_round=MAX_CLARIFY_ROUNDS`），而非 pop；收敛且无 proposal 仍维持 pop（文案已不引导确认）。
+  - `detect_confirmation` 的**否定词表补「取消」**——收敛话术本就引导用户回「取消」放弃，原词表未收「取消」致其无法命中 cancel_pending（R5 依赖）。
+- **零回归保证**：confirm（L687-714）/ negate（L676-686）/ `cancel_pending` 清除 pending 三条既有路径均不变；收敛 pending `clarify_round>=MAX`，再次模糊输入幂等重新收敛，不会无限追问。
+- **状态**：`[DONE]`（2026-10-03 night21，见 `AI_CHANGES.md` §23）。验证脚本 `_verify_clarify_cap.py`（gitignored，过程文件）扩展为 13/13 PASS。

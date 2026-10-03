@@ -322,3 +322,13 @@
 > 与既有闭环：05-ISS025鉴权审计.md 已闭环 P0-1/P0-2/P0-3；本扫描为 P1 遗留全量清单 + 分批建议，交教练/用户拍板后逐批实施。防复发沿用 `scripts/auth_scan.py`+`scripts/fe_bare_fetch_scan.py`+`scripts/auth_whitelist.json` 三件套。
 
 ---
+
+## 二十三、night21 修复：ISS-060 澄清收敛后「确认」无法采纳（已 commit）
+
+- **问题**：night19 任务B 的收敛话术引导用户回「确认」采用方案，但收敛即清除 `pending_clarify`（`params.converged=True` → chat.py pop 分支），下一轮「确认」时 `_pending=None` 跳过 `detect_confirmation` 承接分支，确认无法采纳。话术承诺了不存在的路径。
+- **改动文件**：
+  - `backend/app/core/action_planner.py`：`_converge_clarify` 增加 **proposal**（取最佳项可执行动作 → `proposal={intent_type, partial_params}`；`vague_chart_type` 缺锚点时用 `options[0]` 图型 + 已有锚点/第一张图 拼可执行 `change_chart` proposal 补 `title_keyword`/`chart_id`；无选项/无锚点则收敛文案**改不引导"确认"**）；`_NEGATE_TOKENS` 补「取消」（收敛话术本就引导「取消」放弃，原词表漏收致 R5 失效）。
+  - `backend/app/api/chat.py`：收敛扫描分支遇 `converged` 且带 `proposal` → **持久化带 proposal 的 pending**（含 `proposal` + `clarify_round=MAX_CLARIFY_ROUNDS`），替代原 pop；收敛且无 proposal 仍 pop；新增 `MAX_CLARIFY_ROUNDS` 导入。
+- **零回归保证**：confirm（L687-714）/ negate（L676-686）/ `cancel_pending` 清除 pending 三路径均不变；收敛 pending `clarify_round>=MAX`，再次模糊输入幂等重新收敛，不无限追问。
+- **验证**：`py_compile` 两文件 EXIT=0；`_verify_clarify_cap.py` **13/13 PASS**（R1/R2/R3/R3b 回归 9 + R4-前 proposal 存在 / R4 收敛后「确认」命中 proposal 采纳 / R5「取消」→ cancel_pending / R6 再次模糊仍收敛 共 4）。验证脚本 gitignored（过程文件，不进 commit）。
+- **状态**：`[DONE]` 2026-10-03，见 `ISSUES.md` ISS-060。本地未 push。
