@@ -395,7 +395,9 @@ async def generate_llm_natural_response(
     _hist = context.get("history") or []
     if _hist:
         _hist_lines = []
-        for _m in _hist[-6:]:
+        # night19 任务B：context["history"] 已由 _build_history 按 5 轮窗口化，直接遍历整窗口，
+        # 与下方记忆推导/意图分类共用同一 windowed history，消除原 _hist[-6:] 与按轮窗口的两套不一致
+        for _m in _hist:
             _line = f"  {_m.get('role')}: {_m.get('content')}"
             if _m.get("action_type"):
                 _line += f" (执行:{_m.get('action_type')})"
@@ -713,26 +715,18 @@ async def send_message_stream(
         "layout_summary": _build_layout_summary(current_config)
     }
 
-    # P0-1：注入对话历史 + 纠正记忆，使"再来一个/就改成"能承接上一句
-    # 历史：查 ChatMessage 最近 10 轮（user/assistant/action）
+    # P0-1 + night19 任务B：按轮截断注入对话历史（最多最近 5 轮，单条 content≤600）。
+    # 查询放宽到 50 条以便完整分组出整轮（10 条不足以稳定得到 5 轮）；
+    # 真正的"5 轮"窗口由 _build_history 完成。
     try:
         _hist_rows = await db.execute(
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
             .order_by(ChatMessage.created_at.desc())
-            .limit(10)
+            .limit(50)
         )
         _hist_msgs = list(reversed(_hist_rows.scalars().all()))
-        context["history"] = [
-            {
-                "role": m.role,
-                "content": m.content,
-                "action_type": m.action_type,
-                "action_params": m.action_params,
-                "action_result": m.action_result,
-            }
-            for m in _hist_msgs
-        ]
+        context["history"] = _build_history(_hist_msgs, max_rounds=5, max_chars=600)
     except Exception as e:
         print(f"[Chat] 读取对话历史失败(忽略): {e}")
         context["history"] = []
@@ -1401,6 +1395,66 @@ async def send_message_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+def _build_history(raw_msgs, max_rounds=5, max_chars=600):
+    """按轮分组装配对话历史（night19 任务B / ISS-015 ①）。
+
+    一轮 = 一条 user 消息 + 其后直到下一 user 前的所有消息。
+    最多保留最近 max_rounds 轮；开头若出现非 user 起的半轮则丢弃（不注入半轮，
+    因为向前补全需要更多 DB 行、当前查询窗口取不到，丢弃比注入残缺上下文更安全）。
+    单条 content 超 max_chars 字符截断并加省略号；action_params/action_result 保持 dict
+    形态（被 _build_memory_from_history 当 dict 消费，硬约束：不新增/不改字段名）。
+    输出字段：{role, content, action_type, action_params, action_result}。
+    """
+    # 1) 归一化为 dict 列表（兼容 ChatMessage 对象与 dict）
+    norm = []
+    for m in (raw_msgs or []):
+        if isinstance(m, dict):
+            norm.append({
+                "role": m.get("role"),
+                "content": m.get("content"),
+                "action_type": m.get("action_type"),
+                "action_params": m.get("action_params"),
+                "action_result": m.get("action_result"),
+            })
+        else:
+            norm.append({
+                "role": getattr(m, "role", None),
+                "content": getattr(m, "content", None),
+                "action_type": getattr(m, "action_type", None),
+                "action_params": getattr(m, "action_params", None),
+                "action_result": getattr(m, "action_result", None),
+            })
+
+    # 2) 分组为轮：user 起新轮；其余归入上一轮；开头无 user 锚定的消息直接丢弃（防半轮）
+    rounds = []
+    for m in norm:
+        role = m.get("role")
+        if role == "user":
+            rounds.append([m])
+        elif rounds:
+            rounds[-1].append(m)
+        # else: 开头非 user 的半轮，丢弃
+
+    # 3) 保留最近 max_rounds 轮
+    rounds = rounds[-max_rounds:]
+
+    # 4) 展开 + content 截断（action_params/action_result 保持 dict）
+    out = []
+    for rnd in rounds:
+        for m in rnd:
+            content = m.get("content")
+            if isinstance(content, str) and len(content) > max_chars:
+                content = content[:max_chars] + "…"
+            out.append({
+                "role": m.get("role"),
+                "content": content,
+                "action_type": m.get("action_type"),
+                "action_params": m.get("action_params"),
+                "action_result": m.get("action_result"),
+            })
+    return out
 
 
 def _build_memory_from_history(history):

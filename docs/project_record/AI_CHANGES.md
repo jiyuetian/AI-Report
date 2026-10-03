@@ -241,4 +241,23 @@
 > 红线：零 DB（缓存驻进程内存）；不改 SSE 事件契约；不 kill/重启运行中的 8000 后端（pid 49900）；live 验证留待用户重启。`_verify_health_probe.py` 为隔离验证脚本（gitignored，未进仓）。
 
 ---
+## 十九、night19 任务B：阶段9「多轮历史稳定注入」（ISS-015 ①）
 
+| 文件 | 类型 | 说明 | 关联 |
+|------|------|------|------|
+| `backend/app/api/chat.py` | fix(ctx) | 新增 `_build_history(raw_msgs, max_rounds=5, max_chars=600)`：按轮分组（user 起新轮）、保留最近 5 轮、丢弃开头半轮、content 截断 600 字符（action_params/action_result 保持 dict 供 `_build_memory_from_history` 消费）；`context["history"]` 统一由该函数生成（查询窗口由 limit(10) 放宽到 limit(50) 以便完整分组）；自然回复路径 `_hist[-6:]` 改为遍历整窗口，与记忆推导/意图分类共用同一 windowed history，消除两套窗口不一致。 | ISS-015 ① / Q16 |
+
+### 背景与根因
+- 现状（核实）：`chat.py:719` 按**条数** limit(10) 注入 history；`chat.py:398` 自然回复用 `_hist[-6:]`（两套窗口不一致）；`intent_classifier.py:413` 把**整个 context（含 history 的 action_params/action_result + current_config）** json.dumps 进系统提示词 → 上下文膨胀（Q16 痛点）。
+- 硬约束：上下文管理不得修改 API 契约——保持 SSE 事件结构不变；字段名不变（role/content/action_type/action_params/action_result）。
+- 设计：集中到 `_build_history` 一处按轮窗口化，三处消费者（自然回复 L399 / 记忆推导 L742 / LLM 提示词 L413 经 context）自动受益；action_params/action_result 必须为 dict（被 `_build_memory_from_history` 当 dict 取 `.get("target_type")`/`.get("chart_id")`），故只截断 content，不碰 dict 字段。
+
+### 验证（本机 Python 3.12，零 DB）
+| 门 | 命令 | 结果 |
+|----|------|------|
+| 后端语法 | `py_compile backend/app/api/chat.py` | EXIT=0 |
+| 窗口/截断契约 | `python _verify_history_window.py` | **10/10 PASS**（仅留最近 5 轮 / 无半轮 / content≤600 / 字段名不变 / action_params+result 仍为 dict / 长 content 1000→601+…） |
+
+> 红线：不改 SSE 事件结构；不改 API 请求/响应契约；不重构无关代码；零 DB。`_verify_history_window.py` 为隔离验证脚本（gitignored，未进仓）。
+
+---
