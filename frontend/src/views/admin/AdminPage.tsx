@@ -501,48 +501,58 @@ const SettingsTab: React.FC = () => {
   const appThemeCtx = useContext(AppThemeContext);
   const theme = appThemeCtx?.theme || 'light';
 
-  // 3.6：LLM 网关状态改为实时真取数（/health → llm_reachable）。
-  // 此前写死"已启用"，在模型实际不可达时仍显示已启用——与 2.1/2.4 的诚实标注原则冲突。
-  //
-  // 深度补充（反例驱动）：
-  //  ① 四态而非三态：loading（正在检测）与 null（检测完成但无结论）必须分开，
-  //     否则慢网络下"正在检测"被显示成"健康检查未返回"，仍是失真表述。
-  //  ② 可手动复检：antd5 Tabs 默认不销毁非激活面板，SettingsTab 保持挂载，
-  //     useEffect([]) 只跑一次 → LLM 恢复可达后页面不会自愈，必须给复检入口。
-  //  ③ 值形态兼容：后端可能返回 0/1/"true"/"false"，严格 typeof boolean 会把
-  //     "不可达"误报为"未知"。
-  const [llmLoading, setLlmLoading] = useState<boolean>(true);
-  const [llmReachable, setLlmReachable] = useState<boolean | null>(null);
+  // night19 任务 A：LLM 网关状态改为实时真取数（/health/llm），前端轮询直到出结果。
+  // 用户拍板：探针应反映真实链路可用性（可靠、可追溯），允许跑几分钟；
+  // 探测中给「加粗红色醒目提示」，用户可稍后回来查看结果，而非干等。
+  // 后端 /health/llm 返回 {state: probing|ok|fail|unknown, llm_reachable, checked_at,
+  //   elapsed_ms, reason, expected_max_wait_s}；首次调用触发后台探针，前端每 5s 轮询。
+  const [llmState, setLlmState] = useState<'probing' | 'ok' | 'fail' | 'unknown'>('unknown');
+  const [llmReason, setLlmReason] = useState<string>('');
   const [llmCheckedAt, setLlmCheckedAt] = useState<string | null>(null);
   const aliveRef = useRef(true);
+  const pollRef = useRef<any>(null);
   useEffect(() => {
     aliveRef.current = true;
-    return () => { aliveRef.current = false; };
+    return () => {
+      aliveRef.current = false;
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, []);
+
+  const fetchLlm = useCallback(async (): Promise<'probing' | 'ok' | 'fail' | 'unknown'> => {
+    if (!aliveRef.current) return 'unknown';
+    try {
+      const res: any = await http.get<any>('/health/llm');
+      if (!aliveRef.current) return 'unknown';
+      const st: string = res?.state ?? 'unknown';
+      setLlmState(st as any);
+      setLlmReason(res?.reason ?? '');
+      const at = res?.checked_at ?? (res?.elapsed_ms != null ? new Date().toLocaleTimeString('zh-CN', { hour12: false }) : null);
+      setLlmCheckedAt(at ? String(at) : null);
+      return st as any;
+    } catch {
+      if (!aliveRef.current) return 'unknown';
+      setLlmState('unknown');
+      setLlmCheckedAt(null);
+      return 'unknown';
+    }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      if (!aliveRef.current) { if (pollRef.current) clearInterval(pollRef.current); return; }
+      const s = await fetchLlm();
+      if (s !== 'probing') { if (pollRef.current) clearInterval(pollRef.current); pollRef.current = null; }
+    }, 5000);
+  }, [fetchLlm]);
 
   const checkLlm = useCallback(async () => {
     if (!aliveRef.current) return;
-    setLlmLoading(true);
-    try {
-      const res: any = await http.get<any>('/health');
-      if (!aliveRef.current) return;
-      const raw = res?.llm_reachable ?? res?.data?.llm_reachable;
-      const v =
-        raw === true || raw === 1 || raw === 'true' || raw === '1' ? true
-        : raw === false || raw === 0 || raw === 'false' || raw === '0' ? false
-        : null;
-      setLlmReachable(v);
-      setLlmCheckedAt(
-        new Date().toLocaleTimeString('zh-CN', { hour12: false })
-      );
-    } catch {
-      if (!aliveRef.current) return;
-      setLlmReachable(null);
-      setLlmCheckedAt(null);
-    } finally {
-      if (aliveRef.current) setLlmLoading(false);
-    }
-  }, []);
+    setLlmState('probing');
+    const st = await fetchLlm();
+    if (st === 'probing') startPolling();
+  }, [fetchLlm, startPolling]);
 
   useEffect(() => { checkLlm(); }, [checkLlm]);
 
@@ -576,21 +586,21 @@ const SettingsTab: React.FC = () => {
         {/* LLM 网关：实时真取数，四态（检测中 / 可达 / 不可达 / 未知），不谎报 */}
         <p>
           <strong>LLM网关:</strong>{' '}
-          {llmLoading && (
-            <Tag color="processing" icon={<SyncOutlined spin />}>
-              正在检测…
-            </Tag>
+          {llmState === 'probing' && (
+            <span style={{ color: '#cf1322', fontWeight: 700 }}>
+              <SyncOutlined spin /> AI 链路探测中，最长约 3 分钟，可稍后回来查看结果
+            </span>
           )}
-          {!llmLoading && llmReachable === true && (
+          {llmState === 'ok' && (
             <Tag color="green">已启用（实时检测可达）</Tag>
           )}
-          {!llmLoading && llmReachable === false && (
-            <Tag color="red">当前不可达（将自动降级为规则生成）</Tag>
+          {llmState === 'fail' && (
+            <Tag color="red">当前不可达{llmReason ? `（${llmReason}）` : '（将自动降级为规则生成）'}</Tag>
           )}
-          {!llmLoading && llmReachable === null && (
+          {llmState === 'unknown' && (
             <Tag color="default">状态未知（健康检查未返回该字段）</Tag>
           )}
-          {!llmLoading && llmCheckedAt && (
+          {llmState !== 'probing' && llmCheckedAt && (
             <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.65 }}>
               检测于 {llmCheckedAt}
             </span>
@@ -599,7 +609,7 @@ const SettingsTab: React.FC = () => {
             type="link"
             size="small"
             icon={<ReloadOutlined />}
-            loading={llmLoading}
+            loading={llmState === 'probing'}
             onClick={checkLlm}
             style={{ marginLeft: 4 }}
           >

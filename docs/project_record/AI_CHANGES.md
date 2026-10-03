@@ -218,3 +218,27 @@
 | 绿标 | `GET /api/v1/health` ×3 | **3/3 `llm_reachable:true`**，耗时 1.5s / 4.3s / 8.8s（均 < 18s） |
 
 > ⚠️ 残留：L1 `sensenova/kimi-k3` 仍间歇 429、L2 `glm-4.7-flash` 偶发「访问量过大」——快路径下不影响绿标（秒回后切换），但真实 AI 请求首答可能因切换而延迟。
+
+
+## 十八、night19 任务A：LLM 健康探针去 18s 假快路径 + 后台探针 + /health/llm（ISS-030 后续纠正）
+
+| 文件 | 类型 | 说明 | 关联 |
+|------|------|------|------|
+| `backend/app/api/health.py` | fix(health) | **纠正 §17 的 18s 假快路径**：保留 `_check_llm_reachable`（去掉 `max_retries=0` + `wait_for(18s)`，改真实重试语义 `MAX_RETRIES` + 整体上限放宽到 **180s**），供 `brain_run_sse.py` 绿标复用；新增进程内缓存 `_LLM_PROBE_CACHE` + 后台探针 `_run_llm_probe`（写缓存，`state`=probing\|ok\|fail\|unknown，`expected_max_wait_s=180`）；`/health` 立即返回缓存（`llm_reachable`/`checked_at`/`state`）**不阻塞**；新增 `GET /health/llm` 返回 `{state, llm_reachable, checked_at, elapsed_ms, reason, expected_max_wait_s}` 并触发后台探针。 | ISS-030 后续 |
+| `frontend/src/views/admin/AdminPage.tsx` | feat(ui) | `checkLlm` 改调 `/health/llm`；`llmState` 四态（probing/ok/fail/unknown）；**探测中显示加粗红色**「AI 链路探测中，最长约 3 分钟，可稍后回来查看结果」并每 5s 轮询直到出结果；保留「重新检测」按钮。 | — |
+
+### 背景与根因
+- 用户拍板（原话）：「18s 这个就很扯，可以适当延长……几分钟都是正常的，我要的是最终结果好用可靠可追溯」。§17 为"快"加的 `max_retries=0` + `wait_for(18s)` 是误判来源——真实 provider 链（含退避）在限流时本就需数十秒到几分钟，18s 上限让探针反映的是"超时"而非"链路可用性"，与"可靠、可追溯"目标相悖。
+- 设计：探针走**真实重试语义**（保留 `llm_chat` 内部 `MAX_RETRIES`），整体上限 180s；`/health` 不再阻塞在长探针上，立即返回上一次缓存结果 + `state`；真实探测在后台/独立端点执行，结果写进程内缓存，前端轮询。
+
+### 验证（本机 Python 3.12）
+| 门 | 命令 | 结果 |
+|----|------|------|
+| 后端语法 | `py_compile backend/app/api/health.py` | EXIT=0 |
+| 结构/契约 | `python _verify_health_probe.py` | **15/15 PASS**（18s hack 已去除、缓存命中、/health/llm 六字段、state 机、后台探针写缓存） |
+| 前端类型 | `npx tsc --noEmit` | EXIT=0 |
+
+> 红线：零 DB（缓存驻进程内存）；不改 SSE 事件契约；不 kill/重启运行中的 8000 后端（pid 49900）；live 验证留待用户重启。`_verify_health_probe.py` 为隔离验证脚本（gitignored，未进仓）。
+
+---
+
