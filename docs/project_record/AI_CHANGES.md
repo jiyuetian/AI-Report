@@ -646,3 +646,37 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 
 ### ⑤ 状态
 - `[DONE-离线]` 2026-10-03（钉版已上提并静态扫描；联网验证待 CI；本地未 push；登记用本 commit）。
+
+
+---
+
+## §34 night24 Task G · 全量路由鉴权回归（ISS-025）
+
+> 红线：零 DB 写、不 push、不联网；验证脚本 gitignored（`_*.py`）。
+> 结论：A/B/C 三套 verify 全 PASS；全量路由 221 条，130 硬鉴权 + 74 内部护闸 + 2 可选 + 15 意图公开；回归中发现并收口 brain_v2.py 2 个未鉴权配置读端点。
+
+### ① 回归范围与结果
+- Task A env 闸门：`verify_a.py wire` PASS（ENABLE_INTERNAL_ENDPOINTS=True）+ `secure` PASS（=False → 401）。
+- Task B 写端点：`verify_b.py` PASS（8 22 写端点 + 73 内部 + 7 重点 + /chat/test/* 4，0 漏网）。
+- Task C 读端点：`verify_c2.py` PASS（26 读 + /llm/usage PII 403）。
+- 全量路由扫描：`verify_g.py` 枚举 221 条 (method,path)+鉴权依赖。
+
+### ② 全量鉴权覆盖
+- total=221 / hard_auth=130 / internal_guard=74 / optional=2 / no_auth=15（收口前 17）。
+- 15 个 no_auth 均为意图公开：`/`(root)、`/auth/captcha`、`/health`(+`/health/llm`)、`/shares/{share_code}`(+`/verify`)、`/docs`(+oauth2-redirect)、`/openapi.json`、`/redoc`、`/auth/login|register|forgot-password/*`。
+- 备注：`/docs`/`/openapi.json`/`/redoc` 为 FastAPI 默认公开；prod 若需收紧可 `docs_url=None, redoc_url=None, openapi_url=None`。本次不改（标准默认）。
+
+### ③ 回归发现的新漏洞（已收口）
+- `brain_v2.py` 与 `brain.py` 同 prefix `/brain`，含 2 个未鉴权 GET：
+  - `GET /api/v1/brain/configs`（list_configs）— 无鉴权，匹配 `ConfigCreateRequest` 类别泄露全量生效配置。
+  - `GET /api/v1/brain/configs/{config_key}/history`（get_config_history）— 无鉴权，泄露配置变更历史。
+- `verify_c2.py` 之 `find_route` 返回首个匹配路由，被 `brain.py` 的 `{category}/history`(require_admin) 遮蔽，故以前误判为 PASS；全量扫描才暴露真实的 `{config_key}/history`(NONE)。
+- 收口：2 端点加 `dependencies=[Depends(internal_endpoint_guard)]`，与同模块已收口的 `GET /configs/{config_key}`(单条获取) 对齐。收口后 no_auth 17→ 15。
+
+### ④ 复现脚本（gitignored）
+- `backend/_night24_verify_g.py`（全量路由鉴权覆盖扫描）。
+- `backend/_night24_fix_g_brainv2.py`（brain_v2 2 端点收口）。
+- A/B/C verify 脚本同前。
+
+### ⑤ 状态
+- `[DONE]` 2026-10-03（全量回徒 + 发现收口 brain_v2 漏洞；本地未 push；登记用本 commit）。

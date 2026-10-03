@@ -66,7 +66,7 @@ class CompleteRunRequest(BaseModel):
 
 # ============== 配置管理API ==============
 
-@router.get("/configs", response_model=Dict)
+@router.get("/configs", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def list_configs(
     category: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
@@ -166,7 +166,7 @@ async def rollback_config(
     return result
 
 
-@router.get("/configs/{config_key}/history", response_model=Dict)
+@router.get("/configs/{config_key}/history", response_model=Dict, dependencies=[Depends(internal_endpoint_guard)])
 async def get_config_history(
     config_key: str,
     db: AsyncSession = Depends(get_db)
