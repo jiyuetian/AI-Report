@@ -331,36 +331,92 @@ MAX_CLARIFY_ROUNDS = 2
 
 
 def _converge_clarify(pending: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    """澄清轮次达上限后的收敛话术：给出最可能方案（选项第 1 项）+ 让用户确认 / 取消。
+    """澄清轮次达上限后的收敛话术（night19 任务B + night21 ISS-060 修复）。
 
-    返回 type=clarify 且 params.converged=True（chat.py 据此不再持久化 pending，结束循环）。
-    选项保留原 pending 的 options（最佳项在前），使「确认」词仍走 _resolve_pending_clarify("第一个") 采纳。
+    返回 type=clarify 且 params.converged=True。差异：
+    - 若有选项且能取出最佳项的可执行动作 → 带 proposal（顶层，与 _clarify_action 一致）：
+      下一轮「确认」命中 plan_actions 的 proposal 承接路径直接采纳，chat.py 持久化该 pending。
+    - 若 reason=='vague_chart_type' 且缺图锚点（"第一个"仍解析成追问 which_chart 的 clarify）→
+      用 options[0] 的图型 + 已有锚点 / 第一张图 拼可执行 change_chart proposal，使「确认」能落地。
+    - 若确实无法构成可执行动作（无选项 / 无锚点）→ 收敛话术改为不引导"确认"，改引导用户直接给
+      图名 / 序号（文案不承诺确认）；chat.py 据此 pop pending 结束循环。
     """
-    _opts = (pending or {}).get("options") or []
-    _best = _opts[0] if _opts else None
-    if _best:
-        _detail = (_best.get("title") or _best.get("chart_type") or _best.get("label")
-                   or _best.get("field") or _best.get("grain") or "推荐方案")
-    else:
-        _detail = (pending or {}).get("reason") or "当前意图"
+    _pending = pending or {}
+    _opts = _pending.get("options") or []
+    _reason = _pending.get("reason")
+    _pp = _pending.get("partial_params") or {}
+
+    def _build_converged(message: str, proposal=None):
+        _ret = {
+            "type": "clarify",
+            "params": {
+                "reason": _reason,
+                "message": message,
+                "options": _opts,
+                "pending": {"intent_type": _pending.get("intent_type"),
+                            "partial_params": _pp},
+                "converged": True,
+            },
+            "clause": "",
+            "intent_type": "clarify",
+            "confidence": 0,
+        }
+        if proposal:
+            _ret["proposal"] = proposal
+        return _ret
+
+    if not _opts:
+        # 无选项：无法构成可执行动作，不引导"确认"
+        _msg = (
+            f"我已多次尝试确认，仍未能完全确定你的意图（{_reason or '当前意图'}）。"
+            f"请直接告诉我要改哪张图 / 哪种图型 / 哪个字段（如图名或序号），或回复「取消」放弃。"
+        )
+        return _build_converged(_msg)
+
+    # 尝试取出最佳项（"第一个"）的可执行动作
+    _best_act = _resolve_pending_clarify("第一个", _pending, context)
+    _proposal = None
+    _detail = None
+    if _best_act and _best_act.get("type") != "clarify":
+        _proposal = {
+            "intent_type": _best_act["intent_type"],
+            "partial_params": _best_act.get("params") or {},
+        }
+        _detail = (_best_act.get("params") or {}).get("target_type") or _best_act["intent_type"]
+    elif _reason == "vague_chart_type":
+        # "第一个" 仍解析成追问 which_chart 的 clarify：用 options[0] 图型 + 锚点 / 首图拼可执行 proposal
+        _best = _opts[0]
+        _target = _best.get("chart_type") or _best.get("label")
+        _anchor_kw = _pp.get("title_keyword")
+        _anchor_id = _pp.get("chart_id")
+        _charts = (context or {}).get("current_config", {}).get("charts", []) or []
+        if not _anchor_kw and not _anchor_id and _charts:
+            _anchor_kw = _charts[0].get("title")
+            _anchor_id = _charts[0].get("id")
+        if _anchor_kw or _anchor_id:
+            _proposal = {
+                "intent_type": "change_chart",
+                "partial_params": {
+                    "chart_id": _anchor_id,
+                    "title_keyword": _anchor_kw,
+                    "target_type": _target,
+                },
+            }
+            _detail = _target
+
+    if _proposal:
+        _msg = (
+            f"我已多次尝试确认，仍未能完全确定你的意图。当前看板最可能的方案是：{_detail or '推荐方案'}。"
+            f"请回复「确认」采用该方案，或「取消」放弃；你也可以直接说明要改哪张图 / 哪种图型 / 哪个字段。"
+        )
+        return _build_converged(_msg, _proposal)
+
+    # 无法构成可执行 proposal（其它 reason 或无锚点）：不引导"确认"
     _msg = (
-        f"我已多次尝试确认，仍未能完全确定你的意图。当前看板最可能的方案是：{_detail}。"
-        f"请回复「确认」采用该方案，或「取消」放弃；你也可以直接说明要改哪张图 / 哪种图型 / 哪个字段。"
+        f"我已多次尝试确认，仍未能完全确定你的意图（{_reason or '当前意图'}）。"
+        f"请直接告诉我要改哪张图 / 哪种图型 / 哪个字段（如图名或序号），或回复「取消」放弃。"
     )
-    return {
-        "type": "clarify",
-        "params": {
-            "reason": (pending or {}).get("reason"),
-            "message": _msg,
-            "options": _opts,
-            "pending": {"intent_type": (pending or {}).get("intent_type"),
-                        "partial_params": (pending or {}).get("partial_params") or {}},
-            "converged": True,
-        },
-        "clause": "",
-        "intent_type": "clarify",
-        "confidence": 0,
-    }
+    return _build_converged(_msg)
 
 
 def _plan_from_single(act: Dict[str, Any], message: str,
@@ -412,6 +468,8 @@ _CONFIRM_TOKENS = {
 _NEGATE_TOKENS = {
     "不好", "不行", "不要", "不用", "先不", "暂不需要", "暂时不用", "算了", "别",
     "不想要", "不需要", "不用了", "否", "不可以", "不干", "不要了", "暂不", "先不用",
+    # night21 ISS-060：收敛话术明确引导用户回「取消」放弃，故须被识别为否定词（cancel_pending）
+    "取消",
 }
 _PUNCT_STRIP = " ，。！？、~～.,!?;；:：'\"''（）()【】[]<>《》\t\n\r　"
 

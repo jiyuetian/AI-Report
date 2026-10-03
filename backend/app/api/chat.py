@@ -787,7 +787,7 @@ async def send_message_stream(
         })
         
         # 3. 意图分类 + 动作规划（2026-09-18：复合指令拆成有序动作列表）
-        from app.core.action_planner import plan_actions
+        from app.core.action_planner import plan_actions, MAX_CLARIFY_ROUNDS
         plan = plan_actions(request.message, context, override=bool(request.override))
         intent_result = plan["primary_intent"]
         
@@ -1302,8 +1302,24 @@ async def send_message_stream(
                     for _a in (plan.get("actions") or []):
                         if _a.get("type") == "clarify":
                             _cp = (_a.get("params") or {})
-                            # night19 任务B：收敛话术已给出（planner 判定达轮次上限）→ 不再持久化，结束循环
+                            # night21 ISS-060：收敛话术（planner 判定达轮次上限）。
+                            # 若带了可执行 proposal → 持久化"带 proposal 的 pending"（轮次封顶防死循环），
+                            # 使下一轮「确认」命中 proposal 承接路径采纳；若无 proposal（收敛文案已不引导
+                            # 确认）→ 维持 pop，结束循环。
                             if _cp.get("converged"):
+                                _prop = _a.get("proposal")
+                                if _prop:
+                                    _clarify_pending = {
+                                        "reason": _cp.get("reason"),
+                                        "clause": _a.get("clause"),
+                                        "intent_type": _a.get("intent_type"),
+                                        "partial_params": _cp.get("pending") or {},
+                                        "options": _cp.get("options") or [],
+                                        "proposal": _prop,
+                                        "clarify_round": MAX_CLARIFY_ROUNDS,
+                                        "created_at": datetime.utcnow().isoformat(),
+                                    }
+                                    break
                                 _converged = True
                                 break
                             _clarify_pending = {
