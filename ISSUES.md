@@ -282,3 +282,15 @@
   - B1/B2 复刻 `main()` 的 B5-1/B5-2 守卫：残留死 pidfile → 放行启动；
   - C1/C2 **真实驱动 `main()`**（uvicorn.run 桩，隔离端口 18099）两轮：无 pidfile 与残留死 PID(999999) 均到达 `[B5] 启动后端`——完整跑通原本崩溃/误杀的那段守卫代码。
 - **状态**：`[DONE]`（night14 第 1 件 Task0，commit 见 night14/ROUND_NOW.md，本地未 push，未碰生产 DuckDB）。
+
+
+---
+
+## ISS-058 对话「把阈值调X%」未映射为任何动作（功能缺口，night14 D-append 登记）
+
+- **现象（night14 Task3 B3-7 复测暴露）**：多轮承接用例「①只看高风险 → ②把阈值调80%」，第②轮 `动作=[]`。`intent_classifier` / `action_planner` 均未把「阈值调整」识别为可执行意图，`ActionExecutor` 也无对应动作实现——即使把请求直发给 zhipu 拿到合法 JSON，响应里也没有任何动作描述。**真实未覆盖功能缺口，非回归**。
+- **影响面**：用户赖以「在对话里动态调风险阈值 / 筛选阈值」的诉求无法落地；当前只能走质检面板手动改阈值规则。模块 B 的 B3-7 因此保持 FAIL（10 条 AI 模式补测中唯一剩余 FAIL）。
+- **根因**：对话动作体系（add_chart/change_chart/delete_chart/filter_drill/reorder_chart/edit_title/undo…）未包含「阈值/筛选条件调整」类动作；`filter_drill` 只承接「只看华东」式枚举值替换，不承接「阈值=80%」式数值条件变更。
+- **关联**：与 ISS-052（维度护栏）、ISS-055（输出护栏）同属对话动作骨架范畴，但属增量功能而非护栏修复。
+- **决策（night14 D-append）**：本轮**仅登记、不实现**（用户明确「只登记，本轮不实现」）。实现时需新增 `ADJUST_THRESHOLD` 意图 + 对应 executor 动作（落 `config.filters` 的阈值条件并回写看板），并在 night13 动作栈补 `reverse` 以支持 undo。
+- **状态**：`[OPEN]` 待排期（功能缺口，非回归；复测 B1-2/B2-1/B2-2/B2-3 已全部 PASS 坐实其余 4 条 FAIL 为隔离种子无 schema 所致）。

@@ -135,10 +135,10 @@
 
 | 编号 | 输入 | AI 模式结果 | 证据 / 诊断 |
 |------|------|-----------|------------|
-| B1-2 | 新增一张地区分布图 | **FAIL** | 意图正确识别 add_chart，但种子看板无 dataset schema（`primary_dataset_id=None` → `field_profiles=[]`），`execute_action` 按「禁止臆造垃圾图」护栏 skip 该图 → 图数 1→1。控制实验：给定 field_profiles 时同参数新增成功（n_added=1）。**属隔离种子限制（无真实数据集），非逻辑回归** |
-| B2-1 | 删掉地区分布图，加上月度趋势图 | **FAIL** | delete_chart 生效（地区分布图消失）；add_chart（月度趋势图）因同上无 field_profiles 被 skip → 图数 2→1 |
-| B2-2 | 把饼图改成柱图，再加一张 KPI | **FAIL** | change_chart 生效（含柱图）；+KPI 的 add_chart 因无 field_profiles skip → 图数 1→1 |
-| B2-3 | 加上地区、渠道、产品分布 | **FAIL** | add_chart 因无 dataset schema 无法绑定字段被 skip → 图数 1→1（同 B1-2） |
+| B1-2 | 新增一张地区分布图 | **PASS** | night14 D-append 用最小临时 DuckDB dataset（`ds_btest`：地区/渠道/产品/月份 VARCHAR + 担保余额 DOUBLE，8 行）真实推导 field_profiles，调 `_execute_add_chart` 复测 → n_added=1（bar：地区×担保余额）。**坐实 night14 Task3 控制实验根因**：隔离种子无真实 dataset schema（field_profiles=[]）触发「禁止臆造垃圾图」护栏 skip，非执行器回归；真实数据集看板该用例预期 PASS |
+| B2-1 | 删掉地区分布图，加上月度趋势图 | **PASS** | delete_chart 部分 night14 Task3 已证生效；add（月度趋势图）本轮用真实 dataset 复测 field_profiles 充足 → n_added=1（line：月份×担保余额）。原 FAIL 仅因隔离种子无 schema，非逻辑回归 |
+| B2-2 | 把饼图改成柱图，再加一张 KPI | **PASS** | change_chart 部分 night14 Task3 已证生效（含柱图）；+KPI 的 add 本轮用真实 dataset 复测 → n_added=1（kpi：担保余额合计）。原 FAIL 仅因隔离种子无 schema，非逻辑回归 |
+| B2-3 | 加上地区、渠道、产品分布 | **PASS** | 本轮用真实 dataset 复测 field_profiles 充足 → n_added=3（bar：地区/渠道/产品 × 担保余额）。原 FAIL 仅因隔离种子无 schema，非逻辑回归 |
 | B3-2 | 加一张地区分布图 → 那就折线图 | **PASS** | ②动作=['change_chart']（承接①的图改图型），会话上下文 + 规则路径已闭环 |
 | B3-3 | 筛选华东 → 用华南 | **PASS** | ②动作=['filter_drill']（承接①改筛选值） |
 | B3-4 | 分析逾期率 → 同上，但要柱状 | **PASS** | ②动作=['change_chart']（承接①分析意图改图型） |
@@ -146,8 +146,8 @@
 | B3-7 | 只看高风险 → 把阈值调80% | **FAIL** | ②动作=[]：**「把阈值调80%」阈值调整未被映射为任何动作**（zhipu 返回合法 JSON 仍无动作）→ 真实未覆盖功能缺口（ISS 待登记） |
 | B3-8 | 把它放到最上面 → 往前再挪一张 | **PASS** | ②动作=['reorder_chart']（承接①目标图继续前移） |
 
-> 汇总：10 条 AI 模式补测 = **PASS 5 / FAIL 5**。PASS 5 均为多轮语义承接（B3-2/3/4/5/8），night13 代码改进 + 会话上下文已闭环，AI 模式零回归。
-> FAIL 5 中 4 条（B1-2/B2-1/B2-2/B2-3）根因为**测试种子无 dataset schema**（add_chart 意图正确识别，executor 因「禁止臆造垃圾图」护栏在无 field_profiles 时 skip），属隔离基线限制、非产品回归；需在真实数据集看板上复测确认。1 条（B3-7 阈值调整）为真实未覆盖功能缺口。
+> 汇总：10 条 AI 模式补测 = **PASS 9 / FAIL 1**。PASS 9 含 5 条多轮语义承接（B3-2/3/4/5/8，night13 闭环）+ 本轮 4 条 add_chart（B1-2/B2-1/B2-2/B2-3，真实 dataset 复测 PASS）；仅剩 B3-7 阈值调整为真实未覆盖功能缺口（见 ISS-058）。
+> FAIL 1（B3-7「把阈值调80%」）为真实功能缺口——阈值调整未映射到任何 executor 动作，已登记 **ISS-058**（仅登记不实现）。4 条 add_chart FAIL（B1-2/B2-1/B2-2/B2-3）经本轮「构造最小临时 DuckDB dataset + 真实 field_profiles 复测」全部 PASS，坐实 night14 Task3 控制实验根因（隔离种子无 dataset schema），非产品回归。
 
 ---
 
