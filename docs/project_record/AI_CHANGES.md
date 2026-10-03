@@ -124,3 +124,11 @@
 
 
 > 第 3 件 Task A（LLM 链 7 层调整，D-020）：`.env` 被 gitignore 故配置本体不进 git，本行仅登记变更；用户须手动重启 8000 后端（pid=9632，禁 kill）方使新链生效。3b 灰度结论——glm-4.5-air 与 glm-4.6v 直调 success=True；glm-4.7-flash 直调两次均 429（code 1305 该模型访问量过大），属免费模型峰值拥堵的瞬时限流而非模型不存在/鉴权失败，网关 failover 会自动跳过它继续走 glm-4.6v→deepseek→agnes→flash-lite，故保留入链无害，按 3b 规则标记待用户确认是否保留；如用户决定移除则回退 `.env` 第 13/15 行即可。3c 真实业务调用核验需 8000 重启后从运行日志确认 provider/model 字段。
+
+## 十、night15-16 Task G 最高权限 CRUD（走规则引擎 fail-fast，本地未 push）
+
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| a01deb1 | feat(crud) | **Task G 最高权限 CRUD（走规则引擎 fail-fast）**：①`ActionType`+5(`CREATE_CONFIG`/`UPDATE_CONFIG`/`DELETE_CONFIG`/`BULK_UPDATE_DATA`/`MANAGE_PERMISSIONS`)，`executors` 字典+5、`execute` 分发；②`ActionExecutor` 5 个 `_execute_*` 纯 config 变换（config CRUD 改 `config_items` 并产 `reverse` 撤销描述符，由 chat.py 动作轮落 `dashboard.config`）；③新增 `CrudChainGuard`(`crud_chain.yaml`) 复用 Task C clean_chain 的 fail-fast + rule_id 回链思想——只做参数层前置校验（隔离性/超管/受保护键），不碰 DB；④`BULK_UPDATE_DATA` 仅隔离临时库（红线④，绝不碰 aibi.db）：执行器产隔离计划 + chat.py 调 `run_isolated_bulk_update` 在临时 SQLite/内存执行，双护栏拒绝生产路径；⑤`MANAGE_PERMISSIONS` 硬护栏（用户已确认）：非 `is_superuser` 直接拒绝、超管触发 `requires_confirm` + 全量 `ai_action_log` 留痕（chat.py 动作轮自动记每行）；⑥`intent_classifier`/`action_planner` 自然语言识别——CRUD 意图 `INTENT_PATTERNS` 置顶（防被 `ADD_CHART`/`DELETE_CHART` 的「新增/删除」宽匹配抢走）+ `_get_keywords`/`_extract_params` 抽 key/value/角色/用户；⑦`chat.py` 动作轮注入 `context["is_superuser"]` + 隔离批量执行接线。验证 `_verify_taskg.py`（隔离，不碰生产库）**18/18 PASS**：配置 CRUD 创建→修改→删除 + fail-fast(dup/missing/受保护键)；批量隔离执行 + 拒绝非隔离/生产路径；权限非超管拒/超管留痕；CRUD 意图识别 + 看板意图回归(add/delete_chart 未劫持)；planner 产出 `create_config`。 | D-020/TaskG |
+
+> 两条架构决策（用户本轮确认）：①`BULK_UPDATE_DATA` 选「仅隔离临时库」——执行器只校验隔离标记 + 产计划，真实写入由 `run_isolated_bulk_update` 在临时 SQLite/内存完成，生产 aibi.db 零风险；②`MANAGE_PERMISSIONS` 选「硬护栏+超管留痕」——非 `is_superuser` 直接拒绝(fail-fast)，超管触发 `requires_confirm`+全量 `ai_action_log`。两决策均与硬红线一致。`_verify_taskg.py` 为隔离验证脚本（未进仓，验证后删除），生产库零触碰。
