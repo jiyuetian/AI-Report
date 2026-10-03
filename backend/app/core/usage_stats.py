@@ -1,294 +1,300 @@
-"""AI 使用统计（J-8）— 内存态、零 DB（红线④）。
-
-设计约束：
-- 所有事件仅存于进程内存（deque 上限 20000），**绝不接触生产 DuckDB / 任何持久化库**。
-- user_id 一律脱敏：SHA-256(进程级盐 + uid) 截断，盐随机生成、不持久化（重启即变，满足隐私要求）。
-- 写入失败（理论上不会，纯内存）不应影响主业务；调用方自行 try/except 兜底。
-
-事件类型约定：
-- "ai_action"   ：AI 在对话动作轮执行 CRUD/计算等动作（chat.py 钩子写入）。data 含 action_type。
-- "model_call"  ：LLM 网关真实模型调用（llm_gateway 钩子写入）。data 含 model / prompt_tokens / completion_tokens。
 """
-from __future__ import annotations
+AI 使用统计（night17 Task J-8）
+零 DB、内存态、进程级统计（红线④）
 
-import hashlib
-import os
-import threading
+- UsageStats 单例 USAGE_STATS：进程内 deque 存事件（上限 20000）
+- user_id 一律 SHA-256(进程级随机盐) 脱敏、盐不持久化（隐私）
+- fail-safe 写入：异常只跳过不阻断主业务
+"""
+
 import time
-from collections import deque
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-
-from app.core.analytics import (
-    bucket_events,
-    compute_linear_slope,
-    compare_two_periods,
-)
-
-# 进程级盐：随机生成、不落盘。重启即变，保证历史不可跨进程关联（隐私设计）。
-_SALT = os.urandom(8).hex()
+import hashlib
+import random
+from typing import Dict, Any, List, Optional, Union
+from collections import defaultdict, deque
+from datetime import datetime, timedelta
 
 
 class UsageStats:
-    """进程内使用统计单例。线程安全（RLock）。"""
+    """AI 使用统计单例（内存态，零 DB）"""
 
-    def __init__(self, max_events: int = 20000):
-        self._lock = threading.RLock()
-        self._events: deque = deque(maxlen=max_events)
-
-    # ---- 隐私脱敏 -------------------------------------------------------
-    @staticmethod
-    def _anon(uid: Any) -> str:
-        if not uid:
-            return "anonymous"
+    def __init__(self):
+        # 进程级随机盐（不持久化，重启即变）
+        self._salt = str(random.random()).encode()
+        
+        # 事件队列（最多 20000 条，FIFO）
+        self._events: deque = deque(maxlen=20000)
+        
+        # 缓存统计结果（避免重复计算）
+        self._cache: Dict[str, Any] = {}
+        self._cache_ttl: Dict[str, float] = {}
+        
+    def _hash_user_id(self, user_id: Optional[str]) -> Optional[str]:
+        """user_id 脱敏：SHA-256(盐 + user_id)"""
+        if not user_id:
+            return None
+        data = f"{self._salt.decode()}{user_id}".encode()
+        return hashlib.sha256(data).hexdigest()
+    
+    def record_event(self, event_type: str, user_id: Optional[str] = None, 
+                    data: Optional[Dict[str, Any]] = None, 
+                    success: bool = True, latency_ms: Optional[float] = None):
+        """记录使用事件（fail-safe，异常只跳过不阻断）"""
         try:
-            s = str(uid)
-        except Exception:
-            s = "anonymous"
-        return "u_" + hashlib.sha256((_SALT + ":" + s).encode("utf-8")).hexdigest()[:12]
-
-    # ---- 写入 -----------------------------------------------------------
-    def record_event(
-        self,
-        event_type: str,
-        user_id: Any,
-        data: Optional[Dict[str, Any]] = None,
-        *,
-        success: Optional[bool] = None,
-        latency_ms: Optional[int] = None,
-    ) -> None:
-        """记录一条使用事件。
-
-        event_type: "ai_action" | "model_call" | 其他自定义。
-        user_id:     任意用户标识（会被脱敏存储）。
-        data:        附加字典（动作类型 / 模型名 / token 数等）。
-        success:     可选，是否成功。
-        latency_ms:  可选，耗时（毫秒）。
-        """
-        ev: Dict[str, Any] = {
-            "ts": time.time(),
-            "event_type": event_type,
-            "user": self._anon(user_id),
-        }
-        if data:
-            ev["data"] = data
-        if success is not None:
-            ev["success"] = bool(success)
-        if latency_ms is not None:
-            ev["latency_ms"] = int(latency_ms)
-        with self._lock:
-            self._events.append(ev)
-
-    # ---- 过滤 -----------------------------------------------------------
-    def _filter(self, time_range: str = "all", filters: Optional[Dict[str, Any]] = None):
-        now = time.time()
-        cutoff = now
-        if time_range == "1h":
-            cutoff = now - 3600
-        elif time_range == "24h":
-            cutoff = now - 86400
-        elif time_range == "7d":
-            cutoff = now - 7 * 86400
-        elif time_range == "30d":
-            cutoff = now - 30 * 86400
-        f = filters or {}
-        want_type = f.get("event_type")
-        want_model = f.get("model")
-        with self._lock:
-            evs = list(self._events)
-        out = []
-        for e in evs:
-            if time_range not in ("all",) and e["ts"] < cutoff:
-                continue
-            if want_type and e["event_type"] != want_type:
-                continue
-            if want_model and e.get("data", {}).get("model") != want_model:
-                continue
-            out.append(e)
-        return out
-
-    # ---- 概览 + 按模型 / 按动作 ---------------------------------------
-    def get_stats(self, time_range: str = "all", filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        events = self._filter(time_range, filters)
-        total = len(events)
-        succ = sum(1 for e in events if e.get("success") is True)
-        err = sum(1 for e in events if e.get("success") is False)
-        lat = [e["latency_ms"] for e in events if e.get("latency_ms") is not None]
-        ptok = sum(e.get("data", {}).get("prompt_tokens", 0) or 0 for e in events)
-        ctok = sum(e.get("data", {}).get("completion_tokens", 0) or 0 for e in events)
-
-        type_counts: Dict[str, int] = {}
-        for e in events:
-            type_counts[e["event_type"]] = type_counts.get(e["event_type"], 0) + 1
-
-        # 按模型聚合（仅 model_call 事件含 model）
-        by_model: Dict[str, Dict[str, Any]] = {}
-        for e in events:
-            if e["event_type"] != "model_call":
-                continue
-            m = e.get("data", {}).get("model", "unknown")
-            d = by_model.setdefault(m, {
-                "model": m, "calls": 0, "success": 0, "error": 0,
-                "prompt_tokens": 0, "completion_tokens": 0,
-                "total_tokens": 0, "lat_sum": 0, "lat_n": 0,
-            })
-            d["calls"] += 1
-            if e.get("success") is True:
-                d["success"] += 1
-            elif e.get("success") is False:
-                d["error"] += 1
-            d["prompt_tokens"] += e.get("data", {}).get("prompt_tokens", 0) or 0
-            d["completion_tokens"] += e.get("data", {}).get("completion_tokens", 0) or 0
-            d["total_tokens"] = d["prompt_tokens"] + d["completion_tokens"]
-            if e.get("latency_ms") is not None:
-                d["lat_sum"] += e["latency_ms"]
-                d["lat_n"] += 1
-
-        by_model_list = []
-        for m, d in by_model.items():
-            by_model_list.append({
-                "model": d["model"],
-                "calls": d["calls"],
-                "success": d["success"],
-                "error": d["error"],
-                "success_rate": round(d["success"] / d["calls"], 4) if d["calls"] else 0.0,
-                "prompt_tokens": d["prompt_tokens"],
-                "completion_tokens": d["completion_tokens"],
-                "total_tokens": d["total_tokens"],
-                "avg_latency_ms": round(d["lat_sum"] / d["lat_n"]) if d["lat_n"] else 0,
-            })
-        by_model_list.sort(key=lambda x: x["calls"], reverse=True)
-
-        # 按动作聚合（仅 ai_action 事件含 action_type）
-        by_action: Dict[str, Dict[str, Any]] = {}
-        for e in events:
-            if e["event_type"] != "ai_action":
-                continue
-            a = e.get("data", {}).get("action_type", "unknown")
-            d = by_action.setdefault(a, {
-                "action_type": a, "count": 0, "success": 0, "error": 0,
-                "lat_sum": 0, "lat_n": 0,
-            })
-            d["count"] += 1
-            if e.get("success") is True:
-                d["success"] += 1
-            elif e.get("success") is False:
-                d["error"] += 1
-            if e.get("latency_ms") is not None:
-                d["lat_sum"] += e["latency_ms"]
-                d["lat_n"] += 1
-        by_action_list = []
-        for a, d in by_action.items():
-            by_action_list.append({
-                "action_type": d["action_type"],
-                "count": d["count"],
-                "success": d["success"],
-                "error": d["error"],
-                "success_rate": round(d["success"] / d["count"], 4) if d["count"] else 0.0,
-                "avg_latency_ms": round(d["lat_sum"] / d["lat_n"]) if d["lat_n"] else 0,
-            })
-        by_action_list.sort(key=lambda x: x["count"], reverse=True)
-
-        # 时间趋势（按小时分桶，最近 24 桶；不足则按数据范围）
-        trends = bucket_events(events, unit="hour", buckets=24)
-
-        return {
-            "range": time_range,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "overview": {
-                "total_events": total,
-                "success": succ,
-                "error": err,
-                "success_rate": round(succ / total, 4) if total else 0.0,
-                "event_types": type_counts,
-                "total_prompt_tokens": ptok,
-                "total_completion_tokens": ctok,
-                "total_tokens": ptok + ctok,
-                "avg_latency_ms": round(sum(lat) / len(lat)) if lat else 0,
-            },
-            "by_model": by_model_list,
-            "by_action": by_action_list,
-            "trends": trends,
-        }
-
-    # ---- 使用模式分析 ---------------------------------------------------
-    def analyze_patterns(self) -> Dict[str, Any]:
-        events = self._filter("all")
-        # 最常用动作
-        act_counter: Dict[str, int] = {}
-        for e in events:
-            if e["event_type"] == "ai_action":
-                a = e.get("data", {}).get("action_type", "unknown")
-                act_counter[a] = act_counter.get(a, 0) + 1
-        top_actions = sorted(act_counter.items(), key=lambda kv: kv[1], reverse=True)[:10]
-
-        # 高峰时段（按 UTC 小时）
-        hour_counter = [0] * 24
-        for e in events:
-            hour_counter[datetime.fromtimestamp(e["ts"], tz=timezone.utc).hour] += 1
-        peak_hour = int(max(range(24), key=lambda h: hour_counter[h])) if any(hour_counter) else -1
-
-        # 模型偏好占比 + 各模型错误率
-        model_calls: Dict[str, int] = {}
-        model_err: Dict[str, int] = {}
-        for e in events:
-            if e["event_type"] != "model_call":
-                continue
-            m = e.get("data", {}).get("model", "unknown")
-            model_calls[m] = model_calls.get(m, 0) + 1
-            if e.get("success") is False:
-                model_err[m] = model_err.get(m, 0) + 1
-        total_calls = sum(model_calls.values()) or 1
-        model_preference = {m: round(c / total_calls, 4) for m, c in model_calls.items()}
-        error_rate_by_model = {
-            m: round(model_err.get(m, 0) / c, 4) for m, c in model_calls.items()
-        }
-
-        # 最慢模型（平均延迟）
-        lat_sum: Dict[str, int] = {}
-        lat_n: Dict[str, int] = {}
-        for e in events:
-            if e["event_type"] == "model_call" and e.get("latency_ms") is not None:
-                m = e.get("data", {}).get("model", "unknown")
-                lat_sum[m] = lat_sum.get(m, 0) + e["latency_ms"]
-                lat_n[m] = lat_n.get(m, 0) + 1
-        slowest = sorted(
-            ((m, round(lat_sum[m] / lat_n[m])) for m in lat_sum),
-            key=lambda kv: kv[1], reverse=True
-        )[:5]
-
-        return {
-            "top_actions": [{"action_type": a, "count": c} for a, c in top_actions],
-            "peak_hour_utc": peak_hour,
-            "model_preference": model_preference,
-            "error_rate_by_model": error_rate_by_model,
-            "slowest_models": [{"model": m, "avg_latency_ms": v} for m, v in slowest],
-            "compare_7d": compare_two_periods(events, days=7),
-        }
-
-    # ---- 最近事件（审计/调试视图） -------------------------------------
-    def recent_events(self, limit: int = 50, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        with self._lock:
-            evs = list(self._events)
-        if event_type:
-            evs = [e for e in evs if e["event_type"] == event_type]
-        evs = evs[-limit:]
-        out = []
-        for e in evs:
-            item = {
-                "ts": datetime.fromtimestamp(e["ts"], tz=timezone.utc).isoformat(),
-                "event_type": e["event_type"],
-                "user": e.get("user"),
+            event = {
+                "event_type": event_type,
+                "user_id": self._hash_user_id(user_id),
+                "timestamp": time.time(),
+                "data": data or {},
+                "success": success,
+                "latency_ms": latency_ms,
             }
-            if "success" in e:
-                item["success"] = e["success"]
-            if "latency_ms" in e:
-                item["latency_ms"] = e["latency_ms"]
-            if "data" in e:
-                item["data"] = e["data"]
-            out.append(item)
-        return out
+            self._events.append(event)
+            
+            # 清除相关缓存
+            self._cache.clear()
+            self._cache_ttl.clear()
+            
+        except Exception:
+            # 静默失败，不阻断主业务
+            pass
+    
+    def get_stats(self, time_range: Optional[str] = "1h", 
+                 filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """获取统计概览"""
+        cache_key = f"stats_{time_range}_{hash(str(filters))}"
+        
+        # 缓存检查（TTL 30 秒）
+        if cache_key in self._cache and time.time() - self._cache_ttl[cache_key] < 30:
+            return self._cache[cache_key]
+        
+        # 计算时间范围
+        end_time = time.time()
+        if time_range == "1h":
+            start_time = end_time - 3600
+        elif time_range == "24h":
+            start_time = end_time - 86400
+        elif time_range == "7d":
+            start_time = end_time - 7 * 86400
+        else:  # 默认 1h
+            start_time = end_time - 3600
+        
+        # 过滤事件
+        filtered_events = []
+        for event in self._events:
+            if event["timestamp"] >= start_time:
+                if filters:
+                    match = True
+                    for key, value in filters.items():
+                        if key in event and event[key] != value:
+                            match = False
+                            break
+                    if match:
+                        filtered_events.append(event)
+                else:
+                    filtered_events.append(event)
+        
+        # 基础统计
+        total_events = len(filtered_events)
+        success_events = sum(1 for e in filtered_events if e["success"])
+        success_rate = success_events / total_events if total_events > 0 else 0
+        
+        # 总 token 消耗
+        total_tokens = 0
+        for event in filtered_events:
+            if event["data"].get("prompt_tokens"):
+                total_tokens += event["data"]["prompt_tokens"]
+            if event["data"].get("completion_tokens"):
+                total_tokens += event["data"]["completion_tokens"]
+        
+        # 平均延迟
+        valid_latencies = [e["latency_ms"] for e in filtered_events 
+                          if e["latency_ms"] is not None]
+        avg_latency = sum(valid_latencies) / len(valid_latencies) if valid_latencies else 0
+        
+        # 按模型统计
+        model_stats = defaultdict(lambda: {"count": 0, "success": 0, "tokens": 0, "latency": []})
+        for event in filtered_events:
+            model_name = event["data"].get("model", "unknown")
+            model_stats[model_name]["count"] += 1
+            if event["success"]:
+                model_stats[model_name]["success"] += 1
+            if event["data"].get("prompt_tokens"):
+                model_stats[model_name]["tokens"] += event["data"]["prompt_tokens"]
+            if event["data"].get("completion_tokens"):
+                model_stats[model_name]["tokens"] += event["data"]["completion_tokens"]
+            if event["latency_ms"] is not None:
+                model_stats[model_name]["latency"].append(event["latency_ms"])
+        
+        # 计算模型详细统计
+        detailed_model_stats = {}
+        for model, stats in model_stats.items():
+            detailed_model_stats[model] = {
+                "count": stats["count"],
+                "success_rate": stats["success"] / stats["count"] if stats["count"] > 0 else 0,
+                "total_tokens": stats["tokens"],
+                "avg_latency_ms": sum(stats["latency"]) / len(stats["latency"]) if stats["latency"] else 0,
+            }
+        
+        # 按动作统计
+        action_stats = defaultdict(lambda: {"count": 0, "success": 0})
+        for event in filtered_events:
+            action_type = event["event_type"]
+            action_stats[action_type]["count"] += 1
+            if event["success"]:
+                action_stats[action_type]["success"] += 1
+        
+        detailed_action_stats = {}
+        for action, stats in action_stats.items():
+            detailed_action_stats[action] = {
+                "count": stats["count"],
+                "success_rate": stats["success"] / stats["count"] if stats["count"] > 0 else 0,
+            }
+        
+        result = {
+            "overview": {
+                "total_events": total_events,
+                "success_events": success_events,
+                "success_rate": round(success_rate, 4),
+                "total_tokens": total_tokens,
+                "avg_latency_ms": round(avg_latency, 2),
+            },
+            "by_model": detailed_model_stats,
+            "by_action": detailed_action_stats,
+            "time_range": time_range,
+            "filtered_count": len(filtered_events),
+        }
+        
+        # 缓存结果
+        self._cache[cache_key] = result
+        self._cache_ttl[cache_key] = time.time()
+        
+        return result
+    
+    def analyze_patterns(self) -> Dict[str, Any]:
+        """分析使用模式"""
+        cache_key = "patterns"
+        
+        # 缓存检查（TTL 60 秒）
+        if cache_key in self._cache and time.time() - self._cache_ttl[cache_key] < 60:
+            return self._cache[cache_key]
+        
+        # 最近 7 天数据
+        end_time = time.time()
+        start_time = end_time - 7 * 86400
+        
+        recent_events = [e for e in self._events if e["timestamp"] >= start_time]
+        
+        # 最常用动作 Top 5
+        action_counts = defaultdict(int)
+        for event in recent_events:
+            action_counts[event["event_type"]] += 1
+        
+        top_actions = sorted(action_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        # 高峰时段分析（按小时）
+        hourly_usage = defaultdict(int)
+        for event in recent_events:
+            hour = datetime.fromtimestamp(event["timestamp"]).hour
+            hourly_usage[hour] += 1
+        
+        peak_hour = max(hourly_usage.items(), key=lambda x: x[1])[0]
+        
+        # 模型偏好
+        model_preference = defaultdict(lambda: {"count": 0, "success": 0})
+        for event in recent_events:
+            model = event["data"].get("model", "unknown")
+            model_preference[model]["count"] += 1
+            if event["success"]:
+                model_preference[model]["success"] += 1
+        
+        model_stats = {}
+        for model, stats in model_preference.items():
+            model_stats[model] = {
+                "usage_count": stats["count"],
+                "success_rate": stats["success"] / stats["count"] if stats["count"] > 0 else 0,
+            }
+        
+        # 各模型错误率
+        error_rates = {}
+        for model, stats in model_stats.items():
+            error_rates[model] = round(1 - stats["success_rate"], 4)
+        
+        # 最慢模型（按平均延迟）
+        model_latencies = defaultdict(list)
+        for event in recent_events:
+            model = event["data"].get("model", "unknown")
+            if event["latency_ms"] is not None:
+                model_latencies[model].append(event["latency_ms"])
+        
+        slowest_model = None
+        max_avg_latency = 0
+        for model, latencies in model_latencies.items():
+            avg_latency = sum(latencies) / len(latencies)
+            if avg_latency > max_avg_latency:
+                max_avg_latency = avg_latency
+                slowest_model = model
+        
+        # 7 日前后对比（最近 1 天 vs 前 6 天）
+        recent_1d = [e for e in recent_events if e["timestamp"] >= end_time - 86400]
+        previous_6d = [e for e in recent_events if end_time - 7 * 86400 <= e["timestamp"] < end_time - 86400]
+        
+        def compute_period_stats(events):
+            if not events:
+                return {"total": 0, "success": 0, "tokens": 0}
+            return {
+                "total": len(events),
+                "success": sum(1 for e in events if e["success"]),
+                "tokens": sum(e["data"].get("prompt_tokens", 0) + e["data"].get("completion_tokens", 0) 
+                           for e in events),
+            }
+        
+        recent_stats = compute_period_stats(recent_1d)
+        previous_stats = compute_period_stats(previous_6d)
+        
+        # 增长率计算
+        def compute_growth(current, previous):
+            if previous == 0:
+                return 100 if current > 0 else 0
+            return round((current - previous) / previous * 100, 2)
+        
+        growth = {
+            "events": compute_growth(recent_stats["total"], previous_stats["total"]),
+            "success_rate": compute_growth(recent_stats["success"], previous_stats["success"]) if previous_stats["success"] > 0 else 0,
+            "tokens": compute_growth(recent_stats["tokens"], previous_stats["tokens"]) if previous_stats["tokens"] > 0 else 0,
+        }
+        
+        result = {
+            "top_actions": [{"action": action, "count": count} for action, count in top_actions],
+            "peak_hour": peak_hour,
+            "model_preference": model_stats,
+            "error_rates": error_rates,
+            "slowest_model": slowest_model,
+            "slowest_model_avg_latency": round(max_avg_latency, 2) if slowest_model else 0,
+            "7_day_comparison": {
+                "recent_1d": recent_stats,
+                "previous_6d": previous_stats,
+                "growth": growth,
+            },
+        }
+        
+        # 缓存结果
+        self._cache[cache_key] = result
+        self._cache_ttl[cache_key] = time.time()
+        
+        return result
+    
+    def recent_events(self, limit: int = 50, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """获取最近事件"""
+        events = list(self._events)
+        if event_type:
+            events = [e for e in events if e["event_type"] == event_type]
+        
+        # 按时间倒序
+        events.sort(key=lambda x: x["timestamp"], reverse=True)
+        
+        return events[:limit]
 
 
-# 全局单例（被 chat.py / llm_gateway 钩子共享）
+# 全局单例
 USAGE_STATS = UsageStats()

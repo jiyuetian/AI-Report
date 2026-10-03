@@ -177,6 +177,16 @@
 | C-16 | AI 修改某层规则后 | 下游层自动重算或明确提示重算（链路一致性） | 下游结果与修改后上游一致 | P0 |
 | C-17 | 查 AI 修改记录 | 改者=AI、改动内容、依据、时间可查 | 日志/血缘可查 | P0 |
 
+### 模块 C 下游重算一致性状态（night15-16 Task I）
+
+> night15-16 Task I 实现下游重算一致性（C-16）：①新建 4 模块（零 DB、内存态）：`dependency_graph.py`——指标依赖图，复用 lineage_service 下游 BFS 语义；`recalc_validator.py`——一致性校验；`recalc_engine.py`——重算引擎；`recalc_queue.py`——API 薄封装。②AI 集成：新增 `RECALC_METRIC` 意图 + 动作 + 事件钩子（CRUD 成功自动触发下游重算）。③前端：`RecalcPage.tsx` 状态面板/历史/依赖图 3 Tab。验证 `_verify_taski.py` **32/32 PASS**：依赖图解析/校验器/引擎/AI 集成/事件驱动契约。前端 `tsc --noEmit` **退出码 0**。commit `5f6c6a5`。
+
+---
+
+### 模块 C AI 修改记录状态（night15-16 Task G）
+
+> night15-16 Task G 实现最高权限 CRUD：①5 个 CRUD 动作 + 规则引擎 fail-fast；②`MANAGE_PERMISSIONS` 硬护栏（非超管拒/超管留痕）；③`BULK_UPDATE_DATA` 仅隔离临时库。验证 `_verify_taskg.py` **18/18 PASS**。commit `a01deb1`/`65be6f2`。
+
 ---
 
 ## 模块 D：用户视图（8 条）
