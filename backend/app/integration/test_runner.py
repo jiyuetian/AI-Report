@@ -20,7 +20,15 @@ class IntegrationTestRunner:
         for c in CASES:
             t0 = time.time()
             try:
-                ok, detail = c["run"]()  # type: ignore[operator]
+                raw = c["run"]()  # type: ignore[operator]
+                # 兼容两种契约：IntegrationTestCase.run() 只返回 bool；
+                # 若用例自行返回 (bool, str) 元组则直接用。
+                if isinstance(raw, tuple) and len(raw) == 2:
+                    ok, detail = raw
+                elif isinstance(raw, bool):
+                    ok, detail = raw, ""
+                else:
+                    ok, detail = False, f"unexpected return: {type(raw).__name__}"
             except Exception as e:  # 异常即失败（诚实，不伪造 PASS）
                 ok, detail = False, f"{type(e).__name__}: {e}"
             results.append({
