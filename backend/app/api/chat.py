@@ -1088,6 +1088,11 @@ async def send_message_stream(
                                 one["error"] = "看板不存在，未执行"
                             else:
                                 current_config = dashboard.config or {}
+                                # night15-16 Task G：注入超管身份，供 MANAGE_PERMISSIONS 硬护栏判定
+                                if not isinstance(context, dict):
+                                    context = {}
+                                context = dict(context)
+                                context["is_superuser"] = current_user.get("is_superuser", False)
                                 # 锁内基于最新config兜底：新增图表不超上限(与feasibility保持一致的50)
                                 if act.get("type") == "add_chart" and len(current_config.get("charts", [])) >= 50:
                                     one["error"] = "看板已有50个图表，已达上限，无法继续新增"
@@ -1115,6 +1120,17 @@ async def send_message_stream(
                                     one["requires_confirm"] = r.get("requires_confirm")
                                     one["requires_clarify"] = r.get("requires_clarify")
                                     one["changes"] = r.get("changes")
+                                    # night15-16 Task G：BULK_UPDATE_DATA 隔离执行（红线④，绝不碰 aibi.db）
+                                    if r.get("isolated_bulk_plan"):
+                                        try:
+                                            from app.core.isolated_bulk_update import run_isolated_bulk_update
+                                            _bk = run_isolated_bulk_update(r["isolated_bulk_plan"])
+                                            if _bk.get("ok"):
+                                                one["message"] = (one.get("message") or "") + f"\n{_bk.get('message')}"
+                                            else:
+                                                one["message"] = (one.get("message") or "") + f"\n批量更新隔离执行失败：{_bk.get('error')}"
+                                        except Exception as _be:
+                                            one["message"] = (one.get("message") or "") + f"\n批量更新隔离执行异常：{str(_be)[:160]}"
                                     if one["success"]:
                                         last_new_config = r.get("new_config") or current_config
                                         dashboard.config = last_new_config

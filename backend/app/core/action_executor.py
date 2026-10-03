@@ -9,6 +9,9 @@ from datetime import datetime
 import json
 import uuid
 import re
+import copy
+import os
+import yaml
 
 
 class ActionType(str, Enum):
@@ -25,6 +28,12 @@ class ActionType(str, Enum):
     CLARIFY = "clarify"                # 歧义/不可执行：向用户澄清，绝不猜测执行
     CHART_FIX = "chart_fix"            # 图表问题诊断+修复（空图/无数据，AI对话用）
     UNDO = "undo"                      # night13 Item1：撤销最近一次 AI 操作（会话层 AI 动作栈回退）
+    # ---- night15-16 Task G：最高权限 CRUD（走规则引擎 fail-fast）----
+    CREATE_CONFIG = "create_config"            # 新建配置项（L1 配置层）
+    UPDATE_CONFIG = "update_config"            # 修改配置项
+    DELETE_CONFIG = "delete_config"            # 删除配置项
+    BULK_UPDATE_DATA = "bulk_update_data"      # 批量数据更新（仅隔离临时库，红线④，绝不碰 aibi.db）
+    MANAGE_PERMISSIONS = "manage_permissions"  # 权限变更（硬护栏：仅超管，全量 ai_action_log 留痕）
 
 
 class ChartType(str, Enum):
@@ -102,6 +111,12 @@ class ActionExecutor:
             ActionType.QUALITY_FIX: ActionExecutor._execute_quality_fix,
             ActionType.CHART_FIX: ActionExecutor._execute_chart_fix,
             ActionType.UNDO: ActionExecutor._execute_undo,
+            # ---- night15-16 Task G：最高权限 CRUD ----
+            ActionType.CREATE_CONFIG: ActionExecutor._execute_create_config,
+            ActionType.UPDATE_CONFIG: ActionExecutor._execute_update_config,
+            ActionType.DELETE_CONFIG: ActionExecutor._execute_delete_config,
+            ActionType.BULK_UPDATE_DATA: ActionExecutor._execute_bulk_update_data,
+            ActionType.MANAGE_PERMISSIONS: ActionExecutor._execute_manage_permissions,
         }
         
         executor = executors.get(action_type)
@@ -1891,6 +1906,178 @@ class ActionExecutor:
             "new_config": current_config,
         }
 
+    # =========================================================================
+    # night15-16 Task G：最高权限 CRUD 执行器（L1-L4 配置/数据/规则/权限）
+    # 设计约束（与既有 12 个动作一致）：纯 config 级内存变换，不直接碰 DB；
+    # DB 落库由 chat.py 动作轮负责（config CRUD → dashboard.config 提交；
+    # 权限/批量 → 由执行器产出描述符/计划，由 chat.py 走隔离路径或留痕）。
+    # 所有前置校验走 CrudChainGuard（fail-fast + rule_id 回链，复用 Task C 思想）。
+    # =========================================================================
+
+    @staticmethod
+    def _execute_create_config(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """新建配置项（L1 配置层 CRUD）。fail-fast：key 已存在则拒绝（语义清晰，避免误覆盖）。"""
+        g = CrudChainGuard.validate("create_config", params, context or {})
+        if not g["ok"]:
+            return {"success": False, "action_type": "create_config", "error": g["error"], "rule_id": g["rule_id"]}
+        key = params.get("key")
+        if not key:
+            return {"success": False, "action_type": "create_config", "error": "缺少配置项 key"}
+        new_config = copy.deepcopy(current_config)
+        items = new_config.setdefault("config_items", {})
+        if key in items:
+            return {"success": False, "action_type": "create_config",
+                    "error": f"配置项「{key}」已存在，请改用修改", "rule_id": "dup_key"}
+        items[key] = params.get("value")
+        return {
+            "success": True,
+            "action_type": "create_config",
+            "changes": [{"op": "create", "key": key}],
+            "new_config": new_config,
+            "render_updates": [],
+            "message": f"已新建配置项「{key}」",
+            "reverse": {"type": "delete_config", "params": {"key": key}},
+        }
+
+    @staticmethod
+    def _execute_update_config(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """修改配置项。fail-fast：key 不存在则拒绝。"""
+        g = CrudChainGuard.validate("update_config", params, context or {})
+        if not g["ok"]:
+            return {"success": False, "action_type": "update_config", "error": g["error"], "rule_id": g["rule_id"]}
+        key = params.get("key")
+        if not key:
+            return {"success": False, "action_type": "update_config", "error": "缺少配置项 key"}
+        items = (current_config or {}).get("config_items", {}) or {}
+        if key not in items:
+            return {"success": False, "action_type": "update_config",
+                    "error": f"配置项「{key}」不存在，无法修改", "rule_id": "missing_key"}
+        new_config = copy.deepcopy(current_config)
+        new_config.setdefault("config_items", {})[key] = params.get("value")
+        return {
+            "success": True,
+            "action_type": "update_config",
+            "changes": [{"op": "update", "key": key, "old": items.get(key)}],
+            "new_config": new_config,
+            "render_updates": [],
+            "message": f"已修改配置项「{key}」",
+            "reverse": {"type": "update_config", "params": {"key": key, "value": items.get(key)}},
+        }
+
+    @staticmethod
+    def _execute_delete_config(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """删除配置项。fail-fast：key 不存在 / 受保护键则拒绝。"""
+        g = CrudChainGuard.validate("delete_config", params, context or {})
+        if not g["ok"]:
+            return {"success": False, "action_type": "delete_config", "error": g["error"], "rule_id": g["rule_id"]}
+        key = params.get("key")
+        if not key:
+            return {"success": False, "action_type": "delete_config", "error": "缺少配置项 key"}
+        items = (current_config or {}).get("config_items", {}) or {}
+        if key not in items:
+            return {"success": False, "action_type": "delete_config",
+                    "error": f"配置项「{key}」不存在，无法删除", "rule_id": "missing_key"}
+        old = items.get(key)
+        new_config = copy.deepcopy(current_config)
+        new_config.get("config_items", {}).pop(key, None)
+        return {
+            "success": True,
+            "action_type": "delete_config",
+            "changes": [{"op": "delete", "key": key}],
+            "new_config": new_config,
+            "render_updates": [],
+            "message": f"已删除配置项「{key}」",
+            "reverse": {"type": "create_config", "params": {"key": key, "value": old}},
+        }
+
+    @staticmethod
+    def _execute_bulk_update_data(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """批量数据更新：仅隔离临时库（红线④）。
+
+        执行器只做前置校验（CrudChainGuard.require_isolated_dataset）+ 产出隔离执行计划，
+        真实写入由 chat.py 调 run_isolated_bulk_update 在临时 SQLite 上完成，绝不碰 aibi.db 生产库。
+        """
+        g = CrudChainGuard.validate("bulk_update_data", params, context or {})
+        if not g["ok"]:
+            return {"success": False, "action_type": "bulk_update_data", "error": g["error"], "rule_id": g["rule_id"]}
+        target = params.get("target_dataset") or params.get("isolated_path")
+        mapping = params.get("field_mapping") or {}
+        if not target or not mapping:
+            return {"success": False, "action_type": "bulk_update_data",
+                    "error": "批量更新需指定隔离数据集(target_dataset/isolated_path)与字段映射(field_mapping)",
+                    "rule_id": "missing_params"}
+        plan = {
+            "target_dataset": target,
+            "isolated_path": params.get("isolated_path"),
+            "field_mapping": mapping,
+            "validation": params.get("validation") or {},
+            "filters": params.get("filters") or {},
+        }
+        return {
+            "success": True,
+            "action_type": "bulk_update_data",
+            "requires_isolated_env": True,
+            "isolated_bulk_plan": plan,
+            "changes": [{"op": "bulk_plan", "target": target, "fields": list(mapping.keys())}],
+            "new_config": current_config,
+            "render_updates": [],
+            "message": f"已生成隔离批量更新计划（目标：{target}，字段：{len(mapping)} 个），将在隔离临时库执行。",
+        }
+
+    @staticmethod
+    def _execute_manage_permissions(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """权限变更：硬护栏（仅超管）+ 全量 ai_action_log 留痕（chat.py 动作轮自动记录）。
+
+        执行器只做超管校验（CrudChainGuard.require_superuser）+ 产出变更描述符，
+        绝不自动落库；需超管在后台二次确认生效（requires_confirm 提示 UI）。
+        """
+        g = CrudChainGuard.validate("manage_permissions", params, context or {})
+        if not g["ok"]:
+            return {"success": False, "action_type": "manage_permissions", "error": g["error"], "rule_id": g["rule_id"]}
+        target_user = params.get("target_user_id") or params.get("target_user")
+        role = params.get("role")
+        op = params.get("operation") or "grant"
+        if not target_user or not role:
+            return {"success": False, "action_type": "manage_permissions",
+                    "error": "权限变更需指定目标用户(target_user_id)与角色(role)", "rule_id": "missing_params"}
+        descriptor = {
+            "target_user_id": target_user,
+            "role": role,
+            "operation": op,
+            "by_superuser": context.get("is_superuser"),
+            "requires_backend_confirm": True,
+        }
+        return {
+            "success": True,
+            "action_type": "manage_permissions",
+            "requires_confirm": True,
+            "permission_change": descriptor,
+            "changes": [{"op": "permission_plan", "target": target_user, "role": role, "operation": op}],
+            "new_config": current_config,
+            "render_updates": [],
+            "message": f"已记录权限变更（{op} {role} → {target_user}）并留痕，待超管后台二次确认生效。",
+        }
+
     @staticmethod
     def _get_chart_type_name(chart_type: str) -> str:
         """获取图表类型中文名"""
@@ -1903,6 +2090,62 @@ class ActionExecutor:
             "kpi": "KPI卡片"
         }
         return names.get(chart_type, chart_type)
+
+
+# =========================================================================
+# night15-16 Task G：CRUD 前置规则引擎（复用 Task C clean_chain 的 fail-fast + rule_id 回链思想）
+# 与 clean_chain 不同：这里不碰 DB，只做参数层前置校验（隔离性 / 超管 / 受保护键），
+# 规则来自 crud_chain.yaml，fail-fast + rule_id 回链，便于定位「哪条规则拦了」。
+# =========================================================================
+
+class CrudChainGuard:
+    """CRUD 动作前置校验器。"""
+
+    _RULES: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def _load_rules(cls) -> Dict[str, Any]:
+        if cls._RULES is None:
+            _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crud_chain.yaml")
+            try:
+                with open(_path, "r", encoding="utf-8") as f:
+                    cls._RULES = yaml.safe_load(f) or {}
+            except Exception:
+                cls._RULES = {}
+        return cls._RULES
+
+    @classmethod
+    def validate(
+        cls, action_type: str, params: Dict[str, Any], context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """对 CRUD 动作做 fail-fast 前置校验。返回 {ok, rule_id, error}。"""
+        spec = cls._load_rules()
+        rules = spec.get("crud_rules", []) or []
+        for rule in rules:
+            rid = rule.get("rule_id")
+            applies = rule.get("applies_to") or []
+            if applies and action_type not in applies:
+                continue
+            strategy = rule.get("strategy")
+            # 隔离性校验（BULK_UPDATE_DATA 红线④）
+            if strategy == "require_isolated_dataset":
+                iso = (params.get("isolated") is True) or bool(params.get("isolated_path"))
+                if not iso:
+                    return {"ok": False, "rule_id": rid,
+                            "error": rule.get("error", "必须在隔离临时数据集上执行")}
+            # 超管校验（MANAGE_PERMISSIONS 硬护栏）
+            if strategy == "require_superuser":
+                if not context.get("is_superuser"):
+                    return {"ok": False, "rule_id": rid,
+                            "error": rule.get("error", "该操作仅超管可执行")}
+            # 受保护键校验（DELETE_CONFIG）
+            if strategy == "protected_config_key":
+                key = params.get("key")
+                protected = (rule.get("params") or {}).get("protected_keys", []) or []
+                if key in protected:
+                    return {"ok": False, "rule_id": rid,
+                            "error": rule.get("error", f"配置项 {key} 受保护，禁止删除")}
+        return {"ok": True, "rule_id": None, "error": None}
 
 
 # 便捷函数

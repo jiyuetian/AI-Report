@@ -509,6 +509,12 @@ def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confiden
         IntentType.CHART_FIX.value: "chart_fix",
         IntentType.QUALITY_FIX.value: "quality_fix",
         IntentType.UNDO.value: "undo",        # night13 Item1：撤销最近一次 AI 操作
+        # ---- night15-16 Task G：最高权限 CRUD ----
+        IntentType.CREATE_CONFIG.value: "create_config",
+        IntentType.UPDATE_CONFIG.value: "update_config",
+        IntentType.DELETE_CONFIG.value: "delete_config",
+        IntentType.BULK_UPDATE_DATA.value: "bulk_update_data",
+        IntentType.MANAGE_PERMISSIONS.value: "manage_permissions",
     }
     act = mapping.get(intent_type)
     if not act:

@@ -60,6 +60,12 @@ class IntentType(str, Enum):
     CHART_FIX = "chart_fix"            # 图表问题诊断/修复（空图、没数据）
     SEMANTIC_ACTION = "semantic_action"  # P0-2：规则未命中的看板操作语义，交由 LLM 主导规划动作
     UNDO = "undo"                      # night13 Item1：撤销最近一次 AI 操作（会话级 AI 动作栈回退）
+    # ---- night15-16 Task G：最高权限 CRUD 意图 ----
+    CREATE_CONFIG = "create_config"            # 新建配置/规则
+    UPDATE_CONFIG = "update_config"            # 修改配置/规则
+    DELETE_CONFIG = "delete_config"            # 删除配置/规则
+    BULK_UPDATE_DATA = "bulk_update_data"      # 批量数据更新
+    MANAGE_PERMISSIONS = "manage_permissions"  # 权限变更
     UNKNOWN = "unknown"
 
 
@@ -113,6 +119,32 @@ class IntentClassifier:
     
     # 意图关键词映射
     INTENT_PATTERNS = {
+        # ---- night15-16 Task G：CRUD 意图（必须排最前，否则被 ADD_CHART/DELETE_CHART 的"新增/删除"宽匹配抢走）----
+        IntentType.CREATE_CONFIG: [
+            r"(创建|新建|新增|添加).{0,6}(配置|风控规则|规则)",
+            r"(配置|规则).{0,4}(新建|创建|新增|添加)",
+        ],
+        IntentType.UPDATE_CONFIG: [
+            r"(修改|更新|调整).{0,6}(配置|风控规则|规则)",
+            r"配置.{0,4}(改为|更新为|改成|更新)",
+        ],
+        IntentType.DELETE_CONFIG: [
+            r"(删除|移除|删掉|删了).{0,6}(配置|风控规则|规则)",
+            r"删(除)?(这个)?配置",
+        ],
+        IntentType.BULK_UPDATE_DATA: [
+            r"批量(更新|修改|写入|导入|处理|刷)",
+            r"更新.{0,8}客户数据",
+            r"(批量|成批).{0,6}(数据|记录)",
+        ],
+        IntentType.MANAGE_PERMISSIONS: [
+            r"(权限|角色).{0,6}(变更|调整|设置|授权|修改|分配)",
+            r"授权(给|于)?",
+            r"赋权",
+            r"设为(超级)?管理员",
+            r"(修改|调整).{0,4}(权限|角色)",
+            r"(设为|赋予|给).{0,10}(权限|角色|管理员|超管)",
+        ],
         # 2026-09-18 新增：必须排在 ADD_CHART 之前，否则「补充一段结论」里的"加"
         # 会被 ADD_CHART 的"(新增|添加|加|插入)"抢走，导致补结论动作被丢弃。
         IntentType.ADD_CONCLUSION: [
@@ -419,6 +451,12 @@ class IntentClassifier:
             IntentType.ADD_CONCLUSION: ["结论", "总结", "小结", "洞察", "追加", "补充"],
             IntentType.QUALITY_FIX: ["质检", "修复", "去重", "重复", "清洗", "空值", "缺失"],
             IntentType.CHART_FIX: ["图是空的", "图表空", "图没数据", "空图", "修图", "图有问题"],
+            # ---- night15-16 Task G：CRUD 关键词 ----
+            IntentType.CREATE_CONFIG: ["创建", "新建", "新增配置", "新增规则", "添加配置", "创建配置"],
+            IntentType.UPDATE_CONFIG: ["修改配置", "更新配置", "改配置", "调整配置", "修改规则"],
+            IntentType.DELETE_CONFIG: ["删除配置", "移除配置", "删掉配置", "删配置", "删除规则"],
+            IntentType.BULK_UPDATE_DATA: ["批量更新", "批量修改", "批量写入", "批量导入", "更新数据", "批量处理"],
+            IntentType.MANAGE_PERMISSIONS: ["权限", "授权", "赋权", "修改权限", "调整角色", "设为管理员", "权限变更"],
         }
         return keywords.get(intent_type, [])
     
@@ -780,7 +818,34 @@ class IntentClassifier:
                 ep["fix_strategy"] = "keep_first"
 
             analysis["extracted_params"] = ep
-        
+
+        elif intent_type in (IntentType.CREATE_CONFIG, IntentType.UPDATE_CONFIG,
+                             IntentType.DELETE_CONFIG, IntentType.BULK_UPDATE_DATA,
+                             IntentType.MANAGE_PERMISSIONS):
+            # night15-16 Task G：CRUD 参数提取（key/value/目标数据集/角色/用户）
+            crud = {}
+            km = re.search(r"(?:配置项|规则|配置|key)\s*[:：=]?\s*([A-Za-z0-9_一-龥]{1,30})", message)
+            if km:
+                crud["key"] = km.group(1)
+            vm = re.search(r"(?:=|设为|值为|置为|改成)\s*([^\s,，。；]+)", message)
+            if vm:
+                crud["value"] = vm.group(1)
+            if intent_type == IntentType.BULK_UPDATE_DATA:
+                dm = re.search(r"(?:目标|数据集|表)\s*[:：=]?\s*([A-Za-z0-9_一-龥]{1,30})", message)
+                if dm:
+                    crud["target_dataset"] = dm.group(1)
+                crud["isolated"] = True  # 默认走隔离临时库（红线④）
+                crud["field_mapping"] = {}
+            if intent_type == IntentType.MANAGE_PERMISSIONS:
+                um = re.search(r"(?:用户|账号|user)\s*[:：=]?\s*([A-Za-z0-9_一-龥]{1,30})", message)
+                if um:
+                    crud["target_user_id"] = um.group(1)
+                rm = re.search(r"(?:角色|role)\s*[:：=]?\s*([A-Za-z0-9_一-龥]{1,20})", message)
+                if rm:
+                    crud["role"] = rm.group(1)
+                crud["operation"] = "revoke" if re.search(r"(收回|撤销|revoke)", message) else "grant"
+            analysis["extracted_params"] = crud
+
         # 添加上下文信息
         if context:
             analysis["context"] = {
