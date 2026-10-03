@@ -261,3 +261,28 @@
 > 红线：不改 SSE 事件结构；不改 API 请求/响应契约；不重构无关代码；零 DB。`_verify_history_window.py` 为隔离验证脚本（gitignored，未进仓）。
 
 ---
+## 二十、night19 新任务A：阶段9-B 主链路 LLM 结构化提取（决策：方案交付，未硬改）
+
+> 决策依据：任务书自带兜底「若无法在零回归前提下完成，只交方案+影响面+风险，不硬改——禁止为快失真」。
+> 经代码核实，本任务**不硬改**，仅交付方案/影响面/风险。理由见下。
+
+### ① 改前现象（现状核实，关键：任务书"现状"描述已过时）
+- 任务书称「classify() 规则优先，LLM _llm_classify 只在最后兜底；参数结构化未走 LLM」。
+- **核实结论（读 intent_classifier.py）**：
+  - **ADD_CHART 早已在主链路优先走 LLM 结构化提取**：`classify()` L285 → `_extract_params` L652 分支 → `_extract_add_charts`(L1306)。该函数设计=「规则≥2 张(多字段确定性)走规则；否则 LLM 优先」(`_llm_extract_add_charts` L1067 复用了既有提示词+`_canonicalize_analysis` 字段规范化)，即「参数结构化」高价值场景已 LLM 优先，规则作确定性快速通道/兜底。任务书描述的"规则优先"实为 **intent 类型分类**路径（INTENT_PATTERNS 命中即返回类型），**非参数提取**——属过时描述。
+  - **CHANGE_CHART 无结构化提取**：`_extract_params` L514-552 仅产出 `source_type/target_type/title_keyword/target_field/target_axis/time_grain`（规则），不调 LLM、不产 `charts`。
+
+### ② 改后现象（方案，未实施）
+- 不改动 `intent_classifier.py` / `action_executor.py` / `action_planner.py`；当前行为保持不变（零回归）。
+- 规划中的 CHANGE_CHART LLM 增强（待用户拍板+本机真跑）：在 `_extract_params` CHANGE 分支末尾，当 `field_profiles` 可用且规则未确定目标字段时，调 `_llm_extract_add_charts` 产 `charts` 规格并存入 `extracted_params["charts"]`；`_execute_change_chart` 改为「`charts` 优先、规则键兜底」消费 `charts[0].chart_type/dimension_field/metric_field`；LLM 调用包 try/except → 失败回规则；全程不得因 LLM 挂退化成 UNKNOWN。
+
+### ③ 复现命令（本机真跑验证，沙箱无法离线全证）
+- 本机起后端 + 真实 LLM：`python backend/_verify_taskA.py`（待写：构造"把地区分布换成饼图"/"把Y轴换成利润"/"把这张图的指标换成销售额"等，断言 CHANGE 仍定位正确图+字段规范化；ADD 仍 LLM 优先且零回归）。
+- 回归：`python backend/_verify_taskg.py` + `python backend/_verify_taski.py` + 模块 B/K 受影响用例前后对比。
+
+### ④ 影响面清单 + 风险
+- **影响面**：`intent_classifier.py`(CHANGE `_extract_params`) / `action_executor.py`(`_execute_change_chart` 消费 `charts`) / `action_planner.py`(CHANGE 映射，L731/810) / 前端无（不改 SSE/契约）。
+- **风险**：① `_llm_extract_add_charts` 产 NEW-chart 规格，与 CHANGE「改造现有图」语义错配，需映射层；② executor 改吃 `charts` 会动 P0-3「无主语兜底改第一张」修复（L198-211），回归面大；③ LLM 路径依赖网络，沙箱无法离线确定性验证（429/超时抖动），违反"零回归"硬前提。
+- **结论**：ADD_CHART 已满足目标；CHANGE_CHART 增强可行但须本机真跑 + 用户拍板，故按兜底交方案，不硬改。
+
+---
