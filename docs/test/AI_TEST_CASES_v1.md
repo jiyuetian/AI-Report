@@ -149,6 +149,8 @@
 > 汇总：10 条 AI 模式补测 = **PASS 9 / FAIL 1**。PASS 9 含 5 条多轮语义承接（B3-2/3/4/5/8，night13 闭环）+ 本轮 4 条 add_chart（B1-2/B2-1/B2-2/B2-3，真实 dataset 复测 PASS）；仅剩 B3-7 阈值调整为真实未覆盖功能缺口（见 ISS-058）。
 > FAIL 1（B3-7「把阈值调80%」）为真实功能缺口——阈值调整未映射到任何 executor 动作，已登记 **ISS-058**（仅登记不实现）。4 条 add_chart FAIL（B1-2/B2-1/B2-2/B2-3）经本轮「构造最小临时 DuckDB dataset + 真实 field_profiles 复测」全部 PASS，坐实 night14 Task3 控制实验根因（隔离种子无 dataset schema），非产品回归。
 
+> **ISS-048 收尾（night14 追加轮 Task E，commit `dd7af5c`）**：对话新增图数值格式化漏点修复（frontend）。①定位 3 处漏网——pie tooltip 裸 `{c}`、heatmap tooltip 裸 `p.data[2]`、sanitizeChartOption 直方图分箱中心裸 `Number(v.toFixed(3))`；bar/map/scatter/histogram label、KPI 卡此前已正确走 `metricFormat.ts` 全局格式化器。②修复——pie/heatmap tooltip 套 `formatMetricDisplay(field,...)`（count 模式保留『笔』），直方图分箱中心改 `formatCompactNum`（亿/万 + 极小比率 4 位小数，消除长数字串/0 根因）。③验证——`tsc --noEmit` 0 错；对 `metricFormat.ts` 真跑 6 例断言全部 PASS：formatCompactNum(12345678.9)→『1234.57万』、formatCompactNum(0.0001234)→『0.0001』、formatMetricDisplay(担保余额,123456789)→『1.23亿』、formatMetricDisplay(逾期率,0.0004)→『0.04%』等。属前端渲染格式化，不新增 B 模块意图用例。
+
 ---
 
 ## 模块 C：AI 参与每层 L1-L5（15 条 · v1.2 起纳入准出：期二白盒化后计分母）
