@@ -326,3 +326,13 @@
   - `detect_confirmation` 的**否定词表补「取消」**——收敛话术本就引导用户回「取消」放弃，原词表未收「取消」致其无法命中 cancel_pending（R5 依赖）。
 - **零回归保证**：confirm（L687-714）/ negate（L676-686）/ `cancel_pending` 清除 pending 三条既有路径均不变；收敛 pending `clarify_round>=MAX`，再次模糊输入幂等重新收敛，不会无限追问。
 - **状态**：`[DONE]`（2026-10-03 night21，见 `AI_CHANGES.md` §23）。验证脚本 `_verify_clarify_cap.py`（gitignored，过程文件）扩展为 13/13 PASS。
+
+
+## ISS-025 未鉴权端点全量收口（P1 遗留，分批）
+
+- **现象（night19 任务C 全量扫描）**：`app.openapi()` 解析 216 路由 / 131 未鉴权，按「A 高危写 47 / B 内部 73 / C 保留匿名 11」三类。A 类含执行看板增删改、token 消耗/申请、报告生成、批处理与调试注入等 21 个写端点 + `GET /exceptions/session/kickout/{user_id}`，均无任何鉴权，匿名可越权。
+- **决策（任务书 + 分批建议）**：Batch1 优先收口最高危 A 类写端点；Batch2（B 类 73）内部端点走 env 闸门（prod 默认关）；C 类 11 按设计保留匿名。
+- **修复进度**：
+  - **Batch1（2026-10-03 night22 Task B，DONE）**：22 个目标端点全加 `Depends(get_current_user)`，`kickout/{user_id}` 加归属校验（非本人且非超管 → 403）；body 取值 `current_user` → `current_user["user_id"]`（chat / tokens / token_applications 三处）。commit `8f6c56d`（本地未 push）。验证 `_verify_iss025_batch1.py` 22/22、全量回归零回归（health 15/15、ISS-060 13/13、history 10/10）。
+  - **Batch2（待做）**：B 类 73 端点 env 闸门（ISS-053 依赖钉固后 / Task E 富余才做）。
+- **状态**：`[IN_PROGRESS]` Batch1 DONE、Batch2 待排期。详见 `docs/project_record/05-ISS025鉴权审计.md` 与 `22-ISS025无鉴权端点全量扫描.md`。

@@ -368,3 +368,35 @@ python backend/_verify_change_chart_llm.py                                      
 - `backend/_verify_change_chart_llm.py`：gitignored 过程文件（22 用例）
 - **状态**：`[DONE]` 2026-10-03，commit `2682e06`（本地未 push）。
 
+
+---
+
+## 二十五、night22 Task B：ISS-025 Batch1 收口 A 类高危写端点鉴权（落地实施）
+
+> 依据 `docs/project_record/22-ISS025无鉴权端点全量扫描.md`（§20 全量扫描：216 路由 / 131 未鉴权，按 A 高危写 47 / B 内部 73 / C 保留匿名 11 三类）。
+> 红线：零 DB 写；不 push；禁真实 LLM（仅静态 AST 扫描 + dev JWT mock）；验证脚本 gitignored。
+
+### ① 改前现象（扫描核实）
+- A 类「写」21 条 + 最高危 `GET /api/v1/exceptions/session/kickout/{user_id}` 共 **22 个端点完全无鉴权**，匿名即可越权：
+  - 执行看板增删改（`POST /chat/execute-action`、`POST /chat/sessions`）、消耗/申请 token（`POST /tokens/consume`、`POST /token_applications/apply`）、生成报告（`POST /reports`）、跑 golden / lineage / loadtest / quality 批处理与调试注入（如 `POST /quality/debug/inject-dup` 可污染业务数据）。
+  - `kickout/{user_id}` 无归属校验 → 可踢出任意用户会话。
+
+### ② 改后现象（实施）
+- 22 个 handler 签名统一加 `current_user: Dict = Depends(get_current_user)`；`exceptions.check_session_kickout` 加归属校验（非本人且非超管 → 403）。
+- body 取值修正：`current_user`（旧 str 形参）改为 `current_user["user_id"]`（chat / tokens / token_applications 三处），避免把 dict 当 str 用。
+- 前端调用点 grep 确认 `/chat/sessions`、`/reports`、`/quality/*`、`/lineage/verify` 均经 `request.ts` 自动带 token，加鉴权安全；无裸 fetch 须补。
+- 不动 C 类 11 条（设计匿名）、B 类 73 条（留 Task E env 闸门）。
+
+### ③ 复现 / 验证（零 DB、离线）
+```
+python docs/project_record/night_runs/_verify_iss025_batch1.py   -> 22/22 PASS（静态 AST 断言 22 目标 handler 均声明 Depends(get_current_user)，0 漏网）
+py_compile backend/app/api/{chat,exceptions,golden,lineage,loadtest,quality,reports,token_applications,tokens}.py   -> COMPILE_EXIT=0
+```
+- 全量回归（Task D）：`_verify_health_probe.py` 15/15、`_verify_clarify_cap.py`（ISS-060）13/13、`_verify_history_window.py` 10/10，**零回归**。
+- 防复发：22 端点入"必须鉴权"静态白名单（`_verify_iss025_batch1.py`），扫描应 0 漏。
+
+### ④ 改动文件
+- `backend/app/api/chat.py` / `exceptions.py` / `golden.py` / `lineage.py` / `loadtest.py` / `quality.py` / `reports.py` / `token_applications.py` / `tokens.py`：9 文件加鉴权。
+- `tests/test_acceptance.py` / `tests/test_core_chain.py`：`req()` 助手注入 dev JWT（保 suite 绿；POST /reports、POST /quality/check 现需鉴权）。
+- `docs/project_record/night_runs/_verify_iss025_batch1.py`：gitignored 过程文件（22 端点静态扫描）。
+- **状态**：`[DONE]` 2026-10-03，commit `8f6c56d`（本地未 push）。Batch2（B 类 73 端点 env 闸门）见 Task E。
