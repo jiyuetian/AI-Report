@@ -118,6 +118,39 @@ def _field_names(context: Dict[str, Any]) -> List[str]:
     return names
 
 
+def _dimension_categories(context: Dict[str, Any], field: str) -> List[str]:
+    """取某维度字段的真实取值候选（categories/values）。用于"按哪个值"澄清的选项来源。
+    无候选（字段画像未带枚举值）返回 []，让调用方保持原行为（不强制澄清）。"""
+    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or \
+        (context or {}).get("field_profiles") or []
+    if not field:
+        return []
+    for fp in fps:
+        if (fp.get("name") or fp.get("column") or "") == field:
+            cats = fp.get("categories") or fp.get("values") or []
+            if isinstance(cats, list) and cats:
+                return [str(c) for c in cats]
+    return []
+
+
+def _infer_filter_field(message: str, context: Dict[str, Any]) -> Optional[str]:
+    """当分类器未给出 filter_field 时，从消息里"按/根据/筛选/过滤/聚焦/只看 + <维度字段名>"
+    反推真实维度字段（限 context 中真实存在的字段），用于 which_filter_value 澄清。
+    匹配不到返回 None（保持原行为，不臆造字段）。"""
+    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or \
+        (context or {}).get("field_profiles") or []
+    msg = (message or "").strip()
+    if not msg:
+        return None
+    for fp in fps:
+        fn = fp.get("name") or fp.get("column") or ""
+        if not fn or len(fn) < 2:
+            continue
+        if re.search(r"(?:按|根据|筛选|过滤|聚焦|只看)\s*[^，。；]{0,4}?" + re.escape(fn), msg):
+            return fn
+    return None
+
+
 def explicit_field_tokens(message: str) -> List[str]:
     """抽出用户"明确点名"的字段/维度词（用于校验是否真的存在）。"""
     toks: List[str] = []
@@ -535,7 +568,7 @@ def _resolve_pending_clarify(message: str, pending: Dict[str, Any], context: Dic
     # 2) 关键词命中：答案里包含某个选项的图名/图型/字段名/粒度
     _kw_opt = None
     for _o in options:
-        _key = _o.get("title") or _o.get("chart_type") or _o.get("label") or _o.get("field") or _o.get("grain") or ""
+        _key = _o.get("title") or _o.get("chart_type") or _o.get("label") or _o.get("field") or _o.get("grain") or _o.get("value") or ""
         if _key and (_key in msg or msg in _key):
             _kw_opt = _o
             break
@@ -592,6 +625,16 @@ def _resolve_pending_clarify(message: str, pending: Dict[str, Any], context: Dic
         return {
             "type": "filter_drill",
             "params": {"aggregation": _opt.get("grain") or _opt.get("label")},
+            "clause": message, "intent_type": "filter_drill", "confidence": 85,
+            "classified_by": "pending_clarify",
+        }
+    # night23 Task B · ISS-042 多轮语义承接（filter 值）：上一轮问"按哪个值"（如"按哪个地区"），
+    # 本轮用户用短答案（"用华南"）或序号承接，解析成 filter_drill 动作，避免落 UNKNOWN。
+    if reason == "which_filter_value":
+        _val = _opt.get("value") or _opt.get("label") or _opt.get("field")
+        return {
+            "type": "filter_drill",
+            "params": {"filter_field": pp.get("filter_field"), "filter_value": _val},
             "clause": message, "intent_type": "filter_drill", "confidence": 85,
             "classified_by": "pending_clarify",
         }
@@ -934,6 +977,27 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
             if primary is None:
                 primary = result
             continue
+
+        # night23 Task B · ISS-042 多轮语义承接（filter 值）——"按地区筛选"已知维度但没说具体值，
+        # 且该维度有真实取值候选（categories）时，先澄清"聚焦哪个值"，下一轮"用华南"等短答案接住，
+        # 避免把 filter_drill 默认成"筛选全部"或静默落空。无 categories 候选则保持原行为（不破坏单图筛选）。
+        if itype == IntentType.FILTER_DRILL.value:
+            _ff = params.get("filter_field") or _infer_filter_field(message, context)
+            _fv = params.get("filter_value")
+            if _ff and not _fv:
+                _cats = _dimension_categories(context, _ff)
+                if _cats:
+                    actions.append(_clarify_action(
+                        "which_filter_value",
+                        f"按「{_ff}」筛选，要聚焦哪个值？可选：{', '.join(_cats[:8])}"
+                        f"（回复具体值即可，例如「华南」）。",
+                        clause,
+                        [{"value": c, "label": c} for c in _cats],
+                        pending={"intent_type": "filter_drill", "filter_field": _ff},
+                    ))
+                    if primary is None:
+                        primary = result
+                    continue
 
         # night13 Item3 K-2：位置/邻近线索（"在X的旁边"）可能被 split_clauses 拆到别的 clause，
         # 必须从整句 message 提取 near_title/position 写入动作参数，避免落位信息丢失。
