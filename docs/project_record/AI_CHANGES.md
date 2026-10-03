@@ -286,3 +286,25 @@
 - **结论**：ADD_CHART 已满足目标；CHANGE_CHART 增强可行但须本机真跑 + 用户拍板，故按兜底交方案，不硬改。
 
 ---
+## 二十一、night19 任务B：阶段9-C 澄清循环最大轮次退避（ISS-015 ②）
+
+| 文件 | 类型 | 说明 | 关联 |
+|------|------|------|------|
+| `backend/app/core/action_planner.py` | fix(clarify) | 新增 `MAX_CLARIFY_ROUNDS=2` + `_converge_clarify()`（收敛话术：给最可能方案+确认/取消，带 `converged` 标志）+ `_plan_from_single()`（单动作包装）；`plan_actions` 入口读 `_pending.clarify_round`，`_resolve_pending_clarify` 仍返回 re-ask clarify 且已达上限 → 收敛；短答案无法解析且达上限 → 收敛；粒度冲突 `contra` 分支达上限 → 收敛。承接成功（短答案解析成动作/确认词）仍正常短路，不受轮次限制。 | ISS-015 ② |
+| `backend/app/api/chat.py` | fix(clarify) | 持久化澄清载荷时新增 `clarify_round` 计数（同议题累加，异议题重置）；产出 `converged` 收敛话术时**不再持久化 pending_clarify**（清除），结束循环。 | ISS-015 ② |
+
+### 背景与根因
+- 现状：`chat.py:738` 每轮加载 `session.context.pending_clarify`；`chat.py:1297-1336` 本轮产 clarify 即落库、短答案承接成功即清零、否则保留。**无最大轮次上限**——用户持续给模糊答案（如「改成柱状图」「改成折线图」反复换图型但不点名图）会让 `which_chart` 澄清无限循环追问。
+- 目标：同一议题连续澄清到上限（建议 2 轮）后不再追问，改为收敛话术（给最可能方案+让用户确认/取消）或诚实兜底。
+- 硬约束：不改 SSE 事件结构；`pending_clarify` 载荷仅**扩展** `clarify_round` 字段（既有 `reason/clause/intent_type/partial_params/options/created_at` 不动）；承接成功即清零（沿用现有逻辑）。
+
+### 验证（本机 Python 3.12，零 DB，直驱 plan_actions）
+| 门 | 命令 | 结果 |
+|----|------|------|
+| 行为契约 | `python _verify_clarify_cap.py` | **9/9 PASS**：R1 产出 clarify(首问,round=1) / R2 再产 clarify(合法再问,round=2) / R3 收敛(converged=True,话术含确认+取消) / R3b 清晰答案「第二张」仍解析为 change_chart(不收敛) / 确定性 round>=上限 任意模糊输入均收敛 |
+| 后端语法 | `py_compile backend/app/core/action_planner.py backend/app/api/chat.py` | EXIT=0 |
+
+> 红线：不改 SSE 事件结构；不改 API 请求/响应契约；零 DB。`_verify_clarify_cap.py` 为隔离验证脚本（gitignored，未进仓）。
+
+---
+

@@ -324,6 +324,67 @@ def _clarify_action(reason: str, message: str, clause: str, options=None, pendin
     return p
 
 
+# ---- night19 任务B：澄清循环最大轮次退避 ----
+# 同一议题连续澄清达到上限（建议 2 轮）后不再追问，改为收敛话术（给最可能方案 + 确认/取消），
+# 避免反复追问。承接成功（短答案被解析成动作 / 确认词）仍正常短路，不受轮次限制。
+MAX_CLARIFY_ROUNDS = 2
+
+
+def _converge_clarify(pending: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """澄清轮次达上限后的收敛话术：给出最可能方案（选项第 1 项）+ 让用户确认 / 取消。
+
+    返回 type=clarify 且 params.converged=True（chat.py 据此不再持久化 pending，结束循环）。
+    选项保留原 pending 的 options（最佳项在前），使「确认」词仍走 _resolve_pending_clarify("第一个") 采纳。
+    """
+    _opts = (pending or {}).get("options") or []
+    _best = _opts[0] if _opts else None
+    if _best:
+        _detail = (_best.get("title") or _best.get("chart_type") or _best.get("label")
+                   or _best.get("field") or _best.get("grain") or "推荐方案")
+    else:
+        _detail = (pending or {}).get("reason") or "当前意图"
+    _msg = (
+        f"我已多次尝试确认，仍未能完全确定你的意图。当前看板最可能的方案是：{_detail}。"
+        f"请回复「确认」采用该方案，或「取消」放弃；你也可以直接说明要改哪张图 / 哪种图型 / 哪个字段。"
+    )
+    return {
+        "type": "clarify",
+        "params": {
+            "reason": (pending or {}).get("reason"),
+            "message": _msg,
+            "options": _opts,
+            "pending": {"intent_type": (pending or {}).get("intent_type"),
+                        "partial_params": (pending or {}).get("partial_params") or {}},
+            "converged": True,
+        },
+        "clause": "",
+        "intent_type": "clarify",
+        "confidence": 0,
+    }
+
+
+def _plan_from_single(act: Dict[str, Any], message: str,
+                      pending: Dict[str, Any] = None,
+                      classified_by: str = "pending_clarify") -> Dict[str, Any]:
+    """把单个动作包装成 plan_actions 的标准返回结构（承接 clarify 语义，保留原 intent_type）。"""
+    _it = act.get("intent_type")
+    if act.get("type") == "clarify" and pending and pending.get("intent_type"):
+        _it = pending.get("intent_type")
+    return {
+        "is_compound": False,
+        "actions": [act],
+        "clauses": [message],
+        "unparsed_clauses": [],
+        "primary_intent": {
+            "intent_type": _it,
+            "confidence": act.get("confidence", 0),
+            "analysis": {"raw_message": message, "extracted_params": act.get("params", {})},
+            "is_confident": True,
+            "classified_by": classified_by,
+        },
+    }
+
+
 def _detect_chart_anchor(msg: str, charts: list) -> Optional[str]:
     """P0-3 遗留修复：从用户短答案里找是否点名了某张图（按图名子串命中），返回图名或 None。
 
@@ -606,6 +667,8 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
     # ---- P0-3 澄清循环承接：上一轮被问"改哪张/哪种图/哪个字段"，本轮给短答案 ----
     # 优先尝试把短答案解析成完整动作，命中则直接短路返回，避免重新分类时落 UNKNOWN 或重复澄清。
     _pending = (context or {}).get("pending_clarify")
+    _clarify_round = int((_pending or {}).get("clarify_round", 1) or 1) if _pending else 0
+    _clarify_capped = bool(_pending) and _clarify_round >= MAX_CLARIFY_ROUNDS
     if _pending:
         # night9 Item3：确认词承接（模块 B5 承诺执行）。上一轮 AI 提出了待确认动作，
         # 本轮用户用确认词/否定词承接，确定性短路（不依赖 LLM 分类，规避 429 与误判）。
@@ -652,29 +715,20 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
             # 既没有 proposal 也没有 options：确认词无承接对象，落到正常分类（AI 会再问/闲聊）
         _resolved = _resolve_pending_clarify(message, _pending, context)
         if _resolved:
-            return {
-                "is_compound": False,
-                "actions": [_resolved],
-                "clauses": [message],
-                "unparsed_clauses": [],
-                "primary_intent": {
-                    # 2026-09-24 修复（P0-3 遗留）：承接后若判定"还得再追问"，本结构是 clarify，
-                    # 而 "clarify" 不是 IntentType 成员，chat.py 的 IntentType(...) 会抛 ValueError，
-                    # 把整条 SSE 流打断 —— 追问既没落到 session 也没回给用户（实测无任何回复）。
-                    # 追问时保留用户原本的意图（如 change_chart），语义不丢。
-                    "intent_type": (_pending.get("intent_type")
-                                    if _resolved.get("type") == "clarify" and _pending.get("intent_type")
-                                    else _resolved["intent_type"]),
-                    "confidence": _resolved["confidence"],
-                    "analysis": {"raw_message": message, "extracted_params": _resolved.get("params", {})},
-                    "is_confident": True,
-                    "classified_by": "pending_clarify",
-                },
-            }
+            # night19 任务B：若本轮仍要再追问（type==clarify）且已达轮次上限 → 收敛，不再追问
+            if _resolved.get("type") == "clarify" and _clarify_capped:
+                return _plan_from_single(_converge_clarify(_pending, context), message, _pending)
+            return _plan_from_single(_resolved, message, _pending)
+        # night19 任务B：短答案无法解析（仍歧义）且已达轮次上限 → 收敛，不再追问
+        if _clarify_capped:
+            return _plan_from_single(_converge_clarify(_pending, context), message, _pending)
 
     # ---- 全局歧义：粒度冲突（一句话里同时要两种粒度）----
     contra = detect_contradictory_grain(message)
     if contra:
+        # night19 任务B：已有进行中的澄清且达轮次上限 → 收敛，不再重复追问粒度
+        if _clarify_capped:
+            return _plan_from_single(_converge_clarify(_pending, context), message, _pending)
         return {
             "is_compound": False,
             "actions": [_clarify_action(contra["reason"], contra["message"], message, contra.get("options"))],

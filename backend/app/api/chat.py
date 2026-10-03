@@ -1298,9 +1298,14 @@ async def send_message_stream(
                     _last_act = _extract_last_action(response_data, last_new_config)
                     # 扫描本轮动作是否产出了 clarify
                     _clarify_pending = None
+                    _converged = False
                     for _a in (plan.get("actions") or []):
                         if _a.get("type") == "clarify":
                             _cp = (_a.get("params") or {})
+                            # night19 任务B：收敛话术已给出（planner 判定达轮次上限）→ 不再持久化，结束循环
+                            if _cp.get("converged"):
+                                _converged = True
+                                break
                             _clarify_pending = {
                                 "reason": _cp.get("reason"),
                                 "clause": _a.get("clause"),
@@ -1313,6 +1318,17 @@ async def send_message_stream(
                             _prop = _a.get("proposal")
                             if _prop:
                                 _clarify_pending["proposal"] = _prop
+                            # night19 任务B：澄清轮次计数（同一议题累加，达上限后 planner 收敛）
+                            _prev_pending = context.get("pending_clarify") or {}
+                            _same_topic = (
+                                _prev_pending.get("intent_type") == _a.get("intent_type")
+                                and (_prev_pending.get("reason") == _cp.get("reason")
+                                     or _prev_pending.get("clause") == _a.get("clause"))
+                            )
+                            _round = int(_prev_pending.get("clarify_round", 1) or 1)
+                            if _same_topic:
+                                _round += 1
+                            _clarify_pending["clarify_round"] = _round
                             break
                     _sess = await stream_db.get(ChatSession, session_id)
                     if _sess is not None:
@@ -1326,6 +1342,9 @@ async def send_message_stream(
                         _sctx["ai_action_stack"] = ai_action_stack
                         if _clarify_pending:
                             _sctx["pending_clarify"] = _clarify_pending
+                        elif _converged:
+                            # night19 任务B：收敛话术已给出，清除进行中的澄清，结束循环
+                            _sctx.pop("pending_clarify", None)
                         elif _last_act:
                             # 真实动作成功执行 → 澄清已被接住，清除 pending_clarify
                             _sctx.pop("pending_clarify", None)
