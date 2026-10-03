@@ -111,7 +111,8 @@ async def resolve_default_dataset(db: AsyncSession = Depends(get_db)):
 @router.post("/build", response_model=Dict[str, Any])
 async def build_lineage(
     request: BuildLineageRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     构建六层血缘
@@ -175,7 +176,8 @@ async def get_lineage_graph(
 @router.post("/verify", response_model=LineageVerifyResponse)
 async def verify_lineage(
     request: BuildLineageRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     血缘重算验证（误差=0）
@@ -230,7 +232,8 @@ async def get_lineage_stats(
 
 @router.post("/rebuild-all")
 async def rebuild_all_lineage(
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """重建所有数据集的血缘（管理接口）"""
     from sqlalchemy import select

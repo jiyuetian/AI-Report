@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.models.dataset import Dataset
 from app.models.dashboard import Dashboard
 from app.models.quality import QualityIssue
@@ -53,6 +54,7 @@ class ReportListItem(BaseModel):
 async def generate_report(
     request: ReportRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     生成7章节分析报告

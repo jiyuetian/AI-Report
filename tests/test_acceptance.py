@@ -43,12 +43,36 @@ OUT = HERE / "_reports"
 FIXTURES.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)
 
+# night22 Task B：测试助手统一携带登录态，避免新增鉴权端点返回 401（ISS-025 Batch1）
+def _night_dev_token():
+    try:
+        import os as _os, sys as _sys
+        _bd = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "backend")
+        if _bd not in _sys.path:
+            _sys.path.insert(0, _bd)
+        try:
+            from app.core.security import create_access_token
+            return create_access_token({"sub": "night-test", "is_superuser": True})
+        except Exception:
+            import jwt as _jwt, uuid as _uuid
+            from datetime import datetime as _dt, timedelta as _td
+            return _jwt.encode(
+                {"sub": "night-test", "is_superuser": True, "exp": _dt.utcnow() + _td(hours=2), "jti": str(_uuid.uuid4())},
+                "local-dev-secret-key", algorithm="HS256"
+            )
+    except Exception:
+        return None
+
+_NIGHT_TOKEN = _night_dev_token()
+
 PASS, FAIL = 0, 0
 
 
 def req(method, path, body=None, files=None, timeout=180):
     url = BASE + path
     data, headers = None, {}
+    if _NIGHT_TOKEN:
+        headers["Authorization"] = "Bearer " + _NIGHT_TOKEN
     if files is not None:
         boundary = "----AcceptanceBoundary9c4e"
         parts = []

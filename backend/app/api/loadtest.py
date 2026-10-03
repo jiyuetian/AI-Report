@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 from app.core.load_test import LoadTester, run_all_load_tests
+from app.core.security import get_current_user
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/loadtest", tags=["Load Test"])
 
@@ -28,7 +30,8 @@ class LoadTestConfig(BaseModel):
 @router.post("/run")
 async def run_load_test(
     background_tasks: BackgroundTasks,
-    config: Optional[LoadTestConfig] = None
+    config: Optional[LoadTestConfig] = None,
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     执行完整压测
@@ -89,7 +92,7 @@ async def run_load_test(
 
 
 @router.post("/upload-100k")
-async def test_upload_100k(iterations: int = 3):
+async def test_upload_100k(iterations: int = 3, current_user: Dict = Depends(get_current_user)):
     """单独测试：10万行上传解析"""
     tester = LoadTester()
     result = await tester.test_upload_100k_rows(None, iterations=iterations)
@@ -118,7 +121,8 @@ async def test_upload_100k(iterations: int = 3):
 @router.post("/concurrent-chat")
 async def test_concurrent_chat(
     concurrency: int = 20,
-    requests_per_thread: int = 5
+    requests_per_thread: int = 5,
+    current_user: Dict = Depends(get_current_user)
 ):
     """单独测试：20并发对话"""
     tester = LoadTester()
@@ -153,7 +157,7 @@ async def test_concurrent_chat(
 
 
 @router.post("/chart-10k")
-async def test_chart_10k(iterations: int = 5):
+async def test_chart_10k(iterations: int = 5, current_user: Dict = Depends(get_current_user)):
     """单独测试：图表1万点抽样"""
     tester = LoadTester()
     result = await tester.test_chart_sampling_10k(None, iterations=iterations)

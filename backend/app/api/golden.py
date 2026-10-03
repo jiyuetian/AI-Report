@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.golden_regression import (
     GoldenRegressionTester, 
     run_golden_regression_test,
@@ -88,7 +89,8 @@ async def get_golden_dataset_detail(dataset_id: str):
 async def run_golden_test(
     background_tasks: BackgroundTasks,
     dataset_ids: Optional[List[str]] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     执行Golden回归测试
@@ -119,7 +121,8 @@ async def run_golden_test(
 @router.post("/run-single/{dataset_id}")
 async def run_single_golden_test(
     dataset_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """执行单个Golden数据集测试"""
     tester = GoldenRegressionTester()
@@ -198,7 +201,7 @@ async def get_golden_stats_summary():
 
 
 @router.post("/export-report/{report_id}")
-async def export_golden_report(report_id: str, format: str = "json"):
+async def export_golden_report(report_id: str, format: str = "json", current_user: Dict = Depends(get_current_user)):
     """
     导出测试报告
     

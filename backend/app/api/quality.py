@@ -126,7 +126,8 @@ def get_cleaned_table(dataset_id: str) -> str:
 async def check_quality(
     request: QualityCheckRequest,
     sql_db: AsyncSession = Depends(get_db),
-    background_tasks: BackgroundTasks = None
+    background_tasks: BackgroundTasks = None,
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     执行质检（规则检测秒回 + AI补充检测后台异步）
@@ -281,7 +282,7 @@ async def get_quality_issues(
 
 
 @router.post("/fix")
-async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = Depends(get_db)):
+async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     """
     修复质量问题 — 写入清洗层
     
@@ -525,7 +526,7 @@ class QualityFixBatchRequest(BaseModel):
 
 
 @router.post("/fix-batch")
-async def fix_quality_issues_batch(request: QualityFixBatchRequest, sql_db: AsyncSession = Depends(get_db)):
+async def fix_quality_issues_batch(request: QualityFixBatchRequest, sql_db: AsyncSession = Depends(get_db), current_user: Dict = Depends(get_current_user)):
     """
     批量修复 — "一键采纳推荐方案"（2026-09-17 对齐 B 的推荐清洗计划交互）。
     逐项复用 /quality/fix 的单条逻辑；单项失败不中断批次，逐条回执。
@@ -565,7 +566,7 @@ async def fix_quality_issues_batch(request: QualityFixBatchRequest, sql_db: Asyn
 
 
 @router.post("/_internal/test-quality")
-async def test_quality_check():
+async def test_quality_check(current_user: Dict = Depends(get_current_user)):
     """内部接口：测试质检功能（验收用）"""
     try:
         db = get_duckdb()
@@ -673,7 +674,7 @@ class InjectDupRequest(BaseModel):
 
 
 @router.post("/debug/inject-dup")
-async def debug_inject_dup(req: InjectDupRequest):
+async def debug_inject_dup(req: InjectDupRequest, current_user: Dict = Depends(get_current_user)):
     """
     [仅调试] 在指定 dataset 的清洗层按聚类列临时复制几行制造重复，用于端到端演示/验证
     "造重复 → 对话质量修复 → 去重归零" 的完整闭环。影响仅在清洗层，不影响输出层看板。

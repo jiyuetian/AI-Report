@@ -10,7 +10,7 @@ from sqlalchemy import select, desc, and_, update
 from datetime import datetime, timedelta
 
 from app.core.database import get_db
-from app.core.security import require_admin
+from app.core.security import require_admin, get_current_user, get_current_user
 from app.models.chat import TokenQuota, TokenApplication
 
 router = APIRouter(prefix="/tokens/applications", tags=["Token加量申请"])
@@ -48,7 +48,7 @@ class ApplicationResponse(BaseModel):
 async def apply_for_extra_quota(
     request: ApplyQuotaRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     用户申请Token加量
@@ -60,7 +60,7 @@ async def apply_for_extra_quota(
         select(TokenApplication)
         .where(
             and_(
-                TokenApplication.user_id == current_user,
+                TokenApplication.user_id == current_user["user_id"],
                 TokenApplication.status == "pending"
             )
         )
@@ -77,7 +77,7 @@ async def apply_for_extra_quota(
     
     # 创建申请
     application = TokenApplication(
-        user_id=current_user,
+        user_id=current_user["user_id"],
         apply_amount=request.amount,
         apply_reason=request.reason,
         status="pending"

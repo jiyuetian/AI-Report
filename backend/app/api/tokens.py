@@ -10,7 +10,7 @@ from datetime import datetime
 
 from app.core.database import get_db
 from app.core.token_manager import TokenManager, schedule_daily_reset
-from app.core.security import require_admin, get_optional_user
+from app.core.security import require_admin, get_optional_user, get_current_user, get_current_user
 from app.models.chat import TokenQuota, TokenApplication
 
 router = APIRouter(prefix="/tokens", tags=["Tokens-Token管理"])
@@ -70,7 +70,7 @@ async def get_token_quota(
 async def consume_tokens(
     request: TokenConsumeRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     消耗Token
@@ -78,7 +78,7 @@ async def consume_tokens(
     检查并扣除Token，返回是否允许继续
     """
     allowed, message, info = await TokenManager.check_and_consume(
-        db, current_user, request.tokens
+        db, current_user["user_id"], request.tokens
     )
     
     return {

@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.exception_handlers import ExceptionHandler
 
 router = APIRouter(prefix="/exceptions", tags=["Exceptions"])
@@ -153,9 +154,16 @@ async def detect_edit_conflict(request: EditConflictRequest):
 async def check_session_kickout(
     user_id: str,
     current_session_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """检测是否需要异地登录踢出"""
+    # 归属校验：仅本人或超管可查询自己的会话踢出状态（ISS-025 Batch1）
+    if current_user.get("user_id") != user_id and not current_user.get("is_superuser"):
+        raise HTTPException(
+            status_code=403,
+            detail="无权查询该用户的会话踢出状态"
+        )
     result = await ExceptionHandler.check_session_kickout(
         db, user_id, current_session_id
     )

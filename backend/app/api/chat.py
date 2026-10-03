@@ -443,7 +443,7 @@ async def generate_llm_natural_response(
 async def create_session(
     request: CreateSessionRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """创建对话会话"""
     
@@ -494,7 +494,7 @@ async def create_session(
                 context["field_profiles"] = field_profiles
 
     session = ChatSession(
-        user_id=current_user,
+        user_id=current_user["user_id"],
         dashboard_id=request.dashboard_id,
         dataset_id=session_dataset_id,
         context=context
@@ -1649,7 +1649,8 @@ async def save_moderation_message(
 async def classify_intent_api(
     message: str,
     dashboard_id: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     单独测试意图分类API
@@ -1685,7 +1686,7 @@ async def execute_action_api(
     params: Dict[str, Any],
     dashboard_config: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
-    current_user: str = "anonymous"
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     执行动作 - M3-02
@@ -1698,7 +1699,7 @@ async def execute_action_api(
             ActionType(action_type),
             params,
             dashboard_config,
-            {"user_id": current_user}
+            {"user_id": current_user["user_id"]}
         )
         
         # 保存动作执行记录到chat_messages (用户行为标注)
