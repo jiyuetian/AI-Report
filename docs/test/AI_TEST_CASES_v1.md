@@ -151,6 +151,8 @@
 
 > **ISS-048 收尾（night14 追加轮 Task E，commit `dd7af5c`）**：对话新增图数值格式化漏点修复（frontend）。①定位 3 处漏网——pie tooltip 裸 `{c}`、heatmap tooltip 裸 `p.data[2]`、sanitizeChartOption 直方图分箱中心裸 `Number(v.toFixed(3))`；bar/map/scatter/histogram label、KPI 卡此前已正确走 `metricFormat.ts` 全局格式化器。②修复——pie/heatmap tooltip 套 `formatMetricDisplay(field,...)`（count 模式保留『笔』），直方图分箱中心改 `formatCompactNum`（亿/万 + 极小比率 4 位小数，消除长数字串/0 根因）。③验证——`tsc --noEmit` 0 错；对 `metricFormat.ts` 真跑 6 例断言全部 PASS：formatCompactNum(12345678.9)→『1234.57万』、formatCompactNum(0.0001234)→『0.0001』、formatMetricDisplay(担保余额,123456789)→『1.23亿』、formatMetricDisplay(逾期率,0.0004)→『0.04%』等。属前端渲染格式化，不新增 B 模块意图用例。
 
+> **ISS-045 收尾（night14 追加轮 Task F，commit `fed1476`）**：LLM 网关失败自动指数退避重试。`llm_gateway.py` `MAX_RETRIES` 1→2（每 key 初始+2 重试=3 次尝试），新增 `_backoff_wait(retry)=min(8*(retry+1),45)`→ 超时/网络/JSON 重试走 8/16/24s、429 优先 `Retry-After` 头否则同公式、整体封顶 45s。②与 night13 前端 `throttledMessage` 节流互补：退避=『弹之前先自愈』（服务端最多 3 次尝试/8-16-24s 才放弃），节流=『同一失败只弹一次』；`ChatPanel.tsx` 5 处 toast 已全走 `throttledMessage`（含 LLM 失败 `send-fail`），前端无需改动。③验证 `_verify_taskF.py`：MockClient 注入 timeout/429/全败序列，断言 `_backoff_wait` 公式 + `chat_complete` 退避 [8,16] 后成功（retry_count=2）或超时降级（success=False），全部 PASS；`py_compile` 通过。属网关基础设施，不新增 B 模块意图用例。
+
 ---
 
 ## 模块 C：AI 参与每层 L1-L5（15 条 · v1.2 起纳入准出：期二白盒化后计分母）
