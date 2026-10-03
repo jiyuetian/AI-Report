@@ -559,7 +559,17 @@ class IntentClassifier:
                 _ep = analysis["extracted_params"]
                 _ep["target_field"] = _axis_m.group(3).strip("。，； ")
                 _ep["target_axis"] = "x" if _axis_m.group(1) in ("X轴", "x轴", "横坐标") else "y"
-        
+
+        # night22 Task A：CHANGE_CHART LLM 结构化补参（只补参不夺锚点；失败回规则，零回归）
+        _fps = context.get("field_profiles") or (context.get("dataset_info") or {}).get("field_profiles")
+        if _fps and not (analysis.get("extracted_params") or {}).get("llm_change_spec"):
+            try:
+                _spec = cls._llm_extract_change_chart(message, _fps, context)
+                if _spec:
+                    analysis.setdefault("extracted_params", {})["llm_change_spec"] = _spec
+            except Exception:
+                pass
+
         elif intent_type == IntentType.ADD_CHART:
             # 提取要添加的图表类型（优先具体图表类型，如"饼图"）
             chart_types = ["饼图", "柱图", "柱状图", "线图", "折线图", "散点图", "表格"]
@@ -1128,6 +1138,88 @@ class IntentClassifier:
                     "aggregation": agg,
                 })
             return charts if charts else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _llm_extract_change_chart(cls, message, field_profiles, context):
+        """night22 Task A：CHANGE_CHART LLM 结构化补参层。
+
+        **只补参、不夺锚点**：补全规则未确定的目标图型 / 目标字段 / 轴 / 时间粒度；仅当规则
+        没给任何锚点时，才采纳 LLM 提议的锚点（图序号 / 标题），且**必须命中真实图表**才采用，
+        否则丢弃 —— 回落规则路径或触发 which_chart 澄清（绝不静默改错图 / 改第一张，守 P0-3）。
+
+        失败 / 无 field_profiles / 无 field_profiles 可用 → 返回 None（调用方保持纯规则路径，零回归）。
+        返回 dict（可能含 chart_id/title_keyword 锚点 + chart_type/target_field/target_axis/time_grain 补参）。
+        """
+        if not field_profiles:
+            return None
+        charts = (((context or {}).get("current_config") or {}).get("charts") or [])
+        field_text = cls._build_field_prompt(field_profiles)
+        system_prompt = (
+            "你是一个 BI 图表编辑助手。用户要在已有看板上修改一张图表。\n"
+            "请结构化输出要做的修改（只输出 JSON，不解释）：\n"
+            "{\n"
+            '  "anchor": {"type":"index","value":<1-based 序号>} 或 {"type":"title","value":"<图标题子串>"}，'
+            "若用户没指明改哪张图则 anchor=null；\n"
+            '  "target_type": 新图型(pie/bar/line/scatter/table/kpi) 或 null；\n'
+            '  "target_field": 要改到某轴的真实字段名 或 null；\n'
+            '  "target_axis": "x"/"y" 或 null；\n'
+            '  "time_grain": month/day/week/quarter/year 或 null。\n'
+            "}\n"
+            "字段画像（name 为真实字段名，必须原样引用，不得臆造）：\n"
+            f"{field_text}\n"
+            "要求：anchor 必须对应真实存在的图表，不确定就 null；只输出 JSON。"
+        )
+        user_prompt = f"用户要求：{message}\n请输出修改配置 JSON。"
+        try:
+            from app.core.llm_gateway import get_llm_gateway, LLMRequest
+            request = LLMRequest(
+                prompt=system_prompt + "\n" + user_prompt,
+                json_mode=True,
+                max_tokens=500,
+                temperature=0.2,
+            )
+            import concurrent.futures, asyncio
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                response = ex.submit(
+                    lambda r: asyncio.run(get_llm_gateway().chat_complete(r)),
+                    request,
+                ).result(timeout=40)
+            if not response or not response.success or not response.content:
+                return None
+            data = response.response_json or json.loads(response.content)
+            if not isinstance(data, dict):
+                return None
+            spec = {}
+            # 锚点校验：命中真实图才采用；否则丢弃（避免静默改错图）
+            _anchor = data.get("anchor")
+            if isinstance(_anchor, dict) and charts:
+                _at = _anchor.get("type")
+                _av = _anchor.get("value")
+                if _at == "index" and isinstance(_av, int):
+                    _idx = _av - 1
+                    if 0 <= _idx < len(charts):
+                        spec["chart_id"] = charts[_idx].get("id")
+                elif _at == "title" and isinstance(_av, str):
+                    from app.core.action_executor import ActionExecutor
+                    _hit = ActionExecutor._locate_chart(charts, {"chart_title": _av})
+                    if _hit:
+                        spec["title_keyword"] = _hit.get("title")
+            _tt = data.get("target_type")
+            if _tt:
+                spec["chart_type"] = cls._normalize_chart_type(_tt)
+            _tf = data.get("target_field")
+            if _tf:
+                _m = cls._match_field(str(_tf), field_profiles, "metric")
+                spec["target_field"] = _m or str(_tf)
+            _ax = data.get("target_axis")
+            if _ax in ("x", "y"):
+                spec["target_axis"] = _ax
+            _g = data.get("time_grain")
+            if _g in ("month", "day", "week", "quarter", "year"):
+                spec["time_grain"] = _g
+            return spec if spec else None
         except Exception:
             return None
 

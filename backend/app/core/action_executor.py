@@ -163,6 +163,24 @@ class ActionExecutor:
                 "message": "已撤销上一次的图表修改",
                 "reverse": None,
             }
+        # night22 Task A：LLM 结构化补参层（charts 优先、规则键兜底；无 llm_change_spec 时行为不变）
+        # 仅补参、不夺锚点：规则已给锚点(title_keyword/chart_id/source_type)时，绝不采纳 LLM 锚点。
+        _spec = params.get("llm_change_spec")
+        if isinstance(_spec, dict):
+            if not params.get("title_keyword") and not params.get("chart_id") and not params.get("source_type"):
+                if _spec.get("chart_id"):
+                    params["chart_id"] = _spec["chart_id"]
+                elif _spec.get("title_keyword"):
+                    params["title_keyword"] = _spec["title_keyword"]
+            if not params.get("target_type") and _spec.get("chart_type"):
+                params["target_type"] = _spec["chart_type"]
+            if not params.get("target_field") and _spec.get("target_field"):
+                params["target_field"] = _spec["target_field"]
+            if not params.get("target_axis") and _spec.get("target_axis"):
+                params["target_axis"] = _spec["target_axis"]
+            if not params.get("time_grain") and _spec.get("time_grain"):
+                params["time_grain"] = _spec["time_grain"]
+
         source_type = params.get("source_type")
         # 2026-09-29 night10 Item1(ISS-039)：字段替换（"把Y轴换成利润"）只改字段不改图型，
         # target_type 留空时不应强制改成 bar（否则会把饼图误改成柱图）。
