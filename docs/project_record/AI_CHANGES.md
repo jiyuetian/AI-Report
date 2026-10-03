@@ -173,3 +173,25 @@
 | **default branch 的 Dependabot 1 high 告警：显式降级，不处理** | ①`docs/project_record/COLLAB_RULES.md` §七「项目私有降级项（不用管）」明确列出 `- 依赖漏洞三个 major 升级` → 该告警修复需 major 升级，属降级项；②告警挂在 `main`/`master`（default branch），不在 `p0-security-fixes`，不阻断当前分支功能与推送；③后端高危依赖钉版已落 `backend/requirements.txt`（ISS-053 代码 DONE，commit `ec6dd9f`，night13），前端 `npm audit` 落锁属 CI/用户侧动作，沙箱与本机均无可用网络路径（本机未装 gh CLI） | **本轮零改动**：未修改任何依赖版本；未用 WebFetch / gh api 尝试拉取告警详情（用户指令 2026-10-03 明确禁止）。验证：`git diff HEAD` 确认 `requirements.txt` / `package.json` / `package-lock.json` 均未改动。 |
 
 > 处置要点：ISS-053 后端 5 项 CVE 钉版（python-multipart 0.0.12 / pandas 2.2.2 / jinja2 3.1.4 / email-validator 2.1.1 / httpx 0.27.2）已物理存在于 `backend/requirements.txt` 并随 night13 `ec6dd9f` 提交；default branch 上 Dependabot 报的 high 项若需闭环，属「依赖 major 升级」降级项，按 §七不在常规任务范围，由用户本机/CI 自行评估，AI 不主动改动。
+
+## 十六、教练验收轮（2026-10-03）：ISS-059 根因修复 + 全量自验收
+
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| （待提交） | fix(analytics) | **ISS-059 根因级修复**：`backend/app/core/analytics.py` 全文件事件字段防御化——`bucket_events` / `compare_two_periods` / `compute_stats` / `get_model_usage_stats` / `get_action_usage_stats` / `get_peak_usage_hour` / `get_slowest_model` / `get_top_actions` 内所有裸索引（`e["data"]` / `event["success"]` / `event["event_type"]` / `event["latency_ms"]` / `event["timestamp"]`）→ `.get(...)` 兜底（`data` 用 `(event.get("data") or {})` 兼顾「键存在但值为 None」）；聚合字典键（`stats["count"]` / `recent_stats["success"]` 等）保持原样（由代码保证存在）。修复前：事件缺 `data` 字段 → `KeyError: 'data'` → 对比接口 500（night18 TEST-2 暴露）。 | ISS-059 |
+
+### 教练自验收证据（本机 Python 3.12.10）
+
+| 门 | 命令 | 结果 |
+|----|------|------|
+| 后端语法 | `python -m py_compile app/core/analytics.py` | EXIT=0 |
+| Task J/K 回归 | `python _verify_taskjk.py` | **ALL PASS（17 项）** |
+| ISS-058 回归 | `python _verify_iss058.py` | **5/5 PASS** |
+| Task G 回归 | `python _verify_taskg.py` | **ALL PASS** |
+| Task I 回归 | `python _verify_taski.py` | **PASS=32 / FAIL=0** |
+| ISS-059 定向回归 | `python _verify_iss059.py`（新，缺字段事件） | **9/9 PASS**（修复前必 KeyError） |
+| 前端类型 | `npx tsc --noEmit` | EXIT=0 |
+| 后端健康 | `GET /api/v1/health` | **200** `{"status":"healthy","llm_reachable":true}` |
+
+> ⚠️ 运行中的 8000 后端为 **09-30 13:41 启动的旧实例**（pid=9632），未含 night15-18（Task G/H/I/J/K、ISS-058）与本次 ISS-059 修复；新功能上线需用户手动重启 8000（禁 kill，按 B5 守卫流程）。
+> `_verify_iss059.py` 为隔离验证脚本（`.gitignore:84 _*.py`，未进仓）。

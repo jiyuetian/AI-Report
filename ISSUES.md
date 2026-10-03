@@ -301,3 +301,15 @@
   5. `AI_CHANGES.md` §14 台账登记。
 - **验证**：`backend/_verify_iss058.py`（零 DB，走真实 `execute_action` 派发，同 chat.py L1027 undo 路径）5/5 PASS —— a) `把阈值调80%`→0.8 写入 ✅ b) `阈值设成0.85`→保持0.85 ✅ c) `把阈值调500%`→越界 `requires_clarify` ✅ d) 缺字段→`requires_clarify` ✅ e) undo 首次设阈值→`thresholds` 清空 + reverse 存原值 0.8 可 redo ✅。`py_compile` 三文件全绿。
 - **回归**：与 `filter_drill` 不冲突（`把阈值调80%`→`adjust_threshold`；`只看2024年的数据`→仍走 `filter_drill`）；未 push，等本机手推。
+
+
+## ISS-059 analytics.compare_two_periods.compute_stats 对 `e["data"]` 未做 `.get` 防御（night18 TEST-2 全量回归暴露）
+
+- **现象（night18 n18_7 TEST-2 全量回归发现）**：`backend/app/core/analytics.py` 的 `compute_stats(events)` 与 `compare_two_periods(...)` 内部，直接以 `e["data"]` 索引访问事件字典；当事件缺 `data` 字段时抛 `KeyError: 'data'`。
+- **触发路径**：`UsageStats.record_event` 的 `data` 参数为可选（chat.py / llm_gateway.py 埋点均传参），但下游 `compare_two_periods` 未做防御性读取；只要有一条事件缺 `data`，前后段对比接口 `/usage-stats/...` 会 500。
+- **影响面**：`compare_two_periods` 目前仅被 `UsageStats.get_stats` / `analyze_patterns` 调用，用于「最慢模型」「7 日前后对比」等分析；生产上未观察到真实异常（埋点均已带 `data`），但属于**契约不匹配**——下游不防御上游可能缺字段的形态，属健壮性缺口。
+- **根因**：`_verify_taskjk.py` 场景构造事件时未带 `data` 字段，暴露真实生产代码未做 `e.get("data", {})` 兜底。night17 Task J 引入 `UsageStats` 时 `data` 字段是隐式约定，未落成文档契约。
+- **修复建议（下轮做）**：`compute_stats` / `compare_two_periods` 内所有 `e["data"]` 改为 `e.get("data", {})`；同时给 `UsageStats.record_event` 加类型注解 `data: Dict[str, Any] = {}`，把契约显式化。零 DB、纯静态改动，低风险。
+- **状态**：`[DONE]` — 教练验收轮（2026-10-03）根因级修复，commit `（见 AI_CHANGES.md §十六）`。
+  - **修复范围（比原建议扩大）**：不止 `compute_stats` / `compare_two_periods`，而是 `analytics.py` **全文件**事件字段防御化——`bucket_events` / `get_model_usage_stats` / `get_action_usage_stats` / `get_peak_usage_hour` / `get_slowest_model` / `get_top_actions` 一并改 `.get(...)` 兜底（`data` 用 `(event.get("data") or {})`）。
+  - **验证**：新增 `_verify_iss059.py`（隔离，gitignored）9/9 PASS（缺 `data` / `success` / `event_type` / `latency_ms` 事件全不崩）；回归 `_verify_taskjk.py` 17/17、`_verify_iss058.py` 5/5、`_verify_taskg.py` ALL、`_verify_taski.py` 32/0 全 PASS；`py_compile` EXIT=0。

@@ -2,6 +2,7 @@
 
 > 凡涉及"删数据 / 改语义 / 引新依赖 / 架构改动"，停下记录于此，等你拍板后再动。
 > 更新规则：拍板后把该项移到 PROJECT_STATUS.md 的对应项，并划掉。
+> **本版：v2，2026-10-03（追加 Q13–Q16，对齐 night18）。**
 
 ---
 
@@ -83,3 +84,23 @@
   exceptions/schema-heal 等会改数据的）；B) 只收口对外端点、`_internal` 测试桩靠部署层隔离；
   C) 暂停。另：本次只做了"必须登录"（认证），**未做归属校验（认证用户能否改他人资源）**，
   这是更大的攻击面，需单独立项。
+
+## Q13. ISS-059 `compute_stats` 健壮性缺口 —— 顺手修还是单独轮？（night18 登记）
+- 现状：`analytics.compute_stats` / `compare_two_periods` 直接 `e["data"]` 索引；事件缺 `data` 字段时 `KeyError` → 对比接口 500。night18 TEST-2 暴露。
+- 修复：全部改 `e.get("data", {})`；给 `UsageStats.record_event` 加 `data: Dict[str, Any] = {}` 类型注解。零 DB、纯静态、<5 分钟。
+- 待拍板：A) 下轮（night19）顺手修（建议）；B) 单独立项。
+
+## Q14. Dependabot 1 high 依赖漏洞（default branch）
+- 现状：GitHub Dependabot 在 **default branch（main/master）** 报 1 个 high；**不在** `p0-security-fixes`，**不阻断功能与推送**，属"有空再处理"。
+- 取数难点：告警页需登录鉴权，匿名 WebFetch 拿不到；本机 **`gh` CLI 未安装**（`gh: 命令未识别`）。
+- 两条路径：A) 浏览器登录 GitHub 直接看（哪个依赖 / 漏洞版本范围 / fixed 版本 / CVE/GHSA）；B) 装 `gh` 后 `gh api repos/jiyuetian/AI-Report/dependabot/alerts --jq '...'` 取结构化 JSON。
+- 待拍板：拿到依赖名与版本后，评估影响面（default branch 代码路径是否真用到漏洞面）→ 给最小升级方案（改 `package.json` / `requirements.txt` 锁版本 + 重装）。**低优先，不阻断交付。**
+
+## Q15. ISS-030 glm 资源包到期（10-25）—— 续包 or 切档？
+- 现状：`glm-4.5-air` 免费 1200 万专属包 10-25 到期；到期后该层失效。
+- 待拍板（建议 10-20 前）：A) 切 `glm-4.5-air`（已到期则换其他免费层）；B) 智谱控制台续包；C) 调整七层链顺序。
+- 影响：仅影响 failover 备层可用性，主用 `kimi-k3` 不受影响。
+
+## Q16. 阶段 9 AI 对话 Top3 先做哪个？
+- 三项：① 多轮历史稳定注入（最多上 5 轮，超出截断）② 主链路 LLM 结构化提取 ③ 澄清循环退避。
+- 待拍板：建议先做 **① 多轮历史稳定注入**（收益最直接、与 ISS-038 上下文串号同源）。

@@ -1,11 +1,12 @@
 
 
-> 覆盖：AI 生成看板 / AI 对话迭代 / AI 参与每层 / 用户视图 / AI 视图 / 边界异常 / 弹窗兜底 / 模型轮换 / 派生指标 / AI 管控
-> 总数：**A–K 143 条 + 模块 L 9 条 + 模块 M 6 条 = 158 条**（v1.5 · night14 D-018 AI 操作日志白盒化）
+> 覆盖：AI 生成看板 / AI 对话迭代 / AI 参与每层 / 用户视图 / AI 视图 / 边界异常 / 弹窗兜底 / 模型轮换 / 派生指标 / AI 管控 / 阈值调整
+> 总数：**A–M 158 条 + 模块 N 8 条 = 166 条**（v1.6 · night18 ISS-058 阈值调整验收）
 > v1.2：I 扩至 8 条 / +J 管控 8 条 / C·E 转入准出分母
 > v1.3 变更（AI 最高权限拍板）：C-3 由"用户拍板"改为"AI 直接修改走规则引擎+留痕"；I-2 由"确认前不动数据"改为"直接执行+留痕+可回退"；新增 C-16 下游重算一致性、C-17 修改留痕
 > v1.4 变更：+K 口语复合指令 12 条（09-29 用户真实实测语句）
 > v1.5 变更（night14 D-018）：+L AI 操作日志白盒化 9 条（ai_action_log 埋点全路径 + 异常健壮性）；Task1 实现并自测全绿（L1–L9）；Task2 查询 API 新增模块 M 6 条（M1–M6，分页+权限隔离+多维过滤+时间区间）
+> v1.6 变更（night18 ISS-058）：+N 阈值调整 8 条（ADJUST_THRESHOLD 意图识别 + executor 写 `config.thresholds` + undo 闭环 + 区间护栏 + 与 filter_drill 语义隔离）
 > 用法：agent 连续开发自测 → TEST-2 达准出线 → 用户统一验收
 
 ---
@@ -417,6 +418,31 @@
 | # | 触发 | 预期 | 验证方式 | 优先级 |
 |---|---|---|---|---|
 | M-6 | start_time / end_time（ISO-8601，含端点） | 返回 `created_at` 落在闭区间内的行；边界值包含 | 调 handler 传时间区间断言 total 与边界 | P0 |
+
+---
+
+## 模块 N：阈值调整 ADJUST_THRESHOLD（8 条 · v1.6 新增，night18 ISS-058 验收模块）
+
+> 背景：ISS-058（原「把阈值调X%」无对应动作）→ night18 落码 `intent_classifier` + `action_planner` + `action_executor` + `remove_on_undo` 短路。
+> 语义隔离：写 `config.thresholds[field]`（非 `config.filters`，避免与 filter_drill 冲突）。
+> 关联：`_verify_iss058.py` 35/35 全 PASS；commit `f0cc1fb`。
+
+| # | 输入 | 预期 | 验证方式 | 优先级 |
+|---|---|---|---|---|
+| N-1 | 「把阈值调 80%」 | 意图=ADJUST_THRESHOLD；`config.thresholds[field]=0.8`；产 reverse | 走真实 `execute_action`，断言 `thresholds` 键值 | P0 |
+| N-2 | 「阈值设成 0.85」 | 意图=ADJUST_THRESHOLD；`config.thresholds[field]=0.85`（未带 `%` 且 ≤1，原值保留）| 断言 value=0.85 | P0 |
+| N-3 | 「把阈值调 0.5」 | 意图=ADJUST_THRESHOLD；`config.thresholds[field]=0.5` | 断言 value=0.5 | P0 |
+| N-4 | 「把阈值调 100%」 | 意图=ADJUST_THRESHOLD；`config.thresholds[field]=1.0`（边界值）| 断言 value=1.0，不抛错 | P1 |
+| N-5 | 「把阈值调 500%」 | 意图=ADJUST_THRESHOLD；返回 `requires_clarify`；阈值不落地 | 断言 result.status=='requires_clarify' 且 thresholds 未变 | P0 |
+| N-6 | 「把阈值调 0%」 | 意图=ADJUST_THRESHOLD；返回 `requires_clarify`（≤0 越界）| 同上 | P0 |
+| N-7 | 「把不存在的字段阈值调 50%」 | 意图=ADJUST_THRESHOLD；`requires_clarify`（字段不存在）| 断言 result.status 且 thresholds 未变 | P0 |
+| N-8 | 撤销：先「把阈值调 80%」→ 撤销 | undo 后 `thresholds[field]` 键被 pop；reverse 存原值 0.8 可 redo | 走 chat.py L1027 undo 路径；断言 pop + reverse.payload.value==0.8 | P0 |
+
+**回归护栏（与 filter_drill 语义隔离）**：
+
+- 「只看 2024 年的数据」→ 仍走 `filter_drill`（不落入 ADJUST_THRESHOLD）
+- 「只看华东」→ 仍走 `filter_drill`（枚举值替换，不动 thresholds）
+- 「把阈值调 80%」→ 只落 `config.thresholds`，不动 `config.filters`
 
 ---
 

@@ -3,8 +3,8 @@
 # AI 协作手册（COLLAB_RULES.md）
 
 > 所有 AI（旧 agent / 未来模型）开工前**必须先读本文件**。
-> 本文件是"我们俩 + AI"三方对齐的唯一权威。
-> **本版：v1（2026-09-24）。**
+> 本文件是"用户 + 教练 + 执行 agent"三方对齐的唯一权威。
+> **本版：v2（2026-10-03，对齐 night18 现状）。**
 
 ---
 
@@ -188,36 +188,37 @@
 
 ---
 
-## 五、协作规则（交接协议）
+## 五、协作规则（三角色分工）
 
 **踩过的坑**：
 - ~~双 agent 分工不清~~（**已作废：新 agent 弃用，单一旧 agent**）
-- 你传话丢细节（如果以后有双 agent 才适用）
+- ~~你成了"测试员"~~（AI 说好了，你去测）→ 改为 AI 自证 + 你只做本机验收
 - 模型切换断链（新模型不知道旧记录）
-- 你成了"测试员"（AI 说好了，你去测）
+- 教练越位写代码 → 教练只出提示词/判结果，不碰代码（v2 明确）
 
 **规则**：
 
-### 规则 1：单一 agent 模式（v1 更新，替代旧"双 agent 分工"）
-- **旧 agent**：同时出方案 + 执行 + 自证
-- **教练（本对话）**：给提示词 + 判结果 + 维护 `PROJECT_STATUS.md` / `ISSUES.md`
-- **你**：拍板 + 本机验收
+### 规则 1：三角色分工（v2 定稿，替代 v1"单一 agent 模式"）
+| 角色 | 干什么 | 不干什么 |
+|---|---|---|
+| **用户（季工）** | 拍板 + 本机验收 + 传话（原文复制） | 不做测试员、不写提示词 |
+| **教练（本对话）** | 复盘 + 界定职责 + 给提示词 + 判结果 + 维护 `PROJECT_STATUS.md` / `ISSUES.md` / `AI_CHANGES.md` 台账 | **不写业务代码**（只出方案/提示词） |
+| **执行 agent** | 编码执行 + 自证 + 贴 diff + 真跑结果 + 登记 `AI_CHANGES.md` | 不擅自扩大范围、不跳过红线 |
 
-### 规则 2：结构化交接（如果未来引入新 agent）
-- 新 agent 输出：方案（改哪个文件 + 改什么 + 怎么验证）
-- 你传递：原文复制，不改一个字
-- 旧 agent 执行：贴 diff + 真跑结果
-- 新 agent 复核：看 diff 判断对不对
+### 规则 2：结构化交接（跨 agent / 跨模型）
+- 教练输出：提示词（含背景 + 目标 + 边界 + 验收方式）
+- 用户传递：**原文复制，不改一个字**
+- 执行 agent：贴 diff + 真跑结果 + `AI_CHANGES.md` 登记
+- 教练复核：看 diff 判断对不对，不对则打回
 
-### 规则 3：模型切换承接（如果未来换模型）
-- 换模型前：写 `HANDOFF.md`
-- 新模型读：`PROJECT_STATUS` + `ISSUES` + `HANDOFF`
-- 新模型复述：当前状态 + 下一步
-- 确认后才动手
+### 规则 3：模型切换承接（换模型时）
+- 换模型前：更新 `handover/`（当前状态 + 待办 + 坑位）
+- 新模型读：`COLLAB_RULES` + `PROJECT_STATUS` + `ISSUES` + `handover/README`
+- 新模型复述：当前状态 + 下一步 → 确认后才动手
 
-### 规则 4：我不做测试员
-- AI 的活：改 + 自证
-- 我的活：看证据 + 拍板
+### 规则 4：用户不做测试员
+- AI 的活：改 + 自证（四样证据）
+- 用户的活：看证据 + 拍板 + 本机验收
 - AI 说"好了" → "给四样证据"
 
 ### 规则 5：三次上限
@@ -225,14 +226,31 @@
 - 出完整调用链分析
 - 不许"再试一次"
 
+### 规则 6：一 commit 一类改动（night13 起固化）
+- 一类一 commit + 一类一 push；失败立即 `git revert`
+- commit 前必须给用户看 diff
+- commit 信息关联 ISS 编号 / Task 编号
+
 ---
 
-## 六、测试规则（待补）
+## 六、测试规则（v2 补齐）
 
-**待补内容**：
-- 覆盖矩阵格式
-- 准出判定标准
-- 100 条用例（A-G 模块）执行规范
+**测试资产**：
+- 用例总表：`docs/test/AI_TEST_CASES_v1.md`（**v1.6，night18 新增模块 N**）
+- 覆盖模块：A–N（对话动作 / 图表 / 清洗 / 指标 / 阈值调整 等）
+- 数据：`tests/_fixtures/ai_test/`（14 文件，8 类）
+- 回归脚本：`backend/_verify_*.py`（隔离、零 DB 优先；按项目惯例 gitignored）
+
+**准出判定**：
+- 每条用例给「输入 → 预期 → 验证方式 → 优先级（P0/P1/P2）」
+- 真跑断言（走真实 `execute_action` / 真实路由），**不用构造桩替代**
+- 全量回归 = `_verify_*.py` 全 PASS + `py_compile` 全绿 + 前端 `tsc --noEmit` EXIT=0 + `/api/v1/health` 200
+- night18 TEST-2 全量回归：98 检查点全 PASS
+
+**验证脚本契约（night17 教训，night18 固化）**：
+- 命名 `_verify_<主题>.py`，放 `backend/`，gitignored
+- 键名 / 返回类型 / 事件字段与生产契约一致（如 `IntegrationTestCase.run()` 返回 `bool`）
+- 脚本自身 bug 与生产代码 bug 分开提交
 
 ---
 
@@ -254,18 +272,22 @@
 
 ---
 
-## 八、附录
+## 八、附录（v2 现状核对，2026-10-03）
 
-- `NAMING.md`（待建）
-- `AUTH_INJECTION.md`（待建）
-- `RAG_UNITS.md`（待建）
-- `PROJECT_STATUS.md`（已有）
-- `ISSUES.md`（已有）
-- `DECISIONS.md`（待建）
-- `CHANGELOG.md`（有文件，未系统维护）
-- `DOD.md`（待建）
-- `FACTS.md`（待建）
-- `RUNBOOK.md`（待建）
+| 文档 | 状态 | 位置 |
+|---|---|---|
+| `NAMING.md` | ✅ 已有 | `docs/project_record/NAMING.md` |
+| `DOD.md` | ✅ 已有 | `docs/project_record/DOD.md` |
+| `FACTS.md` | ✅ 已有（v3） | `docs/project_record/FACTS.md` |
+| `RUNBOOK.md` | ✅ 已有（草稿转正） | `docs/project_record/RUNBOOK.md` |
+| `PROJECT_STATUS.md` | ✅ 已有（v3） | `docs/project_record/11-项目总状态PROJECT_STATUS.md` |
+| `OPEN_QUESTIONS.md` | ✅ 已有 | `docs/project_record/13-待拍板OPEN_QUESTIONS.md` |
+| `ISSUES.md` | ✅ 已有 | 项目根 `ISSUES.md` |
+| `CHANGELOG.md` | ✅ 已有（v3） | `docs/project_record/CHANGELOG.md` |
+| `AI_CHANGES.md` | ✅ 已有（逐条台账） | `docs/project_record/AI_CHANGES.md` |
+| `DECISIONS.md` | ⚠️ 项目内缺，仅 OneDrive 有「决策记录.md」 | 待归位 |
+| `AUTH_INJECTION.md` | ❌ 未建 | 待建 |
+| `RAG_UNITS.md` | ❌ 未建 | 待建 |
 
 ---
 
@@ -280,9 +302,9 @@
 
 ## 十、最后更新
 
-- **时间**：2026-09-24
-- **版本**：v1
+- **时间**：2026-10-03
+- **版本**：v2
 - **状态**：
-  - 5 类规则已定
-  - 3 处更新已合入（RAG 三项 / 五类唯一源现状 / 单一 agent 模式）
-  - 落成 `COLLAB_RULES.md` 放项目根目录（**未做**）
+  - 五类规则已定（沟通 / 记忆 / 环境 / 规范 / 协作）
+  - v2 更新：协作模式改**三角色分工**（用户/教练/执行 agent）+ 补 `六、测试规则` + `八、附录` 现状核对 + 新增规则 6（一 commit 一类）
+  - 落盘 `docs/project_record/COLLAB_RULES.md`（✅ 已完成，取代 v1 根目录待建状态）

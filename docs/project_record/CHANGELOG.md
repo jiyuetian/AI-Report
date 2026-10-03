@@ -5,7 +5,47 @@
 > 本项目所有显著变更都记录在此文件。
 > 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 > 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-> 本版：v2，2026-09-28。**
+> 本版：v3，2026-10-03（补 night9–18 全量提交链）。**
+
+---
+
+## [1.2.0] - 2026-10-03（第四期 · night9～night18）
+
+### 新增
+- **第四期主线 Task A–K 全部落地**（详见 `11-项目总状态PROJECT_STATUS.md` §三）
+  - Task A LLM 链调 7 层（`50308ea`，D-020）
+  - Task B 图表模板库后端（`a33f655`）/ 前端（`76e81ea`）
+  - 链路规则引擎 YAML + fail-fast + rule_id 回链（`47681b1`）
+  - Task G 最高权限 CRUD（`a01deb1`）
+  - Task H 派生指标 14 项 + `METRIC_REGISTRY`（`2932834`）
+  - Task I 下游重算一致性 C-16（`5f6c6a5`）
+  - Task J 使用统计 J-8（`UsageStats` 内存态脱敏，`45a7ad6`）
+  - Task K 全链路联调（`integration/` 离线 smoke，`45a7ad6`）
+- AI 行为白盒化埋点 `ai_action_log`（`d221f04`）+ 日志查询 API/页（`9be596c`）
+- ISS-058 阈值调整 `ADJUST_THRESHOLD` 意图 + executor + undo 闭环（`f0cc1fb`）
+- ISS-044 `json_mode` 防护（剥 Markdown 围栏 + 重试 + 切 provider，`a555b99`）
+
+### 修复
+- ISS-057 `run_backend.py` `_pid_alive` Windows ctypes 探活（`270f21c`）
+- ISS-038 跨看板上下文串号（`de52552`）
+- ISS-052 `add_chart` 语义路由 + 维度护栏（`ddadc8a`）
+- ISS-055 输出护栏标题语义校验 + K-7 维度质量（`cbeb308`）
+- ISS-056 对话动作骨架补全 remove/undo/布局上下文 + 字段匹配失败禁出图（`ebc3381`）
+- ISS-039/040 规则缺口（edit_title/字段替换/year 筛选/纠正句式，`3a8ad7b`）
+- 六层 failover 模型透传 bug（`request.model` 锁死 `kimi-k3`，`9c9e1b7`）
+- ISS-048 对话新增图柱值标签/长数字串格式化漏点（`dd7af5c`）
+- ISS-045 LLM 调用失败指数退避重试 8/16/24s（`fed1476`）
+- ISS-053 依赖安全钉固（python-multipart/pandas/jinja2/email-validator/httpx，`ec6dd9f`）
+- ISS-050/051 数据明细预览 + 清洗质检行级明细表（`29113c4` / `ade8246`）
+- ISS-046/047/048 统一比率格式化 + 柱值标签（`589e27d`）
+- ISS-049 散点轴一致性护栏（`f395a00`）
+- ISS-033「再来一个」闭环 + 指标名抽取盲区（`2fd76dd`）
+- night17/18 遗留：`analytics` defaultdict 导入 / `import time` / `test_runner` 契约（`e338981` / `849ccba` / `af4fd5b`）
+
+### 变更
+- 测试体系扩至模块 A–N；night18 TEST-2 全量回归 98 检查点全 PASS
+- 对话动作体系补 `adjust_threshold` / `remove` / `undo` 等骨架
+- 开发纪律固化：一类一 commit、每 commit diff 全文贴报告、`AI_CHANGES.md` 逐条登记
 
 ---
 
@@ -136,11 +176,11 @@
 
 ## 最后更新
 
-- **时间**：2026-09-24
-- **版本**：v1
+- **时间**：2026-10-03
+- **版本**：v3
 - **状态**：
-  - 骨架从 0.1.0 到 1.0.0 已齐
-  - 更新纪律已定
+  - 骨架从 0.1.0 到 1.2.0 已齐
+  - 更新纪律已定（每次 commit 后追加）
   - 版本号规则已定
   - 与 DECISIONS 分工已明确
-  - 落盘 `CHANGELOG.md`（**待做**）
+  - v3 补齐 night9–18 全量提交链；落盘 `docs/project_record/CHANGELOG.md`（✅）
