@@ -548,3 +548,29 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - `backend/.env`：+3（显式 `=on`），**本地 gitignored，不进 commit**（含密钥，永不入仓）。
 - `backend/_night24_verify_a.py`：gitignored 验证脚本（wire/secure 两模式）。
 - **状态**：`[DONE]` 2026-10-03（本地未 push，待 commit）。
+
+---
+
+## 三十一、night24 Task B：端到端连通性回归（22 写 + 73 内部 + 重点端点）
+
+> 红线：零 DB 写、不 push、不改 SSE、不 kill 进程（用 app.main 路由表静态核对，不重启后端）；禁真 LLM；验证脚本 gitignored（`_*.py`）。
+> 结论：零代码改动，全部通过，无需修 401/404（所有重点端点均存在且带正确鉴权依赖）。
+
+### ① 核对范围与方法
+- 从 `app.main` 权威加载路由表，遍历 `route.dependant.dependencies`（签名级 Depends）+ `route.dependencies`（路由/应用级）识别鉴权依赖（`get_current_user` / `internal_endpoint_guard`）。
+- 重点端点 7 个 + `/chat/test/*` 整组 + night22 Batch1 22 写端点全量复核。
+
+### ② 结果（全部 PASS）
+- 重点端点：POST `/chat/execute-action`、POST `/tokens/consume`、POST `/brain/run`、GET `/brain/run/{id}/status`（均含 `get_current_user`）；GET `/skills`、POST `/trigger`、GET `/dependency-graph`（均含 `internal_endpoint_guard`）—— 7/7 存在且鉴权到位（带 token 不会 401，路由存在不会 404）。
+- `/chat/test/*` 整组 4/4 含 `internal_endpoint_guard`。
+- 22 写端点（night22 Batch1）22/22 含 `get_current_user`（0 漏网）。
+- 73 内部端点（night23 Batch2）路由表抽查全部含 `internal_endpoint_guard`（/brain/* 40+、/skills、/trigger、/dependency-graph、/chat/test/*）。
+
+### ③ 路径纠正（任务书 stale，非代码缺陷）
+- 任务书所列 `/recalc/trigger`、`/recalc/dependency-graph` **路由表不存在**；真实内部编排端点为 `/api/v1/trigger`、`/api/v1/dependency-graph`（均已挂 guard）。已按真实路径核对，无需补鉴权。
+- night22 原登记 `/api/v1/token_applications/apply` 实际路径为 `/api/v1/tokens/applications/apply`（tokens 复数）；`/api/v1/exceptions/session/kickout/{user_id}` 实际为 **GET**（非 POST）。已校正核对清单，结论不变。
+
+### ④ 复现 / 改动
+- `python backend/_night24_verify_b.py` → `RESULT: PASS`（7 重点 + 4 chat/test + 22 写，0 漏网）。
+- 改前=改后：无代码改动（仅验证脚本 gitignored）。
+- **状态**：`[DONE]` 2026-10-03（零代码改动，本地未 push；登记用本 commit）。
