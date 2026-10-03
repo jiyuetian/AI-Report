@@ -85,7 +85,11 @@ except Exception:
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-MAX_RETRIES = 1  # 1.2 fail-fast：每 key 仅初始+1次重试即切下一 key（原 2 → 连试3次太慢）；外层再逐 provider 切换
+MAX_RETRIES = 2  # ISS-045 网关自动退避：每 key 初始+2次重试 = 3 次尝试，退避 8/16/24s（min(8*(retry+1),45)）；外层仍逐 provider 切换
+
+def _backoff_wait(retry: int) -> float:
+    """指数退避等待（秒）：8*(retry+1)，封顶 45s → retry=0/1/2 ⇒ 8/16/24s。"""
+    return min(8 * (retry + 1), 45)
 
 
 def _mask(text: str) -> str:
@@ -499,7 +503,7 @@ class LLMGateway:
                         last_error = f"LLM超时(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
                         if retry < MAX_RETRIES:
-                            await asyncio.sleep(min(2 ** retry, 0.5))  # 1.2 退避封顶0.5s（fail-fast 切key）
+                            await asyncio.sleep(_backoff_wait(retry))  # ISS-045 指数退避 8/16/24s
                             continue
                         key_exhausted = True
                         break
@@ -507,7 +511,7 @@ class LLMGateway:
                         last_error = f"LLM网络错误(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
                         if retry < MAX_RETRIES:
-                            await asyncio.sleep(min(2 ** retry, 0.5))  # 1.2 退避封顶0.5s（fail-fast 切key）
+                            await asyncio.sleep(_backoff_wait(retry))  # ISS-045 指数退避 8/16/24s
                             continue
                         key_exhausted = True
                         break
@@ -521,9 +525,13 @@ class LLMGateway:
                             last_error = f"LLM限流(429, attempt {retry + 1}): {err_body}"
                             print(f"[LLM] provider {prov_name} {last_error}")
                             if retry < MAX_RETRIES:
-                                # 优先采用服务端 Retry-After，否则指数退避
+                                # 优先采用服务端 Retry-After，否则指数退避；统一封顶 45s
                                 ra = e.response.headers.get("retry-after")
-                                wait = float(ra) if (ra and str(ra).strip().isdigit()) else 2 ** retry
+                                try:
+                                    ra_val = float(ra) if (ra and str(ra).strip().isdigit()) else None
+                                except (TypeError, ValueError):
+                                    ra_val = None
+                                wait = min(max(_backoff_wait(retry), ra_val), 45) if ra_val else _backoff_wait(retry)
                                 await asyncio.sleep(wait)
                                 continue
                             key_exhausted = True
@@ -554,7 +562,7 @@ class LLMGateway:
                                 })
                                 json_hint_added = True
                                 print(f"[LLM-JSON-FIX] provider {prov_name} 已强化 prompt 重试一次（要求只返回合法 JSON）")
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(_backoff_wait(retry))
                             continue
                         key_exhausted = True
                         break
