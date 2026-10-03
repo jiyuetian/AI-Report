@@ -332,3 +332,39 @@
 - **零回归保证**：confirm（L687-714）/ negate（L676-686）/ `cancel_pending` 清除 pending 三路径均不变；收敛 pending `clarify_round>=MAX`，再次模糊输入幂等重新收敛，不无限追问。
 - **验证**：`py_compile` 两文件 EXIT=0；`_verify_clarify_cap.py` **13/13 PASS**（R1/R2/R3/R3b 回归 9 + R4-前 proposal 存在 / R4 收敛后「确认」命中 proposal 采纳 / R5「取消」→ cancel_pending / R6 再次模糊仍收敛 共 4）。验证脚本 gitignored（过程文件，不进 commit）。
 - **状态**：`[DONE]` 2026-10-03，见 `ISSUES.md` ISS-060。本地未 push。
+
+---
+
+## 二十四、night22 Task A：CHANGE_CHART LLM 结构化补参层（落地实施）
+
+> 方案见 §20（night19 任务A 决策为「方案交付」，本轮按 night22 任务书落地）。用户第一优先、护栏最敏感。
+> 红线：禁真实 LLM（沙箱 429）→ 全程 mock 离线验证；零 DB 写；不 push。
+
+### ① 改前现象（night19 核实）
+- `intent_classifier._extract_params` CHANGE 分支（L514-561）仅规则提取 `source_type/target_type/title_keyword/target_field/target_axis/time_grain`，**不调 LLM、不产 charts**。
+- 多字段口语化指令（如"利润放Y轴，按月看"、锚点用"第 N 张"表达）规则无法解析锚点→执行器回落 `which_chart` 澄清，体验退化。
+- `action_executor._execute_change_chart` 只消费规则键；无"charts 优先"通道。
+
+### ② 改后现象（实施）
+- **新增 `IntentClassifier._llm_extract_change_chart(message, field_profiles, context)`**：LLM 结构化补参（图型/字段/轴/粒度），**锚点仅当规则未给时采纳**，且必须命中真实图（序号→`chart_id` / 标题→`_locate_chart` 校验），否则**丢弃**→回落规则或 `which_chart` 澄清。失败（含 gateway 不可用）→ 返回 None。
+- `_extract_params` CHANGE 分支末尾：`field_profiles` 可用时调 LLM，结果存 `extracted_params["llm_change_spec"]`（独立键，避免 ADD 执行器误吞）。
+- `action_executor._execute_change_chart` 顶部：有 `llm_change_spec` 时 **charts 优先 / 规则键兜底** 叠加（仅补规则空缺的字段与锚点）；**无该键时逐字走旧逻辑，零回归**。
+- **守卫**：LLM 只补参不夺锚点；规则已给锚点（title_keyword/chart_id/source_type）时绝不采纳 LLM 锚点；绝不静默改第一张（守 P0-3）。
+
+### ③ 复现 / 验证（离线 mock，禁真 LLM）
+```
+py_compile backend/app/core/intent_classifier.py backend/app/core/action_executor.py   → COMPILE_EXIT=0
+python backend/_verify_change_chart_llm.py                                        → 22/22 PASS
+```
+- R0（真实解析路径 + fake gateway）：合法序号锚点→`chart_id=c2`；非法序号锚点→丢弃（不采纳）。
+- R1（集成）："改成柱状图，把利润放Y轴，按月看" + LLM 补 `chart_id=c2/字段=利润/粒度=month` → 正确改中图 c2（非第一张），Y轴=利润，粒度=month。
+- R2（锚点缺失→澄清）：LLM 只给字段无锚点 → `requires_clarify`（which_chart），零改动、绝不静默改第一张。
+- R3（无 LLM→规则不变）：`field_profiles=None` → 无 `llm_change_spec`；多图无锚点仍澄清、标题锚点（"把地区分布换成饼图"）仍成功改 c3→pie。
+- R4（回归 P0-3）："把Y轴换成利润" 无锚点多图 → 仍 `which_chart` 澄清（守卫不变）。
+
+### ④ 改动文件
+- `backend/app/core/intent_classifier.py`：+94（新增 `_llm_extract_change_chart` + CHANGE 分支接入）
+- `backend/app/core/action_executor.py`：+18（顶部 `llm_change_spec` 叠加）
+- `backend/_verify_change_chart_llm.py`：gitignored 过程文件（22 用例）
+- **状态**：`[DONE]` 2026-10-03，commit `2682e06`（本地未 push）。
+
