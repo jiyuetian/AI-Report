@@ -453,3 +453,31 @@ python backend/_night23_verify_b.py   -> RESULT: PASS=22 FAIL=0（ISS-041 复合
 - `backend/app/core/action_planner.py`：+66/−2（vs HEAD `1fc41f3`），唯一 tracked 改动；`intent_classifier.py` 仅 debug 编辑后已还原（py_compile 通过）。
 - `backend/_night23_verify_b.py`：gitignored 验证脚本。
 - **状态**：`[DONE]` 2026-10-03，commit `c4f7727`（本地未 push）。
+
+---
+
+## 二十八、night23 Task C：LLM 429 韧性加固（网关 failover + 分类器去污染）
+
+> 红线：零 DB 写、不 push、不改 SSE、禁真 LLM（mock 注入 429 / LLM=None）。
+
+### ① 改前现象（核实）
+- **网关**：`llm_gateway.py:556` 429 分支对**同层 provider 内**做 8/16/24s 指数退避重试（`_backoff_wait`），限流是 provider 维度配额问题，同层重试徒增延迟且大概率仍 429；且无逐层 429 计数。
+- **分类器**：`intent_classifier.py:563` night22 Task A 补参块是与 `if CHANGE_CHART` 平级的独立 `if`，对 ADD/DELETE 等所有意图注入 CHANGE 专属 `llm_change_spec`；LLM 不可用时 ADD/DELETE 被污染/误路由（429 韧性缺口）。
+
+### ② 改后现象（实施）
+- **网关**（`app/core/llm_gateway.py`）：429 分支改为**立即切下一层**（`key_exhausted=True; break`，不 sleep 满退避）；`self._incr_rate_limit(prov_name)` 逐层记 429 计数；`__init__` 加 `self._rate_limit_counts`；新增 `get_rate_limit_stats()` 供健康监测/failover 决策。
+- **分类器**（`app/core/intent_classifier.py`）：补参块收窄为 `if intent_type == IntentType.CHANGE_CHART and _fps and not ...`，ADD/DELETE 不再被注入 `llm_change_spec`；CHANGE 路径行为不变（零回归）。
+
+### ③ 复现 / 验证（零 DB、禁真 LLM）
+```
+python backend/_night23_verify_c.py   -> RESULT: PASS=17 FAIL=0（A 网关 4 场景 + B 分类器 3 场景）
+```
+- A1 两层 429→立即 failover+计数+快(0.001s)；A2 p1=429/p2=200→切 p2 成功；A3 探针路径(`max_retries=0`)覆盖；A4 401 不计 429。
+- B1 ADD 无污染+规则参数保留；B2 DELETE 索引保留；B3 CHANGE 路径不变。
+- 回归：三文件 `py_compile` OK；night23 Task B 套件 22/22 仍 PASS。
+
+### ④ 改动文件
+- `backend/app/core/llm_gateway.py`：429 分支重写 + 计数方法 + `__init__` 计数（约 +21/−12）。
+- `backend/app/core/intent_classifier.py`：补参 gate 条件（约 +5/−1）。
+- `backend/_night23_verify_c.py`：gitignored 验证脚本。
+- **状态**：`[DONE]` 2026-10-03（本地未 push，待与文档一并 commit）。

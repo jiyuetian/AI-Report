@@ -560,9 +560,12 @@ class IntentClassifier:
                 _ep["target_field"] = _axis_m.group(3).strip("。，； ")
                 _ep["target_axis"] = "x" if _axis_m.group(1) in ("X轴", "x轴", "横坐标") else "y"
 
-        # night22 Task A：CHANGE_CHART LLM 结构化补参（只补参不夺锚点；失败回规则，零回归）
+        # night23 Task C：CHANGE_CHART LLM 结构化补参（只补参不夺锚点；失败回规则，零回归）。
+        # 关键：本块仅对 CHANGE_CHART 生效——此前它是与 `if CHANGE_CHART` 平级的独立 `if`，
+        # 会对 ADD/DELETE 等所有意图都注入 llm_change_spec（CHANGE 专属补参结构），
+        # 导致 ADD/DELETE 在 LLM 不可用时被污染/误路由（429 韧性缺口）。现限定意图。
         _fps = context.get("field_profiles") or (context.get("dataset_info") or {}).get("field_profiles")
-        if _fps and not (analysis.get("extracted_params") or {}).get("llm_change_spec"):
+        if intent_type == IntentType.CHANGE_CHART and _fps and not (analysis.get("extracted_params") or {}).get("llm_change_spec"):
             try:
                 _spec = cls._llm_extract_change_chart(message, _fps, context)
                 if _spec:

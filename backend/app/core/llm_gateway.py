@@ -324,6 +324,7 @@ class LLMGateway:
         # "Event loop is closed"。按运行 loop 分键可同 loop 复用连接池、跨 loop 自动新建。
         self._clients: Dict = {}
         self.mock_mode = not self.providers  # 无可用 provider → Mock 模式
+        self._rate_limit_counts: Dict[str, int] = {}  # night23 Task C：各 provider（层）429 累计计数
 
     def _build_client(self, prov: Dict) -> httpx.AsyncClient:
         base_url = prov.get("base_url") or "http://localhost:8001/v1"
@@ -346,6 +347,15 @@ class LLMGateway:
             client = self._build_client(prov)
             self._clients[key] = client
         return client
+
+    # ── night23 Task C：429 限流逐层计数（供健康监测 / failover 决策）──
+    def _incr_rate_limit(self, prov_name: str) -> None:
+        """记录某 provider（层）遭遇 429 的次数（同步自增，asyncio 单线程安全）。"""
+        self._rate_limit_counts[prov_name] = self._rate_limit_counts.get(prov_name, 0) + 1
+
+    def get_rate_limit_stats(self) -> Dict[str, int]:
+        """返回各 provider 的 429 累计计数（副本，避免外部篡改内部状态）。"""
+        return dict(self._rate_limit_counts)
     
     async def chat_complete(
         self,
@@ -554,18 +564,13 @@ class LLMGateway:
                         except Exception:
                             err_body = str(e)
                         if status == 429:
+                            # night23 Task C：429 限流韧性 —— 立即切下一层，不等待满退避 8/16/24s。
+                            # 限流是 provider 维度配额问题，同层重试徒增延迟且大概率仍 429；
+                            # 立即 failover 到下一层（更可能拥有独立配额）既快又稳。
+                            # 每层记 429 计数，供健康监测与 failover 决策。
+                            self._incr_rate_limit(prov_name)
                             last_error = f"LLM限流(429, attempt {retry + 1}): {err_body}"
-                            print(f"[LLM] provider {prov_name} {last_error}")
-                            if retry < retries:
-                                # 优先采用服务端 Retry-After，否则指数退避；统一封顶 45s
-                                ra = e.response.headers.get("retry-after")
-                                try:
-                                    ra_val = float(ra) if (ra and str(ra).strip().isdigit()) else None
-                                except (TypeError, ValueError):
-                                    ra_val = None
-                                wait = min(max(_backoff_wait(retry), ra_val), 45) if ra_val else _backoff_wait(retry)
-                                await asyncio.sleep(wait)
-                                continue
+                            print(f"[LLM-RATELIMIT] provider {prov_name} 429（累计第{self._rate_limit_counts.get(prov_name, 0)}次），立即切下一层（不等待退避 {_backoff_wait(retry)}s）")
                             key_exhausted = True
                             break
                         else:
