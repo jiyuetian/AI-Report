@@ -514,3 +514,37 @@ python backend/_night23_verify_d.py   -> RESULT: PASS=14 FAIL=0
 - 完整 diff：见 `docs/project_record/night_runs/_night23_d_diff.txt`（红_lines：210 之后插入；新增 `return {requires_clarify, reason:"chart_not_found", options, error}`）。
 - 回归：`py_compile action_executor.py` OK；night23 Task B 套件 22/22 PASS；night23 Task C 套件 17/17 PASS。
 - **状态**：`[DONE]` 2026-10-03（本地未 push，待 commit）。
+
+---
+
+## 三十、night24 Task A：env 闸门配置固化（ISS-025 Batch2 收尾）
+
+> 闸门代码（guard + config 键）已于 night23 Task A（commit `1fc41f3`）落地；本任务补齐「配置显式化 + 文档化」，消除"dev 静默收口、缺说明"的落地缺口。
+> 红线：零 DB 写、不 push、不改 SSE、不 kill 进程（仅改配置与文档，未重启后端）；验证脚本 gitignored（`_*.py`）。
+
+### ① 改前现象（核实）
+- `config.py:89` 已有 `ENABLE_INTERNAL_ENDPOINTS: bool = False`（默认收口）。
+- 但 `backend/.env` 与 `backend/.env.example` **均无此键** → dev 启动读不到 → 静默落在默认 `False`，内部端点被收口（与"dev 应放开"的设计意图不符），且无任何文档说明，易误判为 bug。
+- RUNBOOK 无内部端点闸门说明。
+
+### ② 改后现象（实施）
+- `backend/.env.example`：在「安全」段新增 `ENABLE_INTERNAL_ENDPOINTS=false` + 注释（prod 务必保持 false/注释；dev 设 on/true/1 放开）。
+- `backend/.env`（本地，gitignored）：新增 `ENABLE_INTERNAL_ENDPOINTS=on` + 注释（dev 显式放开内部端点匿名访问）。
+- `docs/project_record/RUNBOOK.md`：新增「七、内部端点 env 闸门（ISS-025 Batch2）」——说明是什么 / prod 默认收口 / dev 放开 / 验证 curl 命令 / 改完重启才生效（原「七、最后更新」顺延为八）。
+- **仅配置与文档，零代码改动**；guard 行为不变。
+
+### ③ 复现 / 验证（零 DB、不重启后端，用真实 config 加载器直驱）
+```
+python backend/_night24_verify_a.py wire    -> MODE=wire settings.ENABLE_INTERNAL_ENDPOINTS=True; anon_call allowed=True(200); RESULT: PASS
+python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTERNAL_ENDPOINTS=False; anon_call allowed=False(401); RESULT: PASS
+```
+- wire 模式**不覆盖 env、直接读 `backend/.env`** → `True` 且匿名放行：证明 `.env` 的 `=on` 被真实 `env_file` 加载正确、闸门对 dev 打开。
+- secure 模式 env 覆盖 `=false` → `False` 且匿名 401：证明 prod 默认/显式 false 收口生效。
+- pydantic-settings 布尔解析已实测：`on/true/1/yes`→True，`off/false/0`→False（确认 `=on` 不会在启动时崩溃）。
+
+### ④ 改动文件 / diff
+- `backend/.env.example`：+6（新增键 + 注释），tracked。
+- `docs/project_record/RUNBOOK.md`：+14（新增第七节 + 原七顺延八），tracked。
+- `backend/.env`：+3（显式 `=on`），**本地 gitignored，不进 commit**（含密钥，永不入仓）。
+- `backend/_night24_verify_a.py`：gitignored 验证脚本（wire/secure 两模式）。
+- **状态**：`[DONE]` 2026-10-03（本地未 push，待 commit）。

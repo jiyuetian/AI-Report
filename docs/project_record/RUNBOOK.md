@@ -80,7 +80,21 @@ git -c http.proxy=http://127.0.0.1:7897 -c http.extraHeader="Authorization: Basi
 
 ---
 
-## 七、最后更新
+## 七、内部端点 env 闸门（ISS-025 Batch2）
+
+- **是什么**：73 个内部/系统端点（/brain/*、/llm/*、/exceptions/*、/dependency-graph、/trigger、/recover、/skills、/stats、/status、/chat/test/*、/tokens/_internal/* 等）受 env 闸门 `ENABLE_INTERNAL_ENDPOINTS` 保护。
+- **prod 默认收口**：不设或 `=false` → 这些端点必须带有效 bearer 令牌，否则 401（关闭匿名访问缺口）。**生产部署务必保持收口。**
+- **dev 放开**：`.env` 设 `ENABLE_INTERNAL_ENDPOINTS=on`（on/true/1 均可）→ 放行匿名访问，方便本地联调。仅本机 dev 用，切勿上生产。
+- **验证**：
+  ```powershell
+  # dev（.env=on）重启后端后，匿名应 200
+  curl http://127.0.0.1:8000/api/v1/skills        # 200
+  # prod（未设/false）匿名应 401
+  curl http://127.0.0.1:8000/api/v1/skills        # 401
+  ```
+- **改完重启才生效**：`settings` 在进程启动时读取一次，改 `.env` 后必须重启后端（见第一节，勿硬杀）。
+
+## 八、最后更新
 
 - **时间**：2026-10-03
 - **版本**：v2（草稿 → 转正）
