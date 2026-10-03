@@ -58,11 +58,12 @@ def bucket_events(events: List[Dict[str, Any]],
     
     # 分桶统计
     for event in events:
-        if event["timestamp"] < start_time:
+        ts = event.get("timestamp", 0)
+        if ts < start_time:
             continue
             
         # 计算事件所在桶的索引
-        minutes_since_start = int((event["timestamp"] - start_time) / 60)
+        minutes_since_start = int((ts - start_time) / 60)
         bucket_index = minutes_since_start // bucket_minutes
         
         if 0 <= bucket_index < num_buckets:
@@ -96,8 +97,8 @@ def compare_two_periods(events: List[Dict[str, Any]],
         previous_end = recent_start
     
     # 过滤事件
-    recent_events = [e for e in events if recent_start <= e["timestamp"] <= end_time]
-    previous_events = [e for e in events if previous_start <= e["timestamp"] <= previous_end]
+    recent_events = [e for e in events if recent_start <= e.get("timestamp", 0) <= end_time]
+    previous_events = [e for e in events if previous_start <= e.get("timestamp", 0) <= previous_end]
     
     # 计算统计数据
     def compute_stats(events_list):
@@ -105,8 +106,8 @@ def compare_two_periods(events: List[Dict[str, Any]],
             return {"total": 0, "success": 0, "tokens": 0}
         
         total = len(events_list)
-        success = sum(1 for e in events_list if e["success"])
-        tokens = sum(e["data"].get("prompt_tokens", 0) + e["data"].get("completion_tokens", 0) 
+        success = sum(1 for e in events_list if e.get("success"))
+        tokens = sum((e.get("data") or {}).get("prompt_tokens", 0) + (e.get("data") or {}).get("completion_tokens", 0)
                    for e in events_list)
         
         return {"total": total, "success": success, "tokens": tokens}
@@ -142,15 +143,16 @@ def get_model_usage_stats(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, A
     model_stats = defaultdict(lambda: {"count": 0, "success": 0, "tokens": 0, "latency": []})
     
     for event in events:
-        model_name = event["data"].get("model", "unknown")
+        data = event.get("data") or {}
+        model_name = data.get("model", "unknown")
         model_stats[model_name]["count"] += 1
-        if event["success"]:
+        if event.get("success"):
             model_stats[model_name]["success"] += 1
-        if event["data"].get("prompt_tokens"):
-            model_stats[model_name]["tokens"] += event["data"]["prompt_tokens"]
-        if event["data"].get("completion_tokens"):
-            model_stats[model_name]["tokens"] += event["data"]["completion_tokens"]
-        if event["latency_ms"] is not None:
+        if data.get("prompt_tokens"):
+            model_stats[model_name]["tokens"] += data["prompt_tokens"]
+        if data.get("completion_tokens"):
+            model_stats[model_name]["tokens"] += data["completion_tokens"]
+        if event.get("latency_ms") is not None:
             model_stats[model_name]["latency"].append(event["latency_ms"])
     
     detailed_stats = {}
@@ -170,9 +172,9 @@ def get_action_usage_stats(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
     action_stats = defaultdict(lambda: {"count": 0, "success": 0})
     
     for event in events:
-        action_type = event["event_type"]
+        action_type = event.get("event_type", "unknown")
         action_stats[action_type]["count"] += 1
-        if event["success"]:
+        if event.get("success"):
             action_stats[action_type]["success"] += 1
     
     detailed_stats = {}
@@ -213,7 +215,7 @@ def get_peak_usage_hour(events: List[Dict[str, Any]]) -> int:
     
     hourly_usage = defaultdict(int)
     for event in events:
-        hour = datetime.fromtimestamp(event["timestamp"]).hour
+        hour = datetime.fromtimestamp(event.get("timestamp", 0)).hour
         hourly_usage[hour] += 1
     
     peak_hour = max(hourly_usage.items(), key=lambda x: x[1])[0]
@@ -224,8 +226,8 @@ def get_slowest_model(events: List[Dict[str, Any]]) -> Optional[str]:
     """获取最慢的模型"""
     model_latencies = defaultdict(list)
     for event in events:
-        model = event["data"].get("model", "unknown")
-        if event["latency_ms"] is not None:
+        model = (event.get("data") or {}).get("model", "unknown")
+        if event.get("latency_ms") is not None:
             model_latencies[model].append(event["latency_ms"])
     
     slowest_model = None
@@ -243,7 +245,7 @@ def get_top_actions(events: List[Dict[str, Any]], top_n: int = 5) -> List[Dict[s
     """获取最常用的动作"""
     action_counts = defaultdict(int)
     for event in events:
-        action_counts[event["event_type"]] += 1
+        action_counts[event.get("event_type", "unknown")] += 1
     
     top_actions = sorted(action_counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
     return [{"action": action, "count": count} for action, count in top_actions]
