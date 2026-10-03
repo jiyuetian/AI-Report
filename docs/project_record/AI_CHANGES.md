@@ -308,3 +308,17 @@
 
 ---
 
+## 二十、night19 任务C：ISS-025 余 131 未鉴权端点全量扫描（P1 遗留·仅方案）
+
+| 交付 | 说明 | 关联 |
+|------|------|------|
+| `docs/project_record/22-ISS025无鉴权端点全量扫描.md` | 扫描-only：FastAPI `app.openapi()` 解析路由表（权威），216 路由 / 131 未鉴权；按「读写用户数据(高危 A=47) / 内部系统(中危 B=73) / 故意未鉴权(保留 C=11)」三类分类 + 分批收口建议（Batch1 最高危写类优先、Batch2 内部端点 env 闸门）。**零代码改动**（Task C 明确仅扫描）。 | ISS-025 P1 |
+
+### 分类与收口建议
+- **A 类 47 条（优先 Batch1）**：最高危写类 `POST /chat/execute-action`（执行看板增删改！）、`POST /chat/sessions`、`POST /tokens/consume`、`POST /exceptions/session/kickout/{user_id}`；隐私读 `GET /llm/usage/{user_id}`（PII）、`GET /reports`、`GET /golden/*`、`GET /loadtest/*`、`GET /history`、`GET /exports/status/{task_id}`。→ 加 `get_current_user`/归属校验，入 `scripts/auth_whitelist.json`。
+- **B 类 73 条（Batch2）**：`/brain/*`、`/s1..s5/*`、`/llm/chat`、`/llm/chat/completions`、`/dependency-graph`、`/trigger`、`/recover` 等内部编排/生成/调试端点 → 内部 token 或 env 闸门（prod 默认关）。
+- **C 类 11 条（保留）**：登录/注册/验证码/忘记密码、公开分享查看、健康检查，按设计匿名。
+
+> 与既有闭环：05-ISS025鉴权审计.md 已闭环 P0-1/P0-2/P0-3；本扫描为 P1 遗留全量清单 + 分批建议，交教练/用户拍板后逐批实施。防复发沿用 `scripts/auth_scan.py`+`scripts/fe_bare_fetch_scan.py`+`scripts/auth_whitelist.json` 三件套。
+
+---
