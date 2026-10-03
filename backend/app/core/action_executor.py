@@ -210,6 +210,25 @@ class ActionExecutor:
                 if source_type and chart.get("chart_type") == source_type:
                     target_chart = chart
                     break
+        # night23 Task D：显式锚点（图名 / chart_id）已给出但未命中任何图 —— 必须澄清，
+        # 绝不静默挑 charts[0] 误改（呼应 P0-3"答非所问绝不猜"）。
+        # 触发条件：用户明确点名了图（title_keyword 或 chart_id），但 _locate_chart / 循环都没找到对应图，
+        # 且又没有 source_type 命中（否则已被上面的循环按类型定位，无需澄清）。
+        # 例：「把销售额图改成饼图」而真实图叫「各地区销售额分布」→ 此前静默改了第一张图（答非所问）。
+        if target_chart is None and (title_kw or chart_id):
+            _hint = title_kw or chart_id
+            _names = "、".join(
+                [(c.get("title") or "第%d张" % (i + 1)) for i, c in enumerate(charts[:8])]
+            )
+            return {
+                "success": False,
+                "action_type": "change_chart",
+                "requires_clarify": True,
+                "reason": "chart_not_found",
+                "options": [{"chart_id": c.get("id"), "title": c.get("title"),
+                             "chart_type": c.get("chart_type")} for c in charts],
+                "error": f"没找到名为「{_hint}」的图，你想改哪一张？可选：{_names}（回复图名或序号，例如「第二张」）。",
+            }
         # 2026-09-24 修复（P0-3 遗留）：三个锚点（图名/chart_id/源图型）一个都没给、且看板有多张图时，
         # 下面的兜底会挑"第一张还不是目标类型的图"去改 —— 实测把用户的 KPI 卡改掉了，
         # 这正是"无主语兜底改第一张"的答非所问。此时必须澄清，绝不猜。

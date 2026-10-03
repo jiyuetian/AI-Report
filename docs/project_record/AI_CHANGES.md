@@ -480,4 +480,37 @@ python backend/_night23_verify_c.py   -> RESULT: PASS=17 FAIL=0（A 网关 4 场
 - `backend/app/core/llm_gateway.py`：429 分支重写 + 计数方法 + `__init__` 计数（约 +21/−12）。
 - `backend/app/core/intent_classifier.py`：补参 gate 条件（约 +5/−1）。
 - `backend/_night23_verify_c.py`：gitignored 验证脚本。
-- **状态**：`[DONE]` 2026-10-03（本地未 push，待与文档一并 commit）。
+- **状态**：`[DONE]` 2026-10-03（已 commit `cb9d6e7`，本地未 push）。
+
+## 二十九、night23 Task D：CHANGE_CHART 端到端 + 边界补齐（显式锚点未命中→澄清）
+
+> 红线：零 DB 写、不 push、不改 SSE、禁真 LLM（纯静态方法直驱，无 LLM 调用）。
+
+### ① 改前现象（核实，答非所问隐患）
+- `_execute_change_chart`（`app/core/action_executor.py:203-234`）：用户给出**显式但打错的图名**（`title_keyword`，如「把销售额图改成饼图」而真实图叫「各地区销售额分布」）时，`_locate_chart` 返回 None；但因 `title_kw` 为真值，line 216 的 `requires_clarify` 分支（`not title_kw and ...`）被跳过，line 231 静默兜底 `next(c for c if chart_type != target_type) or charts[0]` —— **直接误改第一张图（常是 KPI 卡）**，答非所问。
+- 同样的静默误改也发生在 `chart_id` 打错时（`chart_id` 不命中且无其他锚点 → 落 charts[0]）。
+- 这是 P0-3「无主语兜底改第一张」隐患的**同族残留**：显式锚点未命中本应澄清，却退化成静默猜。
+
+### ② 改后现象（实施）
+- 在匹配循环之后、原 `which_chart` 澄清之前，新增分支：当 `target_chart is None and (title_kw or chart_id)`（用户明确点名图/ID 但未命中任何图、且无 source_type 命中）时，**直接返回 `requires_clarify=True, reason="chart_not_found"`**，列出全部图供用户重选，**绝不静默挑 charts[0]**。
+- 原 `which_chart` 分支（三锚点全空 + 多图）保持不变：仅对"无主语 + 多图"澄清，二者职责清晰分离。
+- 单图板无锚点仍走 line 231 安全兜底改唯一图（不澄清）；source_type 命中按类型定位不受影响（规则路径零回归）。
+
+### ③ 复现 / 验证（零 DB、禁真 LLM，纯静态方法直驱）
+```
+python backend/_night23_verify_d.py   -> RESULT: PASS=14 FAIL=0
+```
+- D1 多图无锚点→`requires_clarify reason=which_chart`（3 options，回归守卫）。
+- D2 显式图名未命中→`reason=chart_not_found`（含「销售额图」提示）；D2b chart_id 未命中→同理。
+- D2c 防假断言：多图下显式图名未命中**不得**静默改第一张（被误改图=[]）。
+- D4 图名子串命中→精确改中图、KPI 卡未误伤；D5 按 source_type 命中。
+- D6 无 LLM 回落：纯规则路径（无 `llm_change_spec`）独立改图成功。
+- D7 `llm_change_spec` 不夺规则锚点（Task C 协同，无回归）；D8 规则无锚点时 spec 兜底承接。
+- D9 单图无锚点→安全兜底改唯一图（不澄清）；D10 undo/reverse 往返（pie→bar→pie）；D11 澄清返回含标准 options 结构（P0-3 共存）。
+
+### ④ 改动文件 / diff
+- `backend/app/core/action_executor.py`：`_execute_change_chart` 新增显式锚点未命中澄清分支（约 +19 行，红_lines 无删）。
+- `backend/_night23_verify_d.py`：gitignored 验证脚本（14 场景）。
+- 完整 diff：见 `docs/project_record/night_runs/_night23_d_diff.txt`（红_lines：210 之后插入；新增 `return {requires_clarify, reason:"chart_not_found", options, error}`）。
+- 回归：`py_compile action_executor.py` OK；night23 Task B 套件 22/22 PASS；night23 Task C 套件 17/17 PASS。
+- **状态**：`[DONE]` 2026-10-03（本地未 push，待 commit）。
