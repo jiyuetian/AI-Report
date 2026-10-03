@@ -517,6 +517,7 @@ def _to_action(intent_type: str, analysis: Dict[str, Any], clause: str, confiden
         IntentType.MANAGE_PERMISSIONS.value: "manage_permissions",
         # ---- night15-16 Task H：派生指标查询 ----
         IntentType.QUERY_METRIC.value: "calculate_metric",
+        IntentType.RECALC_METRIC.value: "recalc_metric",
     }
     act = mapping.get(intent_type)
     if not act:

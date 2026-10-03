@@ -36,6 +36,7 @@ class ActionType(str, Enum):
     MANAGE_PERMISSIONS = "manage_permissions"  # 权限变更（硬护栏：仅超管，全量 ai_action_log 留痕）
     # ---- night15-16 Task H：派生指标计算（纯计算，不碰 DB，read_only）----
     CALCULATE_METRIC = "calculate_metric"      # 指标查询/对比/趋势/解释（基于 metric_registry，红线④）
+    RECALC_METRIC = "recalc_metric"          # 下游重算一致性（C-16）：触发/状态/错误恢复/性能（基于 recalc_engine，红线④）
 
 
 class ChartType(str, Enum):
@@ -121,6 +122,8 @@ class ActionExecutor:
             ActionType.MANAGE_PERMISSIONS: ActionExecutor._execute_manage_permissions,
             # ---- night15-16 Task H：派生指标计算 ----
             ActionType.CALCULATE_METRIC: ActionExecutor._execute_calculate_metric,
+            # ---- night15-16 Task I：下游重算一致性（C-16）----
+            ActionType.RECALC_METRIC: ActionExecutor._execute_recalc_metric,
         }
         
         executor = executors.get(action_type)
@@ -1945,6 +1948,7 @@ class ActionExecutor:
             "render_updates": [],
             "message": f"已新建配置项「{key}」",
             "reverse": {"type": "delete_config", "params": {"key": key}},
+            "recalc_scope": params.get("recalc_scope"),   # night15-16 Task I：事件驱动下游重算
         }
 
     @staticmethod
@@ -2004,6 +2008,7 @@ class ActionExecutor:
             "render_updates": [],
             "message": f"已删除配置项「{key}」",
             "reverse": {"type": "create_config", "params": {"key": key, "value": old}},
+            "recalc_scope": params.get("recalc_scope"),   # night15-16 Task I：事件驱动下游重算
         }
 
     @staticmethod
@@ -2127,6 +2132,79 @@ class ActionExecutor:
             "new_config": current_config,
             "render_updates": [],
             "message": msg,
+        }
+
+    @staticmethod
+    def _execute_recalc_metric(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """下游重算一致性（night15-16 Task I，C-16）：触发/查询/恢复/性能，read_only。
+
+        基于 recalc_engine（DependencyGraph + METRIC_REGISTRY + RecalcValidator），
+        不碰任何 DB（红线④）；返回 read_only=True，chat.py 动作轮据此跳过 dashboard.config 落库。
+
+        operation（自然语言映射）：
+          - "trigger"：触发下游重算（scope/metric_names + data）
+          - "status" ：查看重算进度/最近结果
+          - "error"  ：查看失败任务 + 恢复建议
+          - "perf"   ：重算耗时统计
+          - "graph"  ：指标依赖图
+        """
+        from app.core.recalc_engine import RECLAC_ENGINE
+        operation = (params.get("operation") or "trigger").lower()
+        scope = params.get("scope")
+        metric_names = params.get("metric_names") or []
+
+        if operation == "status":
+            st = RECLAC_ENGINE.get_status(recalc_id=params.get("recalc_id"))
+            return {"success": True, "action_type": "recalc_metric", "operation": "status",
+                    "read_only": True, "new_config": current_config, "render_updates": [],
+                    "recalc_status": st,
+                    "message": f"重算队列状态：{st.get('queue') or st.get('recalc_id')}"}
+        if operation == "error":
+            hist = RECLAC_ENGINE.list_history().get("history", [])
+            failed = [h for h in hist if h.get("status") == "failed"]
+            return {"success": True, "action_type": "recalc_metric", "operation": "error",
+                    "read_only": True, "new_config": current_config, "render_updates": [],
+                    "failed_tasks": failed,
+                    "message": (f"失败重算任务 {len(failed)} 个"
+                                + ("；可用 /recalc/recover 按 recalc_id 恢复" if failed else "，暂无失败"))}
+        if operation == "perf":
+            stats = RECLAC_ENGINE.get_stats()
+            return {"success": True, "action_type": "recalc_metric", "operation": "perf",
+                    "read_only": True, "new_config": current_config, "render_updates": [],
+                    "perf_stats": stats,
+                    "message": f"重算性能：累计 {stats.get('total_recalculations')} 次指标重算，"
+                               f"涉及 {stats.get('distinct_metrics')} 个指标"}
+        if operation == "graph":
+            from app.core.dependency_graph import DependencyGraph
+            gv = DependencyGraph().to_graph_view()
+            return {"success": True, "action_type": "recalc_metric", "operation": "graph",
+                    "read_only": True, "new_config": current_config, "render_updates": [],
+                    "dependency_graph": gv,
+                    "message": f"指标依赖图：{len(gv.get('nodes', []))} 节点 / {len(gv.get('edges', []))} 边"}
+
+        # trigger（默认）
+        note = RECLAC_ENGINE.notify_data_change({
+            "scope": scope, "metric_names": metric_names, "trigger_source": "ai",
+        })
+        if not note.get("success"):
+            return {"success": False, "action_type": "recalc_metric", "error": note.get("error")}
+        data = params.get("data")
+        exe = RECLAC_ENGINE.execute_recalc(recalc_id=note.get("recalc_id"), data_provider=data)
+        return {
+            "success": True,
+            "action_type": "recalc_metric",
+            "operation": "trigger",
+            "read_only": True,                 # 重算为只读计算，不影响看板 config
+            "new_config": current_config,
+            "render_updates": [],
+            "recalc_id": note.get("recalc_id"),
+            "recalc_result": exe,
+            "changes": [],
+            "message": (note.get("message") or "") + f"\n{exe.get('message')}",
         }
 
     @staticmethod

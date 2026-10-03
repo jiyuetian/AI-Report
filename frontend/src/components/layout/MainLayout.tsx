@@ -61,6 +61,7 @@ const navGroups: NavGroup[] = [
     group: '分析',
     children: [
       { key: '/metrics', icon: <BarChartOutlined />, label: '派生指标', path: '/metrics' },
+      { key: '/recalc', icon: <BarChartOutlined />, label: '下游重算', path: '/recalc' },
     ],
   },
 ]

@@ -68,6 +68,7 @@ class IntentType(str, Enum):
     MANAGE_PERMISSIONS = "manage_permissions"  # 权限变更
     # ---- night15-16 Task H：派生指标查询意图 ----
     QUERY_METRIC = "query_metric"             # 指标查询/对比/趋势/解释（中文名/英文键/别名）
+    RECALC_METRIC = "recalc_metric"           # 下游重算一致性（C-16）：触发/状态/恢复/性能
     UNKNOWN = "unknown"
 
 
@@ -146,6 +147,19 @@ class IntentClassifier:
             r"设为(超级)?管理员",
             r"(修改|调整).{0,4}(权限|角色)",
             r"(设为|赋予|给).{0,10}(权限|角色|管理员|超管)",
+        ],
+        # ---- night15-16 Task I：下游重算一致性（必须排在 QUERY_METRIC/ATTRIBUTION 前，否则被指标查询/归因抢走）----
+        IntentType.RECALC_METRIC: [
+            # 触发重算
+            r"(重新计算|重算|重新核算|刷新).{0,12}?(下游|指标|数据|结果|看板|层|规则)",
+            r"(重算|重新计算)\s*(一下|所有|全部|下游)?\s*(指标|数据|结果)?",
+            # 查询重算状态/进度
+            r"(重算|重新计算).{0,10}(进度|状态|情况|如何|怎样|完成|了吗|成功)",
+            r"(下游|指标).{0,8}(一致性|是否一致|对不对|重算|刷新)",
+            # 修复/恢复重算
+            r"(修复|恢复|回滚|补救).{0,10}(重算|计算|失败|错误)",
+            # 重算性能
+            r"(重算|计算).{0,10}(耗时|性能|统计|时间|多快|多久)",
         ],
         # ---- night15-16 Task H：派生指标查询（必须排在 ATTRIBUTION 前，否则「解释毛利率的变化」被归因抢走）----
         IntentType.QUERY_METRIC: [
@@ -474,6 +488,7 @@ class IntentClassifier:
             IntentType.MANAGE_PERMISSIONS: ["权限", "授权", "赋权", "修改权限", "调整角色", "设为管理员", "权限变更"],
             # ---- night15-16 Task H：派生指标查询关键词 ----
             IntentType.QUERY_METRIC: ["查询", "是多少", "对比", "趋势", "预测", "解释", "公式", "毛利率", "净利率", "不良率", "roi", "roe", "客单价", "复购率", "市场份额"],
+            IntentType.RECALC_METRIC: ["重算", "重新计算", "下游重算", "刷新指标", "重算进度", "重算状态", "重算失败", "恢复重算", "重算耗时", "一致性"],
         }
         return keywords.get(intent_type, [])
     
@@ -888,6 +903,33 @@ class IntentClassifier:
                 ep["period_hint"] = pm.group(0)
             hm = re.search(r"(未来|今后|接下来)\s*(\d+)\s*(个)?\s*(季度|月|年|期)", message)
             if hm:
+                ep["horizon"] = int(hm.group(2))
+            analysis["extracted_params"] = ep
+
+        elif intent_type == IntentType.RECALC_METRIC:
+            # night15-16 Task I：下游重算参数提取（操作类型 + 范围）
+            ep = {}
+            if re.search(r"(状态|进度|情况|如何|怎样|完成|了吗|成功)", message):
+                ep["operation"] = "status"
+            elif re.search(r"(修复|恢复|回滚|补救|失败|错误)", message):
+                ep["operation"] = "error"
+            elif re.search(r"(耗时|性能|统计|时间|多快|多久)", message):
+                ep["operation"] = "perf"
+            elif re.search(r"(依赖|关系图|图谱|图)", message):
+                ep["operation"] = "graph"
+            else:
+                ep["operation"] = "trigger"
+            # 范围：财务/风控/业务/其他（category）或具体指标名
+            scope = None
+            for cat in ("financial", "risk", "business", "other"):
+                zh = {"financial": "财务", "risk": "风控", "business": "业务", "other": "其他"}[cat]
+                if re.search(rf"({zh}|{cat})", message):
+                    scope = cat
+                    break
+            if scope:
+                ep["scope"] = scope
+            hm = re.search(r"(未来|今后|接下来|下\s*(\d+))\s*(个)?\s*(季度|月|年|期)", message)
+            if hm and hm.group(2):
                 ep["horizon"] = int(hm.group(2))
             analysis["extracted_params"] = ep
 

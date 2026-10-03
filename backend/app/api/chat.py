@@ -1131,6 +1131,27 @@ async def send_message_stream(
                                                 one["message"] = (one.get("message") or "") + f"\n批量更新隔离执行失败：{_bk.get('error')}"
                                         except Exception as _be:
                                             one["message"] = (one.get("message") or "") + f"\n批量更新隔离执行异常：{str(_be)[:160]}"
+                                    # night15-16 Task I：事件驱动下游重算（C-16）——AI 修改某层规则后自动重算下游
+                                    if one["success"] and r.get("recalc_scope"):
+                                        try:
+                                            from app.core.recalc_engine import RECLAC_ENGINE
+                                            _rc = RECLAC_ENGINE.notify_data_change({
+                                                "scope": r.get("recalc_scope"),
+                                                "trigger_action": act.get("type"),
+                                                "trigger_source": "crud_event",
+                                            })
+                                            _rc_data = r.get("recalc_data")  # 调用方提供的下游指标新数据(可选)
+                                            if _rc.get("success") and _rc_data:
+                                                _rc_exe = RECLAC_ENGINE.execute_recalc(
+                                                    recalc_id=_rc.get("recalc_id"), data_provider=_rc_data)
+                                                one["message"] = (one.get("message") or "") + (
+                                                    f"\n已自动重算下游指标：{_rc_exe.get('message')}")
+                                            elif _rc.get("success"):
+                                                one["message"] = (one.get("message") or "") + (
+                                                    f"\n已触发下游重算（{_rc.get('recalc_id')}），"
+                                                    f"影响 {_rc.get('affected_count')} 个指标，待提供数据后执行")
+                                        except Exception as _re:
+                                            one["message"] = (one.get("message") or "") + f"\n下游重算触发异常：{str(_re)[:160]}"
                                     # night15-16 Task H：read_only 动作（如指标计算）不落库、不刷新 updated_at
                                     if one["success"] and not r.get("read_only"):
                                         last_new_config = r.get("new_config") or current_config
