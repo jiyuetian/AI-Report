@@ -293,4 +293,11 @@
 - **根因**：对话动作体系（add_chart/change_chart/delete_chart/filter_drill/reorder_chart/edit_title/undo…）未包含「阈值/筛选条件调整」类动作；`filter_drill` 只承接「只看华东」式枚举值替换，不承接「阈值=80%」式数值条件变更。
 - **关联**：与 ISS-052（维度护栏）、ISS-055（输出护栏）同属对话动作骨架范畴，但属增量功能而非护栏修复。
 - **决策（night14 D-append）**：本轮**仅登记、不实现**（用户明确「只登记，本轮不实现」）。实现时需新增 `ADJUST_THRESHOLD` 意图 + 对应 executor 动作（落 `config.filters` 的阈值条件并回写看板），并在 night13 动作栈补 `reverse` 以支持 undo。
-- **状态**：`[OPEN]` 待排期（功能缺口，非回归；复测 B1-2/B2-1/B2-2/B2-3 已全部 PASS 坐实其余 4 条 FAIL 为隔离种子无 schema 所致）。
+- **状态**：`[DONE]` **night18 已实现（commit `f0cc1fb`，2026-10-03）**。落地清单：
+  1. `intent_classifier.py`：`IntentType.ADJUST_THRESHOLD` 意图（置顶防 `FILTER_DRILL` 抢词）+ `_extract_params` 分支（`threshold_field` 抽字段，前缀停用词剥离防"把"被吞；`value` 归一化：带 `%` 或 >1 → ÷100；否则原值）。
+  2. `action_planner.py`：`ADJUST_THRESHOLD → adjust_threshold` 映射 + `_ALLOWED_SEMANTIC_TYPES` 白名单。
+  3. `action_executor.py`：`ActionType.ADJUST_THRESHOLD` + `executors` 注册 + `_execute_adjust_threshold`（写 `config.thresholds[field]`（避免与 filter_drill 的 `config.filters` 语义冲突）；区间护栏 `(0, 1]`；`deepcopy` 不污染传入；产 `reverse` 支持 undo）。
+  4. `remove_on_undo` 短路分支：撤销首次设阈值时 `value=None` + `remove_on_undo is True` → 直接 `pop`，绕开 `float(None)` 校验，闭环 B3-7 撤销路径。
+  5. `AI_CHANGES.md` §14 台账登记。
+- **验证**：`backend/_verify_iss058.py`（零 DB，走真实 `execute_action` 派发，同 chat.py L1027 undo 路径）5/5 PASS —— a) `把阈值调80%`→0.8 写入 ✅ b) `阈值设成0.85`→保持0.85 ✅ c) `把阈值调500%`→越界 `requires_clarify` ✅ d) 缺字段→`requires_clarify` ✅ e) undo 首次设阈值→`thresholds` 清空 + reverse 存原值 0.8 可 redo ✅。`py_compile` 三文件全绿。
+- **回归**：与 `filter_drill` 不冲突（`把阈值调80%`→`adjust_threshold`；`只看2024年的数据`→仍走 `filter_drill`）；未 push，等本机手推。
