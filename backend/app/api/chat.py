@@ -1108,6 +1108,7 @@ async def send_message_stream(
                                                 _pp["position"] = _hh["position"]
                                             if _hh.get("near_title"):
                                                 _pp["near_title"] = _hh["near_title"]
+                                    _act_t0 = time.time()
                                     r = execute_action(
                                         act.get("type"),
                                         act.get("params", {}),
@@ -1173,6 +1174,20 @@ async def send_message_stream(
                     except Exception as e:
                         # 单动作异常不影响后续动作
                         one["error"] = f"动作执行异常：{str(e)[:160]}"
+                    # night17 Task J（J-8）：AI 动作使用统计（脱敏、零 DB；写入失败不阻断对话）
+                    try:
+                        from app.core.usage_stats import USAGE_STATS
+                        _lat = int((time.time() - _act_t0) * 1000) if "_act_t0" in locals() else None
+                        USAGE_STATS.record_event(
+                            "ai_action",
+                            current_user.get("sub") or current_user.get("user_id") or "unknown",
+                            {"action_type": act.get("type"), "clause": act.get("clause")},
+                            success=one.get("success"),
+                            latency_ms=_lat,
+                        )
+                    except Exception:
+                        pass
+
                     action_results.append(one)
 
             # ---- 汇总：成功消息 + 逐动作失败原因（失败不影响其它动作）----

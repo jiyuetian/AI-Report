@@ -62,6 +62,13 @@ const navGroups: NavGroup[] = [
     children: [
       { key: '/metrics', icon: <BarChartOutlined />, label: '派生指标', path: '/metrics' },
       { key: '/recalc', icon: <BarChartOutlined />, label: '下游重算', path: '/recalc' },
+      { key: '/usage-stats', icon: <BarChartOutlined />, label: 'AI 使用统计', path: '/usage-stats' },
+    ],
+  },
+  {
+    group: '测试联调',
+    children: [
+      { key: '/e2e', icon: <ExperimentOutlined />, label: '全链路联调', path: '/e2e' },
     ],
   },
 ]

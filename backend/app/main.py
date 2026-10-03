@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log, chart_templates, metrics, recalc_queue
+from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log, chart_templates, metrics, recalc_queue, usage_stats, integration
 
 
 def _ensure_dataset_owner(sync_conn):
@@ -224,6 +224,10 @@ app.include_router(ai_action_log.router, prefix="/api/v1")
 app.include_router(chart_templates.router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(recalc_queue.router, prefix="/api/v1")
+# night17 Task J（J-8 使用统计）：内存态统计 / 零 DB
+app.include_router(usage_stats.router, prefix="/api/v1")
+# night17 Task K（全链路联调）：离线集成测试运行器 / 报告
+app.include_router(integration.router, prefix="/api/v1")
 
 # 1.9：导出文件静态服务（PDF 真实生成后落盘于 data/exports，经此路由下载）
 _EXPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "exports")

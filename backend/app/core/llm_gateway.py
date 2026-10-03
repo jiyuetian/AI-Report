@@ -384,6 +384,20 @@ class LLMGateway:
                 await asyncio.sleep(0.5)  # 模拟延迟
                 mock_response = self._generate_mock_response(request)
                 duration_ms = int((time.time() - start_time) * 1000)
+                # night17 Task J（J-8）：Mock 模式模型调用统计（离线可见）
+                try:
+                    from app.core.usage_stats import USAGE_STATS
+                    USAGE_STATS.record_event(
+                        "model_call",
+                        request.user_id,
+                        {"model": "mock-llm",
+                         "prompt_tokens": TokenCounter.estimate(request.prompt),
+                         "completion_tokens": 500},
+                        success=True,
+                        latency_ms=duration_ms,
+                    )
+                except Exception:
+                    pass
                 return LLMResponse(
                     success=True,
                     content=json.dumps(mock_response, ensure_ascii=False),
@@ -488,6 +502,20 @@ class LLMGateway:
                         total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
                         duration_ms = int((time.time() - start_time) * 1000)
                         await self._record_usage(request.user_id, total_tokens)
+                        # night17 Task J（J-8）：模型调用统计（脱敏、零 DB）
+                        try:
+                            from app.core.usage_stats import USAGE_STATS
+                            USAGE_STATS.record_event(
+                                "model_call",
+                                request.user_id,
+                                {"model": data.get("model", model),
+                                 "prompt_tokens": prompt_tokens,
+                                 "completion_tokens": completion_tokens},
+                                success=True,
+                                latency_ms=duration_ms,
+                            )
+                        except Exception:
+                            pass
                         return LLMResponse(
                             success=True,
                             content=content,
@@ -580,6 +608,18 @@ class LLMGateway:
             print(f"[LLM-ALL-KEYS-FAILED] {len(self.providers)} 个 provider 均失败，进入降级")
             if fallback_response:
                 duration_ms = int((time.time() - start_time) * 1000)
+                # night17 Task J（J-8）：模型调用失败统计
+                try:
+                    from app.core.usage_stats import USAGE_STATS
+                    USAGE_STATS.record_event(
+                        "model_call",
+                        request.user_id,
+                        {"model": model, "prompt_tokens": 0, "completion_tokens": 0},
+                        success=False,
+                        latency_ms=duration_ms,
+                    )
+                except Exception:
+                    pass
                 return LLMResponse(
                     success=False,  # 明确标记为失败
                     content=None,
@@ -593,6 +633,18 @@ class LLMGateway:
                     fallback_used=True,
                 )
             # 无降级响应
+            # night17 Task J（J-8）：模型调用失败统计
+            try:
+                from app.core.usage_stats import USAGE_STATS
+                USAGE_STATS.record_event(
+                    "model_call",
+                    request.user_id,
+                    {"model": request.model or "unknown", "prompt_tokens": 0, "completion_tokens": 0},
+                    success=False,
+                    latency_ms=int((time.time() - start_time) * 1000),
+                )
+            except Exception:
+                pass
             return LLMResponse(
                 success=False,
                 content=None,

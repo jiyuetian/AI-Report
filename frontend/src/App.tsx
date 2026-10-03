@@ -52,6 +52,8 @@ import ReportPage from './views/report/ReportPage'
 import AiLogPage from './views/ai-log/AiLogPage'
 import MetricPage from './views/metrics/MetricPage'
 import RecaclPage from './views/recalc/RecalcPage'
+import UsageStatsPage from './views/usage/UsageStatsPage'
+import E2ETestPage from './test/E2ETestPage'
 import { Card, Button } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -133,6 +135,8 @@ function App() {
                   <Route path="/ai-log" element={<AiLogPage />} />
                   <Route path="/metrics" element={<MetricPage />} />
                   <Route path="/recalc" element={<RecaclPage />} />
+                  <Route path="/usage-stats" element={<UsageStatsPage />} />
+                  <Route path="/e2e" element={<E2ETestPage />} />
                   {/* 原型演示占位屏 */}
                   <Route path="/demo/:key" element={<DemoPage />} />
                   <Route path="/admin" element={
