@@ -8,6 +8,8 @@
  *   - series.type='histogram'（{value,count} 直方图）→ 转标准柱状图
  *   - 未知 series.type → 兜底为 'bar'
  */
+import { formatCompactNum } from '../../utils/metricFormat';
+
 const VALID_AXIS_TYPES = new Set(['value', 'category', 'time', 'log']);
 const KNOWN_SERIES_TYPES = new Set([
   'line', 'bar', 'pie', 'scatter', 'effectScatter', 'radar', 'map', 'tree', 'treemap',
@@ -55,7 +57,7 @@ export function sanitizeChartOption(opt: any): any {
         );
         opt.xAxis = {
           type: 'category',
-          data: xs.map((v: any) => (typeof v === 'number' ? Number(v.toFixed(3)) : v)),
+          data: xs.map((v: any) => (typeof v === 'number' ? formatCompactNum(Number(v.toFixed(3))) : v)),
           name: (opt.xAxis && opt.xAxis.name) || '',
         };
         opt.yAxis = { type: 'value', name: (opt.yAxis && opt.yAxis.name) || '频数' };

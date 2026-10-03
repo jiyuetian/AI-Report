@@ -934,7 +934,10 @@ const DashboardPage: React.FC = () => {
           title: { text: `${title}（按${dim}）`, left: 'center', textStyle: { fontSize: 14 } },
           tooltip: {
             trigger: 'item',
-            formatter: valueMode === 'count' ? '{b}: {c} 笔 ({d}%)' : '{b}: {c} ({d}%)'
+            formatter: (p: any) =>
+              valueMode === 'count'
+                ? `${p.name}: ${p.value} 笔 (${p.percent}%)`
+                : `${p.name}: ${formatMetricDisplay(valField, Number(p.value))} (${p.percent}%)`
           },
           legend: { type: 'scroll' as const, orient: 'horizontal' as const, bottom: '2%', left: 'center', textStyle: { fontSize: 12 } },
           series: [{
@@ -1112,7 +1115,7 @@ const DashboardPage: React.FC = () => {
         });
         return {
           title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
-          tooltip: { position: 'top', formatter: (p: any) => `${xCats[p.data[0]]} × ${yCats[p.data[1]]}<br/>${valF}: ${p.data[2]}` },
+          tooltip: { position: 'top', formatter: (p: any) => `${xCats[p.data[0]]} × ${yCats[p.data[1]]}<br/>${valF}: ${formatMetricDisplay(valF, Number(p.data[2]))}` },
           grid: { left: '3%', right: '4%', bottom: '14%', top: '8%', containLabel: true },
           xAxis: { type: 'category', data: xCats, axisLabel: { rotate: xCats.length > 6 ? 30 : 0, fontSize: 10 } },
           yAxis: { type: 'category', data: yCats, axisLabel: { fontSize: 10 } },
