@@ -161,6 +161,15 @@
 
 | commit | 类型 | 说明 | 关联 |
 |--------|------|------|------|
-| （待提交） | feat(threshold) | **ISS-058 阈值调整（adjust_threshold）**：①`ActionType`+`ADJUST_THRESHOLD` 枚举，`executors` 字典注册、`execute` 分发；②`ActionExecutor._execute_adjust_threshold`——写 `config.thresholds[field]`（`operator`/`value`/`updated_at`），区间护栏 `(0,1]`（阈值语义为 0-100% 比例，越界 `requires_clarify`），深拷贝不污染入参、产 `reverse` 撤销描述符（原值非空则 redo 写回、原值为空则标记 `remove_on_undo=True`）；③**n18_3 remove_on_undo 短路分支**（在浮点校验之前）：撤销「原本无阈值的字段」时 reverse 携带 `value=None`+`remove_on_undo=True` → 直接 `thresholds.pop(field)` 返回 success + 可恢复用 reverse，修复旧实现 `float(None)` 抛 TypeError → 误判 `requires_clarify` 导致撤销失败（闭环 B3-7「把阈值调80%」）；④`intent_classifier` 新增 `ADJUST_THRESHOLD` 意图（置顶防被宽匹配抢走）+ 抽 `threshold_field`/`value`（"80%"→0.8、"500%"→5.0 规范化）；`action_planner` 映射 `ADJUST_THRESHOLD → adjust_threshold`。验证 `_verify_iss058.py`（gitignored，隔离零 DB）**5/5 PASS**：调80%写入/0.85保持原值/500%越界拒/缺字段拒/undo恢复空+redo可恢复。 | ISS-058 |
+| f0cc1fb | feat(threshold) | **ISS-058 阈值调整（adjust_threshold）**：①`ActionType`+`ADJUST_THRESHOLD` 枚举，`executors` 字典注册、`execute` 分发；②`ActionExecutor._execute_adjust_threshold`——写 `config.thresholds[field]`（`operator`/`value`/`updated_at`），区间护栏 `(0,1]`（阈值语义为 0-100% 比例，越界 `requires_clarify`），深拷贝不污染入参、产 `reverse` 撤销描述符（原值非空则 redo 写回、原值为空则标记 `remove_on_undo=True`）；③**n18_3 remove_on_undo 短路分支**（在浮点校验之前）：撤销「原本无阈值的字段」时 reverse 携带 `value=None`+`remove_on_undo=True` → 直接 `thresholds.pop(field)` 返回 success + 可恢复用 reverse，修复旧实现 `float(None)` 抛 TypeError → 误判 `requires_clarify` 导致撤销失败（闭环 B3-7「把阈值调80%」）；④`intent_classifier` 新增 `ADJUST_THRESHOLD` 意图（置顶防被宽匹配抢走）+ 抽 `threshold_field`/`value`（"80%"→0.8、"500%"→5.0 规范化）；`action_planner` 映射 `ADJUST_THRESHOLD → adjust_threshold`。验证 `_verify_iss058.py`（gitignored，隔离零 DB）**5/5 PASS**：调80%写入/0.85保持原值/500%越界拒/缺字段拒/undo恢复空+redo可恢复。 | ISS-058 |
 
 > 设计要点：阈值调整为纯 config 级内存变换（零 DB，红线④），撤销经 chat.py 动作轮 `ai_action_stack` 派发 `reverse` 描述符（`execute_action(reverse.type, reverse.params)`，L1027）；`remove_on_undo` 短路是「原无阈值→新增→撤销」闭环的关键分支——必须跳过浮点校验直接 pop，否则 `float(None)` 会让撤销误判为需要澄清而失败。`_verify_iss058.py` 为隔离验证脚本（未进仓）。
+
+
+## 十五、ISS-053 Dependabot 告警处置（降级项·本轮不处理）
+
+| 决策 | 依据 | 动作 |
+|------|------|------|
+| **default branch 的 Dependabot 1 high 告警：显式降级，不处理** | ①`docs/project_record/COLLAB_RULES.md` §七「项目私有降级项（不用管）」明确列出 `- 依赖漏洞三个 major 升级` → 该告警修复需 major 升级，属降级项；②告警挂在 `main`/`master`（default branch），不在 `p0-security-fixes`，不阻断当前分支功能与推送；③后端高危依赖钉版已落 `backend/requirements.txt`（ISS-053 代码 DONE，commit `ec6dd9f`，night13），前端 `npm audit` 落锁属 CI/用户侧动作，沙箱与本机均无可用网络路径（本机未装 gh CLI） | **本轮零改动**：未修改任何依赖版本；未用 WebFetch / gh api 尝试拉取告警详情（用户指令 2026-10-03 明确禁止）。验证：`git diff HEAD` 确认 `requirements.txt` / `package.json` / `package-lock.json` 均未改动。 |
+
+> 处置要点：ISS-053 后端 5 项 CVE 钉版（python-multipart 0.0.12 / pandas 2.2.2 / jinja2 3.1.4 / email-validator 2.1.1 / httpx 0.27.2）已物理存在于 `backend/requirements.txt` 并随 night13 `ec6dd9f` 提交；default branch 上 Dependabot 报的 high 项若需闭环，属「依赖 major 升级」降级项，按 §七不在常规任务范围，由用户本机/CI 自行评估，AI 不主动改动。
