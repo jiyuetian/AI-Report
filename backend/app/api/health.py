@@ -36,7 +36,11 @@ async def _check_llm_reachable(attempts: int = 3) -> dict:
             from app.core.llm_gateway import llm_chat
             try:
                 resp = await asyncio.wait_for(
-                    llm_chat(prompt="请只回复一个字：好", json_mode=False, timeout=15.0),
+                    # 2026-10-03：探针走「单次尝试、无 ISS-045 退避」快路径（max_retries=0）。
+                    # 原用默认 3 次 + 8/16/24s 退避：L1 限流时整链耗时 ~40s ≫ 18s 上限 → 绿标恒 false
+                    # （链其实可用，只是被退避吃满时间）。快路径下每 provider 单次、429 秒回，
+                    # 命中即返回；真实请求仍走 MAX_RETRIES=2，行为不变。
+                    llm_chat(prompt="请只回复一个字：好", json_mode=False, timeout=8.0, max_retries=0),
                     timeout=18.0,
                 )
             except asyncio.TimeoutError:

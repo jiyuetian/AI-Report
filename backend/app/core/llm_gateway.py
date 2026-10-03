@@ -351,7 +351,8 @@ class LLMGateway:
         self,
         request: LLMRequest,
         fallback_response: Optional[Dict] = None,
-        messages: Optional[List[Dict]] = None
+        messages: Optional[List[Dict]] = None,
+        max_retries: Optional[int] = None,
     ) -> LLMResponse:
         """
         基础聊天完成
@@ -412,6 +413,9 @@ class LLMGateway:
 
             last_error = None
             json_hint_added = False  # ISS-044：JSON 解析失败重试时是否已强化 prompt（仅追加一次）
+            # 探针快路径（2026-10-03）：max_retries=0 → 每 provider 单次尝试、不做 ISS-045 退避（8/16/24s），
+            # 供 health 探针在 18s 内判定可达性；不传（None）时保持 MAX_RETRIES=2 现状不变。
+            retries = MAX_RETRIES if max_retries is None else max(0, int(max_retries))
             # 外层：逐个 provider 容错（多 key / 跨 provider 切换）
             for pi, prov in enumerate(self.providers):
                 client = self._get_client(prov)
@@ -429,9 +433,9 @@ class LLMGateway:
 
                 key_exhausted = False
                 # 内层：单 key 内瞬时重试（MAX_RETRIES 次）
-                for retry in range(MAX_RETRIES + 1):
+                for retry in range(retries + 1):
                     try:
-                        print(f"[LLM] provider {prov_name} attempt {retry + 1}/{MAX_RETRIES + 1}, request_id={request_id}")
+                        print(f"[LLM] provider {prov_name} attempt {retry + 1}/{retries + 1}, request_id={request_id}")
                         request_body = {
                             "model": model,
                             "messages": messages,
@@ -530,7 +534,7 @@ class LLMGateway:
                     except httpx.TimeoutException as e:
                         last_error = f"LLM超时(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
-                        if retry < MAX_RETRIES:
+                        if retry < retries:
                             await asyncio.sleep(_backoff_wait(retry))  # ISS-045 指数退避 8/16/24s
                             continue
                         key_exhausted = True
@@ -538,7 +542,7 @@ class LLMGateway:
                     except httpx.NetworkError as e:
                         last_error = f"LLM网络错误(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
-                        if retry < MAX_RETRIES:
+                        if retry < retries:
                             await asyncio.sleep(_backoff_wait(retry))  # ISS-045 指数退避 8/16/24s
                             continue
                         key_exhausted = True
@@ -552,7 +556,7 @@ class LLMGateway:
                         if status == 429:
                             last_error = f"LLM限流(429, attempt {retry + 1}): {err_body}"
                             print(f"[LLM] provider {prov_name} {last_error}")
-                            if retry < MAX_RETRIES:
+                            if retry < retries:
                                 # 优先采用服务端 Retry-After，否则指数退避；统一封顶 45s
                                 ra = e.response.headers.get("retry-after")
                                 try:
@@ -575,7 +579,7 @@ class LLMGateway:
                         # 仍失败则切下一 provider（另一 provider 可能更听话/更稳）。
                         last_error = f"LLM响应JSON解析失败: {e}"
                         print(f"[LLM-JSON-FIX] provider {prov_name} JSON解析失败(attempt {retry + 1})，准备处理")
-                        if retry < 1:
+                        if retry < min(1, retries):
                             # ② 解析失败自动重试一次：强化 prompt（追加用户消息要求只返回合法 JSON、剥围栏）
                             if request.json_mode and not json_hint_added:
                                 if not isinstance(messages, list):
@@ -629,7 +633,7 @@ class LLMGateway:
                     tokens_completion=0,
                     duration_ms=duration_ms,
                     model="fallback",
-                    retry_count=MAX_RETRIES,
+                    retry_count=retries,
                     fallback_used=True,
                 )
             # 无降级响应
@@ -649,7 +653,7 @@ class LLMGateway:
                 success=False,
                 content=None,
                 error=last_error,
-                retry_count=MAX_RETRIES,
+                retry_count=retries,
             )
             
         finally:
@@ -785,6 +789,7 @@ async def llm_chat(
     fallback: Optional[Dict] = None,
     user_id: str = "",
     timeout: Optional[float] = None,
+    max_retries: Optional[int] = None,
 ) -> LLMResponse:
     """
     便捷调用函数
@@ -817,4 +822,4 @@ async def llm_chat(
         user_id=user_id,
         timeout=timeout,
     )
-    return await gateway.chat_complete(request, fallback, messages=messages)
+    return await gateway.chat_complete(request, fallback, messages=messages, max_retries=max_retries)

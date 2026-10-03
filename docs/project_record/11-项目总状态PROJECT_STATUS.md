@@ -17,7 +17,8 @@
 - **核心差异化**：AI 自主推理 + 完整记忆 + 可积累模板
 - **当前阶段**：**第四期（期四）收尾完成**，night18 全量回归（TEST-2）全绿；下一轮进入 **阶段 9 AI 对话 Top3**
 - **本轮（night18）完成**：ISS-058 阈值调整 `adjust_threshold`（`f0cc1fb`）+ TEST-2 全量回归（98 检查点全 PASS）
-- **本轮新暴露**：ISS-059（`compute_stats` 对 `e["data"]` 未 `.get` 防御）→ OPEN，下轮顺手修
+- **教练验收轮（2026-10-03）完成**：ISS-059 根因修复（`analytics.py` 全文件防御化，9/9 PASS）+ **LLM 链去死层 7→5**（下掉 `glm-4.5-air` / `glm-4.6v`，专属包耗尽）+ health 探针快路径（绿标恢复 3/3 `true`）
+- **待办**：阶段 9 AI 对话 Top3 未开；ISS-030 已处置
 
 ---
 
@@ -70,7 +71,7 @@
 | ISS-053 | P1 | 依赖安全钉固（python-multipart/pandas/jinja2/email-validator/httpx） | ✅ 代码 DONE，待 `pip install` 实装 |
 | ISS-045 | P1 | LLM 调用失败指数退避重试 | ✅ DONE（Task F） |
 | ISS-044 | P1 | 智谱 `json_mode` 不稳（带 ``` 围栏） | ✅ DONE（`a555b99`） |
-| ISS-030 | P1 | glm 资源包到期风险（10-25） | ⏳ 待拍板（切 `glm-4.5-air` or 续包） |
+| ISS-030 | P1 | glm 资源包到期风险（10-25） | ✅ **已处置**（2026-10-03 拍板：下掉 `glm-4.5-air` / `glm-4.6v`，链 7→5；`glm-4.7-flash` 保留） |
 | ISS-025 | P0 | 一批端点无鉴权 | 部分闭环（3 P0 + tokens/status 已修，余量跟踪） |
 | ISS-031/033/040 | P2/P3 | 兜底约束 / 「再来一个」指代 / 纠正指令 | 长期观察 |
 
@@ -85,7 +86,7 @@
 2. `_verify_*.py` 编写规范文档化（night17 暴露 8 处脚本 bug）
 
 ### B. 需拍板
-1. **ISS-030** glm 资源包（10-20 前拍板）
+1. ~~**ISS-030** glm 资源包~~ ✅ **已拍板**（2026-10-03 下掉 `glm-4.5-air` / `glm-4.6v`，链 7→5）
 2. **阶段 9 AI 对话 Top3**（选一个做透）
 3. **Dependabot 1 high 依赖漏洞**：default branch 告警，不阻断功能；需取 `gh api repos/jiyuetian/AI-Report/dependabot/alerts` 结构化数据后评估最小升级（本机 `gh` 未安装，需浏览器查看或装 gh）
 
@@ -99,7 +100,7 @@
 1. **DuckDB 业务库**：`backend/data/duckdb/aibi.db`（约 134MB，518 张 `ds_*` 表）—— 图表真相库
 2. **SQLite 元数据**：`backend/data/aibi.db`（约 6.1MB）—— 由 `DATABASE_URL` 指向；与 duckdb 同名不同文件
 3. **后端 Python**：系统 `Python312`（`3.12.10`，实测）；**非** workbuddy venv
-4. **LLM 七层链**：`kimi-k3 → glm-4.5-air → glm-4.7-flash → glm-4.6v → deepseek-v4-flash → agnes-2.0-flash → sensenova-6.8-flash-lite`（以 `.env` `LLM_PROVIDERS` 为准）
+4. **LLM 五层链**：`kimi-k3 → glm-4.7-flash → deepseek-v4-flash → agnes-2.0-flash → sensenova-6.8-flash-lite`（以 `.env` `LLM_PROVIDERS` 为准；2026-10-03 去死层）
 5. **代理**：7897（Clash，已永久配置）；53012（沙箱注入，对 GitHub 502，须绕过）
 6. **git-bash shim 缺** `ls/cat/head/tail/grep/dirname/cd` → 用 `python -c` / Read / Glob / Write
 7. **所有 API 挂 `/api/v1`**（`/health`=404，正确是 `/api/v1/health`）
@@ -112,8 +113,8 @@
 
 | 优先级 | 主线 | 备选 |
 |---|---|---|
-| **P0** | 阶段 9 AI 对话 Top3（做透一个，建议「多轮历史稳定注入」）| ISS-059（顺手修）|
-| P1 | ISS-030 拍板 | Dependabot 1 high 评估 |
+| **P0** | 阶段 9 AI 对话 Top3（做透一个，建议「多轮历史稳定注入」）| — |
+| P1 | 用户验收五页 + 对话「把阈值调 80%」 | Dependabot 1 high 评估 |
 | P2 | `_verify_*.py` 规范文档化 | 阶段 4 安全档 spot-check |
 | P3 | 前端 UI 打磨 | 观察项回归 |
 
@@ -122,5 +123,5 @@
 ## 八、最后更新
 
 - **时间**：2026-10-03
-- **版本**：v3（覆盖 v2 2026-09-22 及更旧）
-- **状态**：阶段 0-3/5-8/10 已收口；阶段 4/9 进行中；Task A–K 全绿；night18 TEST-2 98 检查点全 PASS
+- **版本**：v4（覆盖 v3 及更旧）
+- **状态**：阶段 0-3/5-8/10 已收口；阶段 4/9 进行中；Task A–K 全绿；night18 TEST-2 98 检查点全 PASS；教练验收轮补 ISS-059 + LLM 链 7→5

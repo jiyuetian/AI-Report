@@ -5,7 +5,7 @@
 > 本文件只列**事实**，不写解释。
 > AI 接手第一件事就是读它，不用你重复讲。
 > 出问题时，先查本文件排除环境因素。
-> **本版：v3，2026-10-03（对齐 night18 现状：Python/SQLite 澄清 + LLM 七层链 + 代理永久化）。**
+> **本版：v4，2026-10-03（对齐 night18 现状 + LLM 链去死层：Python/SQLite 澄清 + LLM 五层链 + 代理永久化）。**
 
 ---
 
@@ -42,18 +42,18 @@
 
 ## 三、外部依赖
 
-### LLM Provider（**七层 failover，2026-10-03 现行 = `.env` 真值**）
+### LLM Provider（**五层 failover，2026-10-03 现行 = `.env` 真值**）
 | 层 | Provider | 模型 | 备注 |
 |---|---|---|---|
-| 主用 | sensenova | `kimi-k3` | 付费，图表 JSON 稳定；网关仅允许 `temperature=1` |
-| 备 1 | 智谱 | `glm-4.5-air` | 免费 1200 万专属包（10-25 到期）优先消耗；推理型不主用 |
-| 备 2 | 智谱 | `glm-4.7-flash` | 免费 |
-| 备 3 | 智谱 | `glm-4.6v` | 免费 |
-| 备 4 | sensenova | `deepseek-v4-flash` | 免费，轻量 |
-| 备 5 | agnes | `agnes-2.0-flash` | 免费 |
-| 备 6 | sensenova | `sensenova-6.8-flash-lite`（全小写） | 免费，推理型，末位兜底 |
+| 主用 | sensenova | `kimi-k3` | 付费，图表 JSON 稳定；网关仅允许 `temperature=1`；**间歇 429（tpm/rpm）** |
+| 备 1 | 智谱 | `glm-4.7-flash` | 免费；偶发「访问量过大」429 |
+| 备 2 | sensenova | `deepseek-v4-flash` | 免费，轻量 |
+| 备 3 | agnes | `agnes-2.0-flash` | 免费 |
+| 备 4 | sensenova | `sensenova-6.8-flash-lite`（全小写） | 免费，推理型，末位兜底 |
 
-- **⚠️ 订正 v2**：v2 的"六层链（含 `glm-5.3-flash`）"已作废。night14 Task A（`50308ea`，D-020）调整为**七层**，顺序以 `backend/.env` 的 `LLM_PROVIDERS` 数组为准
+> **2026-10-03 出链**：`glm-4.5-air`（专属包耗尽）、`glm-4.6v`（专属包耗尽）——实测 429「余额不足或无可用资源包」，已从链中移除（ISS-030 提前爆，原定 10-25）。
+
+- **⚠️ 订正 v3**：v2 的"六层链（含 `glm-5.3-flash`）"、v3 的"七层链（含 `glm-4.5-air` / `glm-4.6v`）"均已作废。2026-10-03 去死层后为**五层**，顺序以 `backend/.env` 的 `LLM_PROVIDERS` 数组为准
 - **failover 机制**：顺序切（主挂才切备），非轮询；网关要求 `business_type=chat`
 - **配置**：`backend/.env` 的 `LLM_PROVIDERS`；**改后必须重启后端**
 - **已知不稳**：智谱 `json_mode` 偶发返回带 Markdown 围栏（ISS-044，已加剥围栏 + 重试 + 切 provider 防护）
@@ -123,7 +123,7 @@
 ## 七、性能 / 阈值
 
 - `TIMEOUT_SECONDS=120`（网关超时）
-- `MAX_RETRIES=1`（网关重试）
+- `MAX_RETRIES=2`（网关每 provider 重试次数；ISS-045 退避 8/16/24s。health 探针用 `max_retries=0` 快路径，不走退避）
 - `BRAIN_S3_LLM_TIMEOUT=180`（S3 外层超时）
 - `BRAIN_TASK_TOKEN_BUDGET=8000`（Token 预算）
 - ISS-045 LLM 失败指数退避重试：最多 3 次（8/16/24s）
@@ -133,8 +133,8 @@
 ## 八、最后更新
 
 - **时间**：2026-10-03
-- **版本**：v3
+- **版本**：v4
 - **状态**：
   - 运行时 / 数据 / 外部依赖 / 账号 / 已知坑 五块已刷新到 night18 现状
-  - **订正**：后端 Python = 系统 Py312 3.12.10；SQLite 元数据 = `backend/data/aibi.db`（已确认）；LLM = 七层链
+  - **订正**：后端 Python = 系统 Py312 3.12.10；SQLite 元数据 = `backend/data/aibi.db`（已确认）；LLM = **五层链**（2026-10-03 去死层）
   - 落盘 `FACTS.md`（✅ 在 `docs/project_record/`）

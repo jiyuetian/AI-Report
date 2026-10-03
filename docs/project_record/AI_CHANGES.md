@@ -195,3 +195,26 @@
 
 > ⚠️ 运行中的 8000 后端为 **09-30 13:41 启动的旧实例**（pid=9632），未含 night15-18（Task G/H/I/J/K、ISS-058）与本次 ISS-059 修复；新功能上线需用户手动重启 8000（禁 kill，按 B5 守卫流程）。
 > `_verify_iss059.py` 为隔离验证脚本（`.gitignore:84 _*.py`，未进仓）。
+
+---
+
+## 十七、教练验收轮（2026-10-03）：LLM 链去死层（7→5）+ health 探针快路径
+
+| 文件 | 类型 | 说明 | 关联 |
+|------|------|------|------|
+| `backend/.env`（gitignored） | config(llm) | **下掉资源包已耗尽的两层**：`zhipu-air(glm-4.5-air)`、`zhipu-46v(glm-4.6v)` 从 `LLM_PROVIDERS` 移除（实测 429「余额不足或无可用资源包」）。新链 **5 层**：`kimi-k3 → glm-4.7-flash → deepseek-v4-flash → agnes → sensenova-lite`（glm-4.7-flash 实测可通，保留）。改前备份 `.env.bak_20261003_llmchain`。 | ISS-030 |
+| `backend/app/core/llm_gateway.py` | fix(llm) | 新增**可选** `max_retries` 参数（`chat_complete` / `llm_chat`），默认 `None` → 保持 `MAX_RETRIES=2`（每 provider 3 次 + 8/16/24s 退避）**完全不变**；传 `0` 时每 provider 单次、不做退避。 | — |
+| `backend/app/api/health.py` | fix(health) | LLM 探针改走快路径：`llm_chat(..., timeout=8.0, max_retries=0)`。修复「链可用但绿标恒 false」——原默认 3 次退避在 L1 限流时整链耗时 ~40s ≫ 18s `wait_for` 上限。 | ISS-030 后续 |
+
+### 根因与验证（本机 Python 3.12.10）
+
+- **根因**：`sensenova(kimi-k3)` 间歇 429（tpm/rpm）；`zhipu-air(glm-4.5-air)` 429「余额不足或无可用资源包」（ISS-030 提前爆，原定 10-25）；`zhipu-46v(glm-4.6v)` 同类耗尽。L1 3 次重试 × 8/16/24s 退避 → 整链 ~40s，而 health 探针 `asyncio.wait_for(18s)` 先触发 → `llm_reachable:false`（链其实可用，被退避吃满时间）。
+
+| 门 | 命令 | 结果 |
+|----|------|------|
+| 后端语法 | `python -m py_compile app/core/llm_gateway.py app/api/health.py` | EXIT=0 |
+| 链装配 | 启动日志 | `LLM provider 链(5层): kimi-k3 → glm-4.7-flash → deepseek-v4-flash → agnes → sensenova-lite` |
+| 网关探针（默认） | `llm_chat(...)` | `success=True`，`attempt 1/3 → 2/3`（**默认仍 3 次，未变**） |
+| 绿标 | `GET /api/v1/health` ×3 | **3/3 `llm_reachable:true`**，耗时 1.5s / 4.3s / 8.8s（均 < 18s） |
+
+> ⚠️ 残留：L1 `sensenova/kimi-k3` 仍间歇 429、L2 `glm-4.7-flash` 偶发「访问量过大」——快路径下不影响绿标（秒回后切换），但真实 AI 请求首答可能因切换而延迟。
