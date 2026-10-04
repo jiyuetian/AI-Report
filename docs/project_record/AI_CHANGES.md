@@ -855,3 +855,36 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
   - 需用户拍板 5 项（⑤-1~⑤-5 上线决策）：决策项，拍板后执行对应 git/pip 命令。
 - 用户真机操作量压缩为「跑脚本 + 点选 + 拍板」；脚本已 `py_compile` OK。
 - 零真 LLM、零 DB 写、不 kill 后端、未 push。
+
+## §46 night27 统一 AI 失败处理（ISS-062~066，本地未 push）
+
+> 本轮把「AI 对话」与「看板生成」的 AI 失败处理统一为同一套规则（R1-R5），并把 risk_demo_v2_01 实测暴露的 5 个真实缺陷（ISS-062~066）逐一闭环。
+> 约束：一类一 commit、不 push、前端改完 `tsc --noEmit` 通过、回读验证。验证为结构级确定性断言（沙箱无法起 uvicorn / DuckDB 被独占），浏览器真机为体验确认项。
+
+### 统一 AI 可用性规则（对话 + 看板生成共用基线）
+
+- **R1 判定**：AI 调用失败 / 限流(429) / 超时 / 返回空内容 → 统一视为「AI 未参与」。
+- **R2 不静默、不空**：任何链路禁止产出空回复 / 空气泡，必须给明确文案 + 失败原因。
+- **R3 用户抉择**：AI 未参与时提供两个入口——「重试 AI」与「规则兜底」，与看板生成 `ai_awaiting` 抉择语义一致。
+- **R4 诚实标注**：走规则兜底时明确标注「本次 AI 未参与，已用规则兜底」，不冒领成果。
+- **R5 退避重试**：重试沿用既有 LLM 链退避规则（8/16/24s），入口幂等、不重复落库。
+- **说明**：对话保持 SSE 流式、看板生成保持后台任务 + 轮询；本轮只统一**判定/兜底/重试/标注**规则，不改传输方式。
+
+### 变更清单（按 ISS）
+
+| 文件 | 类型 | 说明 | 关联 |
+|------|------|------|------|
+| QualityCheckPanel.tsx | fix(frontend) | ISS-062 自动质检守卫移入定时器回调 + 404 后 1.5s 静默重试 + runCheck silent 门控 | ISS-062 |
+| QualityCheckPanel.tsx | fix(frontend) | ISS-063 批量修复 60s 超时/取消 + 内联状态条（秒表+取消）+ applyError Alert + 重试修复 | ISS-063 |
+| quality.py | feat(backend) | ISS-064 新增 `POST /quality/{dataset_id}/reset`（删清洗层表 + 置 ignored + 清缓存，带归属校验） | ISS-064 |
+| QualityCheckPanel.tsx | fix(frontend) | ISS-064 重置改 async 调后端 + 二次确认 Modal + 文案「重置数据（撤销清洗）」+ 成功自动重检 | ISS-064 |
+| QualityCheckPanel.tsx | fix(frontend) | ISS-065 删除批量修复后自动跳转 `onProceed`，改提示用户手动点「生成看板」 | ISS-065 |
+| chat.py | fix(backend) | ISS-066 `complete` 事件 message 非空守卫（generate_intent_response 回退 + 统一兜底 + 未成功置 ai_error） | ISS-066 |
+| ChatPanel.tsx | fix(frontend) | ISS-066 防空气泡（`if (!finalContent)` 兜底文案 + ai_error 透传，绝不 push 空白气泡） | ISS-066 |
+
+### 验收
+
+- 前端 `tsc --noEmit` 退出码 0（Tasks A-E 全过）。
+- 后端 `py_compile` chat.py / quality.py 全绿。
+- 结构级验收脚本 `tests/_fixtures/real/_verify_night27_iss062_066.py` **23/23 PASS**（含 ISS-065 自动跳转已删除的反向断言）。
+- 浏览器真机复测（自动质检触发 / 批量修复超时取消重试 / 重置真回滚 / 单动作对话不空气泡）属体验确认项，需用户本机起服务后确认（与历史 night 模式一致：代码 DONE、真机待验收）。

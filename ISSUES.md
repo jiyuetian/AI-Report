@@ -338,3 +338,59 @@
   - **recalc 路由漂移修复（2026-10-04 night26 Task A，DONE）**：`backend/app/main.py:228` 前缀 `/api/v1` → `/api/v1/recalc`，闭环 B 类 gate 路径漂移 H1（原 6 路由挂在 `/api/v1/*` 与前端调用点 `/api/v1/recalc/*` 错位，前端 4 调用点 prod 无 token 仍 401——gate 生效，但路径错位属结构缺陷，已修）。同步更正 `22-ISS025无鉴权端点全量扫描.md` B 类清单 6 处 + `_night24_verify_b.py`。
 - **C 类 11 保留匿名**：按设计保留（如 `/health`、静态资源等），非缺项。
 - **状态**：`[CODE_CLOSED]` 代码侧主链路全收口——A 类 47（22 写 + `kickout` 归属校验）已加硬鉴权、B 类 gate 已落地且无路径漂移、C 类按设计保留。**验收侧 11 项待用户本机**（push 比对远端 / DB 真跑 / 真实看板绿标 / 用户拍板），属上线决策或需真实环境，非代码缺项 → 可判「ISS-025 代码闭环，验收待真机」。详见 `docs/project_record/05-ISS025鉴权审计.md` 与 `22-ISS025无鉴权端点全量扫描.md`、night26 `NIGHT_SUMMARY.md` Task A/E。
+
+---
+
+## ISS-062 首次自动质检被静默跳过（StrictMode / 重挂载守卫提前置位）
+
+- **现象（用户实测 risk_demo_v2_01 贷款明细表看板）**：上传新数据集后，质检面板偶尔完全不自动跑质检（面板空、无 toast、无 loading），必须手动点「重新质检」才出结果；StrictMode 双挂载或切 tab 重挂载后尤为明显。
+- **根因**：`QualityCheckPanel.tsx` 自动质检 `useEffect` 在**定时器前**就把 `autoHandledRef.current = datasetId` 置位（守卫）；当 effect 因重挂载先 cleanup 清掉 500ms 定时器、再重挂载时，守卫已命中 `if (autoHandledRef.current === datasetId) return` → 直接 return，自动质检被永久跳过。另：`runCheck` 的 `silent` 模式仍弹 `message.error`（未用 `!silent` 门控），与「静默保留」诉求冲突。
+- **修复（已落码 + 结构级验收通过）**：
+  1. 守卫赋值移入 500ms 定时器**回调内**（`autoHandledRef.current = datasetId` 在 `setTimeout(() => {` 内部先置位再 `runCheck()`），重挂载不再提前命中守卫；「同一 datasetId 只跑一次」语义保留。
+  2. 500ms 内数据表未就绪（404/!ok）→ `runCheck` 返回 null → 1.5s 后静默重试一次（`autoRetryRef`），仍失败则静默保留（不弹错误、不阻断），由用户手动「重新质检」。
+  3. `runCheck` 全部 toast 用 `!silent` 门控，silent 模式彻底静默。
+- **验证**：`_verify_night27_iss062_066.py` 结构断言 PASS（守卫已移入定时器、旧 bug 模式已消除、404 重试、silent 门控）。浏览器真机复测为体验确认项（非阻塞）。
+- **状态**：`[DONE]`（night27 Task A，本地未 push）。
+
+## ISS-063 一键批量修复无超时 / 反馈弱 / 无重试入口
+
+- **现象（用户实测）**：点「一键修复全部问题（N项）→」后，若后端串行写清洗层耗时较长，界面只有一条 `message.loading(key='plan', duration:0)` 永久卡住；网络慢/挂起时无超时、无取消、失败后无重试入口，只能等或刷新。
+- **根因**：`applyRecommendedPlan` 的 `/quality/fix-batch` fetch **无 AbortController 超时**；唯一反馈是 `duration:0` 的 loading；`catch` 仅 `message.destroy('plan')` + error，无重试。
+- **修复（已落码 + 结构级验收通过）**：
+  1. 加 60s `AbortController` 超时（`setTimeout(() => ctrl.abort(), 60000)`）+ 取消（`planAbortRef`）。
+  2. 底部内联状态条：实时秒表（「正在按推荐方案批量修复… 已用时 Ns」）+「取消」按钮。
+  3. `applyError` state 渲染 `Alert` 错误卡 +「重试修复」按钮（重跑同模式）；成功/部分失败内联 `Alert`（成功绿 / 部分失败黄）展示 `已修复 X 项，Y 项失败`。
+- **验证**：`_verify_night27_iss062_066.py` 结构断言 PASS（AbortController / 60s 超时 / 取消 / 内联状态条 / 重试修复 / applyError）。
+- **状态**：`[DONE]`（night27 Task B，本地未 push）。
+
+## ISS-064 「重置」只清前端、不回滚清洗层（脏数据残留）
+
+- **现象（用户实测）**：质检面板点「重置」后，前端问题列表清空，但**后端清洗层物理表未删、已采纳的修复未撤销**；且残留的 `message 'plan'`（duration:0）会卡在界面。重新质检时数据已是被清洗过的状态，重置形同虚设。
+- **根因**：`resetAll` 只 `updateState(newState)`（前端状态），**无后端调用**；修复写清洗层、重置未回滚。
+- **修复（已落码 + 结构级验收通过）**：
+  1. 后端新增 `POST /quality/{dataset_id}/reset`：先 `_assert_dataset_access`（归属校验，非本人/非超管 404）→ `DROP TABLE IF EXISTS` 清洗层物理表 → `QualityIssue.status` 置 `ignored` → 清 `_AI_RESULT_CACHE[dataset_id]`。
+  2. 前端 `resetAll` 改为 `async`：先 `message.destroy('plan')` 清残留提示 → 调后端 reset → 成功后清空本地状态 + 自动 `runCheck()` 刷新。
+  3. 「重置」按钮改文案「重置数据（撤销清洗）」+ 二次确认 Modal（「确定重置」，danger）。
+- **验证**：`_verify_night27_iss062_066.py` 结构断言 PASS（按钮文案 / 后端路由 / DROP TABLE / 归属校验 / 二次确认）。后端路由真跑需起服务 + 鉴权（用户本机确认项）。
+- **状态**：`[DONE]`（night27 Task C，本地未 push）。
+
+## ISS-065 批量修复后自动弹 AI 报表生成（打断用户）
+
+- **现象（用户实测）**：批量修复完成、无阻断项时，系统自动 `setTimeout(() => onProceed?.(), 700)` 弹 AI 报表生成，不打断用户操作流、用户无预期。
+- **根因**：`applyRecommendedPlan` 成功路径末尾显式调用 `onProceed`（自动流转到看板生成）。
+- **修复（已落码 + 结构级验收通过）**：删除自动跳转 `setTimeout(() => { onProceed?.() }, 700)`；改为 `message.success` 提示「质检通过…请点『生成看板』继续」，由用户手动点底部「生成看板」按钮。
+- **验证**：`_verify_night27_iss062_066.py` 断言「自动跳转 onProceed 已删除」PASS。
+- **状态**：`[DONE]`（night27 Task D，本地未 push）。
+
+## ISS-066 动作轮单动作 AI 空回复 + 对话/看板失败处理未统一
+
+- **现象（用户实测）**：对话里发单动作指令（如「新增一张趋势图」「把标题改成X」），执行器成功但执行器未回传 message → 后端 `complete` 事件 `message=""` → 前端**无条件 push 一个空气泡**（空白助手消息），且无任何失败说明 / 重试入口。
+- **根因（双端）**：
+  1. 后端 `chat.py` 动作轮：单动作 `response_data["message"]` 初始化为 `""`；汇总块 `parts` 仅收集非空 message，单动作成功但 message 为 None → `parts` 空 → `response_data["message"]` 仍为 `""`。
+  2. 前端 `ChatPanel.tsx` 流结束 `assistantContent` 可空串，`setMessages(prev => [...prev, assistantMsg])` 无条件 push → 空气泡。
+- **修复（已落码 + 结构级验收通过，统一 R1-R5）**：
+  1. 后端 `complete` 事件守卫：若 `not response_data.get("message")`，优先 `generate_intent_response(intent_type, ...)` 回退文案；仍无则动作成功补中性确认、动作未成功诚实置 `ai_error`（stage/error/options=["retry","rule_fallback"]/message），对齐对话 `ai_error` 语义。
+  2. 前端防空气泡：流结束若 `assistantContent.trim()` 为空，按 R4 用 `ai_error.message` 兜底文案（抉择入口由 ai_error 卡承载），绝不 push 空白气泡；`ai_error` 透传保留。
+  3. 与看板生成的 `ai_awaiting` 抉择语义对齐（R1 判定 / R2 不静默不空 / R3 双入口 / R4 诚实标注 / R5 退避重试），本轮统一的只是判定/兜底/重试/标注规则，未改变对话 SSE 流式与看板后台轮询的传输方式。
+- **验证**：`_verify_night27_iss062_066.py` 结构断言 PASS（前端 `if (!finalContent)` / `aiError.message`；后端 `if not response_data.get("message")` / `generate_intent_response` / 统一兜底文案）。对话真机 SSE 复测为体验确认项（需起服务，沙箱不可）。
+- **状态**：`[DONE]`（night27 Task E，本地未 push）。
