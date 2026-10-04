@@ -284,6 +284,20 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         }
       }
 
+      // night27 Task E (ISS-066)：杜绝空气泡（R2 不静默、不空）
+      // 流结束时若 assistantContent 为空（动作轮单动作执行成功但执行器未回传文案），
+      // 不推送空气泡：按 R4 诚实标注 + R3 双入口（交由 ai_error 卡承载），并补一句兜底文案。
+      const finalContent = (assistantContent || '').trim();
+      if (!finalContent) {
+        if (aiError) {
+          // AI 未参与：用 ai_error.message 作为兜底文案，决策入口由下方 ai_error 卡提供
+          assistantContent = aiError.message || 'AI 调用失败，请重试或改用规则引导。';
+        } else {
+          // 最后防线：后端已尽量保证非空，此处兜底一句话，避免空白气泡
+          assistantContent = '操作已完成，但未能生成回复文案。可重试或改用规则引导。';
+        }
+      }
+
       // 添加助手消息
       const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
