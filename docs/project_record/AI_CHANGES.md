@@ -763,3 +763,15 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - **交付物**：`.github/dependabot.yml`（入库）；`docs/project_record/night_runs/_night25_taskD_verify_env_deps.py`、`_night25_taskD_env_deps.json`、`night25_npm_audit_checklist.md`（gitignored）。
 - **零代码改动、零真 LLM、零 DB 写、未 push（沙箱无网）**。
 
+
+## §39 night25 Task E · 前端路由漂移扫描（H1）
+
+- **扫描器** `_night25_taskE_scan.py`（gitignored）：前端 `src/**/*.ts*` 的 `/api/` 调用点（19）vs 后端 in-process `app.openapi()` 路由（205）交叉比对；另补查 http.* 缺 `/api/` 前缀调用。零真 LLM / 零网络。
+- **结论**：404 风险 **4 项**（全部 `/api/v1/recalc/*`），401 风险 **0**（前端 19 调用点全经 `utils/request.ts` + `authHeaders`；裸 fetch 仅 1 处且为注释内，已排除）。
+- **H1 真实 bug**：`RecalcPage.tsx` 调 `/api/v1/recalc/{status,history,dependency-graph,trigger}`，但 `recalc_queue.router`（`APIRouter()` 无前缀）在 `main.py:226` 以 `prefix="/api/v1"` 挂载 → 真实路径为 `/api/v1/{status,...}`（**无 `/recalc` 段**）。前端「下游重算」页每次 API 调用均 404，功能实际不可用。
+- **历史根因**：ISS-025 鉴权扫描曾记「`/recalc/trigger` 路由不存在，真实端点 `/api/v1/trigger`」——核对了鉴权面却未回溯前端仍在调 `/api/v1/recalc/*`，漂移遗留。
+- **未自动修复**：该漂移改变 API 契约，且 night24 验证脚本与 ISS-025 文档按「真实端点 `/api/v1/trigger`」记录；故提交两方案待用户拍板（方案 A 改后端 `prefix="/api/v1/recalc"` 推荐；方案 B 改前端删 `/recalc` 段），见 `night25_route_drift.md`。
+- **非漂移说明**：15 个匹配项正常；14 个「缺 `/api/` 前缀」的 http.* 调用为基址相对路径（由 `http` 封装 `API_BASE` 补 `/api/v1`），与后端一致。
+- **交付物**：`_night25_taskE_scan.py` + `_night25_taskE_result.json` + `night25_route_drift.md`（均 gitignored）。
+- **零代码改动、零真 LLM、零 DB 写、未 push（沙箱无网）**；仅登记本 §39 与报告。
+
