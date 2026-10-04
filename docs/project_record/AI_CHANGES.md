@@ -680,3 +680,29 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 
 ### ⑤ 状态
 - `[DONE]` 2026-10-03（全量回徒 + 发现收口 brain_v2 漏洞；本地未 push；登记用本 commit）。
+
+---
+
+## §35 night25 Task A · 读端点连通性补盲（ISS-025 读端点侧闭环）
+
+> 红线：零 DB 写、不重启后端（不 kill pid）、禁真 LLM（mock/离线）、验证脚本与过程文件 gitignored（_night25_taskA_*.py / .md）。
+> 结论：night24 Task C 给 26 个 A 类读端点加鉴权 **未破坏任何前端连通性**；0 回归，零代码改动，仅登记验证。
+
+### ① 盲区说明（任务书核心关切）
+- night24 Task C（commit `be60462`）给 26 个 A 类读端点加 `get_current_user` 鉴权；但其连通性回归（night24 Task B, `f7568fb`）在 Task C **之前**跑，未覆盖这批端点 → 前端影响从未验证。本任务补齐。
+
+### ② 方法
+- 静态：扫描 `frontend/src` 全部 API 调用点（65 个），抽取路径模板匹配路由表，标注 token 携带机制。
+- 动态：对 26 个 A 类读端点（含同模块 2 个常驻鉴权 GET，共 28）用 in-process `TestClient` 发「无 token / 带 dev JWT」两组 GET（仅读，零 DB 写）。
+
+### ③ 结果
+- **全仓裸 `fetch(` 调用：0 处**（grep `(?<![a-zA-Z.])fetch\(` 无匹配）。65 个前端调用点 **全部** 经 `request.ts`（自动注入 token）或 `authorizedFetch`+`authHeaders()`（显式带 token）。
+- **28 个读端点两组请求：TOTAL=28 FAIL=0**。无 token → 均 401（后端强制鉴权）；带 token → 均非 401（200/404/422/ERR；ERR 为沙箱缺 Postgres 表，发生在鉴权闸门之后，非鉴权回归）。
+- 4 个手工 authHeaders 文件（`LoadingPage/ChatPanel/QualityCheckPanel/UploadPage.tsx`）均 `import { authHeaders, authorizedFetch } from '../../utils/request'`，已正确携带 token → 非回归点。
+
+### ④ 对照表交付物
+- `docs/project_record/night_runs/_night25_taskA_TABLE.md`（28 行实测对照表 + 前端调用点全量回归面 + 22 写/73 内部静态结论）。
+- 证据脚本：`_night25_taskA_scan.py`（路由×前端交叉扫描）、`_night25_taskA_verify.py`（两组请求）、`_night25_taskA_table.py`（出表）。
+
+### ⑤ 状态
+- `[DONE]` 2026-10-04（0 回归，零代码改动，本地未 push；登记用本 commit）。
