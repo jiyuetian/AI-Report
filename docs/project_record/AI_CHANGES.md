@@ -567,7 +567,7 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - 73 内部端点（night23 Batch2）路由表抽查全部含 `internal_endpoint_guard`（/brain/* 40+、/skills、/trigger、/dependency-graph、/chat/test/*）。
 
 ### ③ 路径纠正（任务书 stale，非代码缺陷）
-- 任务书所列 `/recalc/trigger`、`/recalc/dependency-graph` **路由表不存在**；真实内部编排端点为 `/api/v1/trigger`、`/api/v1/dependency-graph`（均已挂 guard）。已按真实路径核对，无需补鉴权。
+- 任务书所列 `/recalc/trigger`、`/recalc/dependency-graph` 曾在 night25 被记「路由表不存在，真实端点为 `/api/v1/trigger`、`/api/v1/dependency-graph`」。**更正（night26 Task A）**：recalc 路由此前以 `prefix="/api/v1"` 挂载，与前端 `RecalcPage` 调 `/api/v1/recalc/*` 漂移（H1）；night26 Task A 已将 `main.py:228` 改为 `prefix="/api/v1/recalc"`，现真实路径为 `/api/v1/recalc/{status,history,dependency-graph,trigger,stats,recover}`（status/trigger/dependency-graph/stats/recover 挂 guard，history 用 get_current_user），漂移已修。
 - night22 原登记 `/api/v1/token_applications/apply` 实际路径为 `/api/v1/tokens/applications/apply`（tokens 复数）；`/api/v1/exceptions/session/kickout/{user_id}` 实际为 **GET**（非 POST）。已校正核对清单，结论不变。
 
 ### ④ 复现 / 改动
@@ -770,7 +770,7 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - **结论**：404 风险 **4 项**（全部 `/api/v1/recalc/*`），401 风险 **0**（前端 19 调用点全经 `utils/request.ts` + `authHeaders`；裸 fetch 仅 1 处且为注释内，已排除）。
 - **H1 真实 bug**：`RecalcPage.tsx` 调 `/api/v1/recalc/{status,history,dependency-graph,trigger}`，但 `recalc_queue.router`（`APIRouter()` 无前缀）在 `main.py:226` 以 `prefix="/api/v1"` 挂载 → 真实路径为 `/api/v1/{status,...}`（**无 `/recalc` 段**）。前端「下游重算」页每次 API 调用均 404，功能实际不可用。
 - **历史根因**：ISS-025 鉴权扫描曾记「`/recalc/trigger` 路由不存在，真实端点 `/api/v1/trigger`」——核对了鉴权面却未回溯前端仍在调 `/api/v1/recalc/*`，漂移遗留。
-- **未自动修复**：该漂移改变 API 契约，且 night24 验证脚本与 ISS-025 文档按「真实端点 `/api/v1/trigger`」记录；故提交两方案待用户拍板（方案 A 改后端 `prefix="/api/v1/recalc"` 推荐；方案 B 改前端删 `/recalc` 段），见 `night25_route_drift.md`。
+- **已于 night26 Task A 修复（方案 A）**：`main.py:228` 改为 `app.include_router(recalc_queue.router, prefix="/api/v1/recalc")`；现真实路径 `/api/v1/recalc/{status,history,dependency-graph,trigger,stats,recover}` 与 `RecalcPage` 完全一致。实测：前端 4 调用点带 token→200、无 token→401（prod `ENABLE_INTERNAL_ENDPOINTS=off` 时 guard 生效）；in-process 路由表 6/6 存在。night24 验证脚本与 ISS-025 文档同步更正（见 §41）。
 - **非漂移说明**：15 个匹配项正常；14 个「缺 `/api/` 前缀」的 http.* 调用为基址相对路径（由 `http` 封装 `API_BASE` 补 `/api/v1`），与后端一致。
 - **交付物**：`_night25_taskE_scan.py` + `_night25_taskE_result.json` + `night25_route_drift.md`（均 gitignored）。
 - **零代码改动、零真 LLM、零 DB 写、未 push（沙箱无网）**；仅登记本 §39 与报告。
@@ -786,4 +786,20 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - **回归**：`py_compile` config.py+main.py OK；night25 Task A 读端点 28/0、Task B ALL_6+R1-R2 仍 PASS（docs 网关不影响业务路由鉴权）。
 - **交付物（入库）**：`backend/app/core/config.py`、`backend/app/main.py`、`backend/.env.example`、`docs/project_record/RUNBOOK.md`、本 §40。（`backend/.env` dev 改动为本地 gitignored，不进 commit。）
 - **零真 LLM、零 DB 写、未 push（沙箱无网）**。
+
+
+## §41 night26 Task A · recalc 路由漂移修复（方案 A，闭环 H1）
+
+- **代码改动**（唯一 tracked 代码改动）：`backend/app/main.py:228` → `app.include_router(recalc_queue.router, prefix="/api/v1/recalc")`（原 `prefix="/api/v1"`）。`recalc_queue.router` 内 6 路由（`/trigger`、`/status`、`/history`、`/dependency-graph`、`/stats`、`/recover`）现挂在 `/api/v1/recalc/*`，与前端 `RecalcPage.tsx` 调用完全一致。
+- **验证** `_night26_taskA_verify.py`（gitignored，零真 LLM / 零 DB 写）：
+  - in-process 路由表：6/6 `/api/v1/recalc/*` 路由存在；旧前缀（`/api/v1/trigger` 等）残留 = 0。
+  - TestClient（prod `ENABLE_INTERNAL_ENDPOINTS=off`）：前端 4 调用点（status/history/dependency-graph/trigger）**无 token→401**、**带 dev JWT→200（非 404）**；`ALL_PASS`。
+  - recalc 端点鉴权面不变：`/status`、`/trigger`、`/dependency-graph`、`/stats`、`/recover` 仍 `internal_endpoint_guard`（prod 默认 401），`/history` 仍 `get_current_user`（硬鉴权）——漂移修复未削弱任何鉴权。
+- **同步更正过期引用**（同 commit，避免后续验证器/文档误判）：
+  - `docs/project_record/22-ISS025无鉴权端点全量扫描.md` B 类清单 6 处：`/api/v1/{trigger,dependency-graph,stats,status,recover}` → `/api/v1/recalc/{...}`；收口建议段同步。
+  - `docs/project_record/night_runs/_night24_verify_b.py` 连通性验证器 focused 列表改新路径，并重跑 `RESULT: PASS`（无回归）。
+  - `AI_CHANGES.md` §31「路径纠正」+ §39「漂移状态」：标注「已于 night26 Task A 修复（方案 A）」。
+- **回归**：`_night24_verify_b.py` 重跑 `RESULT: PASS`；`_night26_taskA_verify.py` `ALL_PASS`。未碰其他路由/业务逻辑。
+- **零真 LLM、零 DB 写、不 kill 后端、未 push**。
+- 交付物（gitignored）：`_night26_taskA_verify.py`(→`_night26_taskA_result.json`)、`night26_taskA_recalc_fix.md`、`night25_route_drift.md`(标已修复)。
 
