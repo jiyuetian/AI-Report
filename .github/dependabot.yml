@@ -1,0 +1,46 @@
+# Dependabot 配置（night25 Task D 收口）
+# 每周扫描后端 pip 依赖与前端的 npm 依赖，自动提 PR。
+# 注：沙箱无网，本文件仅入库配置；实际 PR 由你本机/CI 在联网环境触发。
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    manifest: "requirements.txt"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "backend"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    manifest: "package.json"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "frontend"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  # 锁定 GitHub Actions 工作流使用的 action 版本，防止投毒
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"

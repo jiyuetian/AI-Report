@@ -752,3 +752,14 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
   - `docs/project_record/night_runs/_night25_taskC_table.py`（结果表生成器）
 - **commit**：见本提交（p0-security-fixes 分支，parent=59f1788 night25 Task B）（仅 AI_CHANGES.md 入库；night_runs 过程文件按红线 gitignored）
 
+
+## §38 night25 Task D · 依赖与 CI 收口
+
+- **新增 `.github/dependabot.yml`**（入库）：pip（/backend/requirements.txt）+ npm（/frontend/package.json）+ github-actions 三类，**每周一 06:00** 自动提 PR，限流 10/5，标签 `dependencies`。沙箱无网，配置入库后由本机/CI 在联网环境触发。
+- **新增 `_verify_env_deps` 离线核验脚本**（gitignored）：检查 Python>=3.12、requirements.txt 钉版 vs 本机已装、Node 版本、package-lock.json/node_modules 存在性，输出 `_night25_taskD_env_deps.json`。
+  - 实测：Python 3.12.10（>=3.12 OK）；pip 34 项 OK=29 / MISSING=5（asyncpg、python-magic、pytest-asyncio、ruff、black——均属 DB 驱动/开发lint工具，环境裁剪非安全回归）；Node v22.22.2 + package-lock.json + node_modules 均在。
+- **新增 `night25_npm_audit_checklist.md`**（gitignored，需真机人工）：npm audit / pip-audit 执行步骤与判读口径；因沙箱无网，审计本身标「需真机人工」，与 dependabot 自动扫描互补。
+- **闭环 night24 Task D 遗留**：pandas 3.x 钉版（`pandas==3.0.3`，CVE 已修复）、python-multipart/email-validator/jinja2 等 CVE 修复钉版已在 requirements.txt（night24 上提），本次补 dependabot 周扫描 + 离线 env 核验 + 审计清单，形成「钉版 + 周扫 + 手动兜底」三层收口。
+- **交付物**：`.github/dependabot.yml`（入库）；`docs/project_record/night_runs/_night25_taskD_verify_env_deps.py`、`_night25_taskD_env_deps.json`、`night25_npm_audit_checklist.md`（gitignored）。
+- **零代码改动、零真 LLM、零 DB 写、未 push（沙箱无网）**。
+
