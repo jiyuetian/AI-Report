@@ -565,6 +565,48 @@ async def fix_quality_issues_batch(request: QualityFixBatchRequest, sql_db: Asyn
     }
 
 
+@router.post("/{dataset_id}/reset")
+async def reset_quality(
+    dataset_id: str,
+    sql_db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """
+    重置质检 — 撤销清洗层写入，回滚到原始数据（ISS-064）。
+    仅本人/超管可操作（_assert_dataset_access 校验归属，否则 404）。
+    动作：
+      1) 删除清洗层物理表（cleaned），使后续质检重新读取 raw/norm 原始数据；
+      2) 所有 QualityIssue.status 置为 ignored，撤销已采纳的修复；
+      3) 清除该数据集的 AI 补充检测缓存，下次质检重新走规则+AI。
+    """
+    # 归属校验：非本人/非超管/无 owner 一律 404，杜绝越权重置他人数据
+    await _assert_dataset_access(sql_db, dataset_id, current_user)
+
+    db = get_duckdb()
+    cleaned = db.get_layer_table_name(dataset_id, "cleaned")
+    dropped = False
+    if db.table_exists(cleaned):
+        db.conn.execute(f'DROP TABLE IF EXISTS "{cleaned}"')
+        dropped = True
+
+    # 撤销所有质检问题的修复状态
+    await sql_db.execute(
+        update(QualityIssue)
+        .where(QualityIssue.dataset_id == dataset_id)
+        .values(status="ignored")
+    )
+    await sql_db.commit()
+
+    # 清除 AI 补充检测缓存，使下次质检重新走规则+AI
+    _AI_RESULT_CACHE.pop(dataset_id, None)
+
+    return {
+        "dataset_id": dataset_id,
+        "dropped_cleaned": dropped,
+        "message": "已重置质检并撤销清洗层（数据已回滚到原始状态）",
+    }
+
+
 @router.post("/_internal/test-quality")
 async def test_quality_check(current_user: Dict = Depends(get_current_user)):
     """内部接口：测试质检功能（验收用）"""
