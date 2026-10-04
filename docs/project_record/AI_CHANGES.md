@@ -734,3 +734,21 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 
 ### ④ 状态
 - `[DONE]` 2026-10-04（6/6 PASS + R1-R2 回归 PASS；含 1 处代码加固；本地未 push）。
+
+## §37 night25 Task C · 用户验收预演（night23_ACCEPTANCE_CHECKLIST 逐条）
+
+- **目标**：对 night23 用户验收清单 22 个子项，能自动化的用 mock/TestClient/静态扫描跑；跑不了的标「需真机人工」+ 最小步骤。全程零真 LLM（动态校验走 night25 Task B 的 in-process mock 验证器）。
+- **汇总**：总项 **22** ｜ 可自动化 **11**（PASS 11 / FAIL 0）｜ 需真机人工 **11**。
+- **可自动化 11 项全部 PASS**：
+  - ①-1 分支=`p0-security-fixes`；①-3 Python3.12 + fastapi/sqlalchemy/openai 均 import OK；①-4 `.env` 含 kimi/senseNova 网关配置。
+  - ②-1 night_runs 验证脚本 0 处真实 DB 写（commit/execute/INSERT/UPDATE/DELETE）；②-3 `brain_run_sse.py` 未被 night23/24/25 安全修复系列改动（近5提交为 d12c419 弹窗 P0），helper 仍 `json.dumps(data, ensure_ascii=False)`，SSE 双编码结构未动；②-5 验证脚本 0 处真实 LLM 网络调用。
+  - ③A `Depends(internal_endpoint_guard)` 端点数=**75**（清单称 73，差异 2 属统计口径；prod 默认 `ENABLE_INTERNAL_ENDPOINTS=off` → 无 token 返回 401 不执行）；③B + ③D 以 night25 Task B 验证器等价复现（ALL_6_PASS + R1-R2 PASS，覆盖三重动作链/撤销后再改/歧义锚点/非法图型→澄清）。
+  - ④-1 py_compile 5 个改动文件全 OK；④-2 复合拆分套件等价复现 PASS。
+- **需真机人工 11 项**：①-2 / ②-2（需联网比对远端）、②-4（后端进程本机托管）、③C / ④-3（429 切层属 provider 行为，需真实 kimi/sensenova 触发）、④-4（真 LLM 冒烟，仅克隆看板）、⑤-1~⑤-5（上线决策/拍板）。
+- **关键发现**：night23 验证脚本 `_night23_verify_a/b/c/d.py` 均为 gitignored 过程文件，本 session 磁盘已不存在；故 ③B/③D 以 night25 Task B 验证器做等价复现，③C/④-3 标需真机人工。
+- **交付物**（gitignored 过程文件，不进 commit）：
+  - `docs/project_record/night_runs/night25_acceptance_preview.md`（预演结果表，含 5 段 22 行 + 结论建议）
+  - `docs/project_record/night_runs/_night25_taskC_preview.py`（预演脚本，输出 `_night25_taskC_result.json`）
+  - `docs/project_record/night_runs/_night25_taskC_table.py`（结果表生成器）
+- **commit**：见本提交（p0-security-fixes 分支，parent=59f1788 night25 Task B）（仅 AI_CHANGES.md 入库；night_runs 过程文件按红线 gitignored）
+
