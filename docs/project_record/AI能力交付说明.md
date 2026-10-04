@@ -31,7 +31,7 @@
 - **ISS-066 守卫缺陷（教练核实）**：`chat.py` complete 事件两处缺陷（缺 `await` + dict 直接塞 message 致 SSE `json.dumps` 崩溃）→ 补 `await` + 取 `.message` 字符串 + `_verify_iss066_message.py` 真跑 10/10 PASS（night27 补丁 `c415f24`）。
 - **统一 AI 失败处理规则 R1–R5**：对话 SSE 与看板生成后台轮共用判定/兜底/重试/标注基线（不静默、不空泡、双入口、诚实标注、退避重试）。
 - **ISS-058（阈值调整功能缺口）**：N 模块 8 条全部 PASS（night18 `f0cc1fb`，35/35 验证）。
-- **ISS-053（依赖漏洞）**：`requirements.txt` 对齐到已验证安全且实际在跑的版本，pip-audit 由 33 CVE 降至 **2 CVE（仅 ecdsa 0.19.2 上游无修复版，残余）**（night28 Task A `898ca30`）。
+- **ISS-053（依赖漏洞）**：后端 `requirements.txt` 对齐到已验证安全且实际在跑的版本，pip-audit 由 33 CVE 降至 **2 CVE（仅 ecdsa 0.19.2 上游无修复版，残余）**（night28 Task A `898ca30`）；前端 axios 真实漏洞见 §3.3（已定位，锁同步待你本机）。
 
 ---
 
@@ -47,7 +47,7 @@ ATTRIBUTION 归因追问、QUALITY_FIX、CHART_FIX、CREATE/UPDATE/DELETE_CONFIG
 
 ### 3.3 依赖残留风险
 - **ecdsa 0.19.2（CVE-2024-23342）**：上游无修复版，残余；当前仅间接依赖（python-jose 路径），实际调用面小。
-- **前端 axios / Dependabot**：`package.json` 用 `^` 范围，建议 CI 跑 `npm audit` + `npm update` 重新落锁（沙箱无 npm audit advisory 网络，改用 OSV 审计 lockfile 确认 axios 非漏洞源）。
+- **前端 axios（真实漏洞，已定位未落锁）**：`package-lock.json` 锁 `axios 1.19.0`，**精确 OSV SEMVER 复核确认其真实落在漏洞区间（12 条 GHSA，HIGH/MODERATE 混合），修复版 = `1.20.0`**（证据 `night_runs/night28/osv_precise_audit.py` + `npm_osv_precise.json`）。故「上一轮把 axios 判为漏洞包」并非误判，axios 确为真实漏洞包。**沙箱 `npm install` 被 SIGTERM 无法同步 lock → 待你本机执行 `npm install axios@1.20.0 --save-exact`** 并跑 `npm audit fix` 收口传递依赖（braces 3.0.3 无修复版，HIGH 残余）。
 - 后端 pip-audit 现状：修复后 2 CVE / 1 包（ecdsa）。
 
 ### 3.4 模型限流
@@ -79,7 +79,7 @@ ISS-062（自动质检不跳过）、ISS-063（批量修复超时/取消/重试�
 | ISS-025 验收侧 11 项（push 比对远端 / DB 真跑 / 真实看板绿标 / 用户拍板） | 代码闭环，验收待真机 | 你本机 push 后 |
 | night27 五处浏览器真机复测 | 结构 PASS，体验确认 | 你本机 |
 | ecdsa 0.19.2 残余 CVE | 上游无修复，监控 | 上游发版后升级 |
-| 前端 axios/Dependabot 落锁 | 待 CI | 你本机/CI |
+| 前端 axios 1.19.0 真实漏洞（fix 1.20.0）锁同步 | 已定位，BLOCKED（沙箱 npm 被 SIGTERM） | 你本机 `npm install axios@1.20.0 --save-exact` + `npm audit fix` |
 | 9 项无用例功能意图补测 | 建议 v2 | 下一轮 |
 | night28 全部 commit push | 待你本机带代理 | 现在可 push |
 
@@ -88,4 +88,4 @@ ISS-062（自动质检不跳过）、ISS-063（批量修复超时/取消/重试�
 ## 6. 覆盖结论（一句话）
 
 **168 条测试案例：PASS 103 / PASS* 43 / 需真机 22 / FAIL 0**；34 项功能完成度 **24 已覆盖 / 1 部分 / 9 无用例**；
-本轮 0 新增回归、0 新增 FAIL，依赖漏洞由 33 CVE 收敛至 2 CVE（ecdsa 残余）。交付可进入真机验收阶段。
+本轮 0 新增回归、0 新增 FAIL；**后端**依赖漏洞由 33 CVE 收敛至 2 CVE（ecdsa 残余），**前端 axios 1.19.0 真实漏洞已定位（fix 1.20.0，锁同步待你本机）**。交付可进入真机验收阶段。
