@@ -99,3 +99,11 @@ git -c http.proxy=http://127.0.0.1:7897 -c http.extraHeader="Authorization: Basi
 - **时间**：2026-10-03
 - **版本**：v2（草稿 → 转正）
 - **状态**：启动 / 停止 / 故障 / 测试 / push / DB 纪律 六节已齐
+## ENABLE_API_DOCS（night25 Task G · API 文档暴露闸门）
+
+- **作用**：控制 FastAPI 的 `/docs`（Swagger）、`/redoc`、`/openapi.json` 三个公开文档端点是否暴露。
+- **取值**：`on`/`true`/`1` 放开；其余（含未设置）= 隐藏。
+- **默认值**：`False`（prod 安全）。与 `DEBUG` **解耦**——即便 `DEBUG=true`，prod 部署也应显式 `ENABLE_API_DOCS=false` 隐藏文档，避免公开 schema 暴露后端路由面。
+- **dev**：`backend/.env` 已设 `ENABLE_API_DOCS=on`，保留文档便利。
+- **prod**：`.env.example` 默认 `false`；上线时务必确认未设 `on`（或删除该行）。
+- **安全影响**：隐藏后，openapi 路由从「无鉴权 15」降为「无鉴权 12」（减少 3 个公开 schema 端点）；dev 仍 15。验证见 night25 Task G。

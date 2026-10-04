@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     # dev 设 on/true/1 可放开内部端点匿名访问（便利）。仅开关，不影响业务逻辑。
     ENABLE_INTERNAL_ENDPOINTS: bool = False
 
+    # API 文档暴露闸门（night25 Task G）：prod 默认 False（隐藏 /docs、/redoc、/openapi.json，
+    # 关闭公开 schema 暴露缺口）；dev 设 on/true/1 放开文档。与 DEBUG 解耦——
+    # 即使 DEBUG=true，prod 部署也应显式设 ENABLE_API_DOCS=false 隐藏文档。
+    ENABLE_API_DOCS: bool = False
+
     # 调试
     DEBUG: bool = True
 

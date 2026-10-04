@@ -167,8 +167,10 @@ app = FastAPI(
     description="AI-powered BI Reporting Tool API",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
+    # night25 Task G：API 文档暴露闸门（独立于 DEBUG）。prod 默认隐藏 /docs、/redoc、/openapi.json。
+    docs_url="/docs" if settings.ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
 )
 
 # CORS配置

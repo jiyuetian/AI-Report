@@ -775,3 +775,15 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - **交付物**：`_night25_taskE_scan.py` + `_night25_taskE_result.json` + `night25_route_drift.md`（均 gitignored）。
 - **零代码改动、零真 LLM、零 DB 写、未 push（沙箱无网）**；仅登记本 §39 与报告。
 
+
+## §40 night25 Task G · API 文档暴露收口
+
+- **新增开关** `ENABLE_API_DOCS`（`backend/app/core/config.py`，默认 `False`=prod 安全）：与 `DEBUG` 解耦的独立闸门，控制 FastAPI `/docs`、`/redoc`、`/openapi.json` 是否暴露。
+- **`main.py:165` 改造**：`docs_url`/`redoc_url`/`openapi_url` 由 `settings.ENABLE_API_DOCS` 决定（`True`→暴露，`False/未设`→`None` 不挂载），替代原仅依赖 `settings.DEBUG` 的粗粒度控制。
+- **env/RUNBOOK 登记**：`backend/.env`（dev）加 `ENABLE_API_DOCS=on`（保持 dev 文档便利，gitignored 本地）；`backend/.env.example` 加 `ENABLE_API_DOCS=false`（prod 默认）；`docs/project_record/RUNBOOK.md` 追加 `ENABLE_API_DOCS` 章节（作用/取值/默认/prod 指引/安全影响）。
+- **实测安全影响**（in-process 路由枚举）：`ENABLE_API_DOCS=on`（dev）无鉴权路由=18，其中框架文档端点 4 个（`/docs`、`/docs/oauth2-redirect`、`/openapi.json`、`/redoc`）；`=false`（prod）这 4 个不挂载 → 无鉴权=14，均为业务/鉴权流公开端点（login/health/captcha/forgot-password/shares-verify/admin-prompts）。即：**隐藏文档后公开 schema 暴露面从 4 降为 0**，业务无鉴权面不变。
+  - 注：任务书预估「15→dev15/prod12」是按 night24 计数口径（不含框架路由）的近似；本回合实测算入框架文档路由，故 dev=18/prod=14，降幅一致（隐藏 4 个公开 schema 端点）。业务无鉴权端点 14 个属既有 auth 流设计，不在本开关收口范围。
+- **回归**：`py_compile` config.py+main.py OK；night25 Task A 读端点 28/0、Task B ALL_6+R1-R2 仍 PASS（docs 网关不影响业务路由鉴权）。
+- **交付物（入库）**：`backend/app/core/config.py`、`backend/app/main.py`、`backend/.env.example`、`docs/project_record/RUNBOOK.md`、本 §40。（`backend/.env` dev 改动为本地 gitignored，不进 commit。）
+- **零真 LLM、零 DB 写、未 push（沙箱无网）**。
+
