@@ -921,3 +921,38 @@ if _fb_msg:
 
 ### 提交
 - 单独 commit `fix(backend): ISS-066 守卫补 await + 取 .message 字符串`（chat.py + 验证脚本 + 指南，未 push）。
+
+## §48 night28 全量收口（Task A–E，本地未 push）
+
+> 2026-10-04。分支 `p0-security-fixes`（HEAD `898ca30`）。目标：依赖漏洞真定位 + 166 条覆盖矩阵 + 34 项矩阵 + 零回归 + 交付说明 + 交接。
+
+### ① Task A — ISS-053 依赖漏洞真定位（commit `898ca30`）
+- 真定位：`pip-audit` 本地 manifest + `pip index versions` 查可装版 + OSV.dev `/v1/querybatch` 审计前端 lockfile（沙箱放行 HTTPS 裸套接字，git/npm-advisory 被掐）。
+- 漂移发现：原 `requirements.txt` 是 night24 钉版但严重漂移——实际运行环境已是安全版（fastapi 0.136.3/starlette 1.2.1/pyarrow 25.0.1/duckdb 1.5.5/python-jose 3.5.0）。按旧钉版全新安装才触发 33 CVE。
+- 修复：对齐钉版到实际安全环境，闭环 starlette 7 CVE、pyasn1 8 CVE、python-dotenv/black/pyarrow/duckdb/python-jose 等。
+- 结果：pip-audit **33 CVE/8 包 → 2 CVE/1 包（仅 ecdsa 0.19.2 上游无修复版，残余）**；`requirements.txt` dry-run 无 ERROR；backend 导入 OK。
+
+### ② Task B — 168 条覆盖矩阵（`AI_TEST_CASES_v1_RESULT.md`）
+- 修正上轮 bug：原正则 `^[A-N]\d` 只匹配 `A1-1`/`B1-1`，漏 C–N 模块 `C-1`/`L-1`/`N-1` 格式（仅 82/168）；且误把「AI 模式补测」重测表当独立案例、附录 D1–D8 造数据行误标模块 N。
+- 重生成健壮解析器（仅取 `## 模块 X` 下正式案例表，排除补测/附录表）→ **168 行全量覆盖**。
+- 计数：PASS 103 / PASS* 43 / 需真机 22 / **FAIL 0**。FAIL 空 → 无 ISS-067 需登记。
+
+### ③ Task C — 34 项功能完成度矩阵（真建 `34项功能完成度矩阵.md`）
+- 此前 night26 草稿仅为代理（无物理文件），本表据当前 AI_TEST_CASES_v1（A–N 168 条）重映射。
+- 计数：已覆盖 24 / 部分 1（#18）/ 无用例 9（#6/#9/#10/#14–17/#19/#20）= 70.6%（较 night26 草稿 29.4% 提升，因 K/L/M/N 四模块补齐 + B3-7 闭环）。
+- 9 项无用例为测试覆盖缺口（非缺陷），建议纳入 v2 用例集。
+
+### ④ Task D — 全量回归零回归
+- night28 仅改 `requirements.txt`（已 commit）+ 文档，**无运行时代码改动** → 回归真空干净。
+- 前序已真跑：backend `compileall` OK + 8 个 `_verify_*` 脚本全绿（ISS-066 10/10、night27 23/23、ISS-058 5/5、TaskI 32/32、TaskG 18/18、clarify 13/13、health 15/15、history 10/10）+ 前端 `tsc --noEmit` 退出码 0。
+- 本会话补 `compileall` 复检：COMPILE_OK。
+
+### ⑤ Task E — 交付说明 + 文档闸门
+- 新建 `AI能力交付说明.md`（能力清单/已闭环问题/边界残留/真机验收步骤/遗留）。
+- 新建 `PROJECT_STATUS.md`（11 项能力域总状态）。
+- 更新 `ISSUES.md`（追加 night28 收口块：0 FAIL + 9 覆盖缺口 backlog，非缺陷）。
+- 本文件追加 §48；本 night28 `NIGHT_SUMMARY.md` 见 `night_runs/night28/`。
+
+### ⑥ 状态
+- **代码闭环**，验收待真机（ISS-025 验收侧 11 项 + night27 五处浏览器复测）。
+- 待 push：分支 `p0-security-fixes`（HEAD `898ca30`）；沙箱 GitHub git 协议被 SIGTERM，需用户本机带 `127.0.0.1:7897` 代理。

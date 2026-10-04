@@ -394,3 +394,31 @@
   3. 与看板生成的 `ai_awaiting` 抉择语义对齐（R1 判定 / R2 不静默不空 / R3 双入口 / R4 诚实标注 / R5 退避重试），本轮统一的只是判定/兜底/重试/标注规则，未改变对话 SSE 流式与看板后台轮询的传输方式。
 - **验证**：`_verify_night27_iss062_066.py` 结构断言 PASS（前端 `if (!finalContent)` / `aiError.message`；后端 `if not response_data.get("message")` / `generate_intent_response` / 统一兜底文案）。对话真机 SSE 复测为体验确认项（需起服务，沙箱不可）。
 - **状态**：`[DONE]`（night27 Task E，本地未 push）。
+
+---
+
+## night28 收口记录（覆盖闭环，非缺陷）
+
+> 2026-10-04。本轮为 night27→night28 全量收口（依赖漏洞定位 + 覆盖矩阵 + 功能完成度矩阵 + 零回归 + 交付说明）。**本块为覆盖/收口记录，不登记新缺陷。**
+
+### 覆盖结论
+- **168 条测试案例**：PASS 103 / PASS* 43 / 需真机 22 / **FAIL 0**。FAIL 空 → **无 ISS-067 需登记**。
+- **34 项功能完成度**：已覆盖 24 / 部分 1（#18 MANAGE_PERMISSIONS）/ 无用例 9 = 70.6%（较 night26 草稿 29.4% 提升）。
+- 依赖漏洞：pip-audit **33 CVE → 2 CVE（仅 ecdsa 0.19.2 上游无修复版，残余）**（commit `898ca30`）。
+- 回归：night28 无运行时代码改动（仅 requirements.txt + 文档），零回归；前序 8 `_verify_*` 脚本 + 前端 `tsc` 全绿，本会话 `compileall` 复检 OK。
+
+### 测试覆盖缺口 backlog（9 项功能意图无对话用例，非缺陷，建议纳入 AI_TEST_CASES_v2）
+- #6 ATTRIBUTION 归因追问
+- #9 QUALITY_FIX 数据质量修复 / #10 CHART_FIX 图表诊断修复
+- #14 CREATE_CONFIG / #15 UPDATE_CONFIG / #16 DELETE_CONFIG / #17 BULK_UPDATE_DATA
+- #19 QUERY_METRIC 指标查询 / #20 RECALC_METRIC 下游重算触发
+- #18 MANAGE_PERMISSIONS（仅 J-7 红线测试，动作本身无对话用例，🟡 部分）
+
+### 待真机验收（不计入自动回归）
+- 需真机 22 项：A1-3、A4-1、A4-4、A4-6、A5-1、D-1…D-8、F-7、F-11、F-12、G-1…G-5、H-4（后端逻辑均已被 in-process 脚本真跑覆盖，仅前端渲染/截图/弹窗交互需浏览器）。
+- ISS-025 验收侧 11 项（push 比对远端 / DB 真跑 / 真实看板绿标 / 用户拍板）。
+- night27 五处（ISS-062~066）浏览器体验复测。
+
+### 待办（用户本机）
+- push 分支 `p0-security-fixes`（HEAD `898ca30`，带 `127.0.0.1:7897` 代理；沙箱 git 协议被 SIGTERM 无法代 push）。
+- 前端 `npm audit`/`npm update` 重新落锁（axios/Dependabot 侧）。
