@@ -813,3 +813,35 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - **零真 LLM、零 DB 写、不 kill 后端、未 push**。
 - 交付物（gitignored）：`_night26_taskB_verify.py`(→`_night26_taskB_result.json`)、`night26_taskB_action_verb.md`。
 
+
+## §43 night26 Task C · night25 遗留 H2/H3（性能基线 + 覆盖盘点）
+
+- **H2 性能采样**（`_night26_taskC_h2_perf.py`，N=20/接口，in-process 无 token，零 DB 写 / 零真 LLM）：
+  - dashboard 加载 `GET /api/v1/dashboards/my` 401 基线 avg=2.945ms / p50=2.772ms / max=8.667ms。
+  - chat 流式首字节 `POST /api/v1/chat/message` 401 基线 avg=2.538ms / p50=2.244ms。
+  - recalc 触发 `POST /api/v1/recalc/trigger` 200（沙箱 `ENABLE_INTERNAL_ENDPOINTS=on` dev 放开，非安全回归）avg=2.063ms / p50=1.904ms。
+  - 解读：鉴权层基线 ~2–3ms 无毛刺；完整加载时延（DB/LLM/渲染）需真机，已附最小步骤卡（标「需真机人工」）。**只测不优化**。
+- **H3 覆盖盘点**（`night26_taskC_h3_coverage.md`）：
+  - **关键发现**：真「功能完成度矩阵(34项)」文件仓库内不存在（`COLLAB_RULES.md` 规则8#5 要求维护但从未创建）→ 列为文档闸门缺项（建议 D 类补建，本表可作初始草稿回填）。
+  - 替代：代码夯实 34 项 AI 对话功能完成度矩阵（意图21类 `intent_classifier.py:49-73` + 多轮/澄清13项），映射 `AI_TEST_CASES_v1.md`（⑥+R1/R2）。
+  - 覆盖：✅10 / 🟡2(部分) / ❌22(无用例)；覆盖率 10/34=29.4%。无用例重点：配置 CRUD(#14-16)、权限(#18)、FILTER/QUERY/RECALC(#5#19#20)、Task B 裸「加」(#32)、指代删除优先(#28)、阶段9三(#29-31)。
+  - 建议：补建真矩阵回填本表；将 night26 Task B 验证器并入 `AI_TEST_CASES` v2 防回归。
+- **零真 LLM、零 DB 写、不 kill 后端、未 push**。交付物（gitignored）：`_night26_taskC_h2_perf.py`(→`_night26_taskC_h2_result.json`)、`night26_taskC_h2_perf.md`、`night26_taskC_h3_coverage.md`。
+
+## §44 night26 Task E · 全量回归 + 收尾 + ISS-025 闭环判定
+
+- **全量回归（全部 _verify_*.py 零回归）**：
+  - `_night26_taskA_verify.py` → `ALL_PASS`（recalc 路由 6/6；prod 401、with_token 非404，route_missing=0）。
+  - `_night26_taskB_verify.py` → `ALL_PASS`（误命中0、未命中0）。
+  - `_night25_taskB_verify.py` → `ALL_6_SCENARIOS_PASS` + `REGRESSION R1-R2 PASS`（复合拆分零回归）。
+  - `_night24_verify_b.py` → `RESULT: PASS`（recalc 连通性 + 22 写端点 `get_current_user` 全在，0 漏网）。
+  - `_night25_taskA_verify.py` → `TOTAL=28 FAIL=0`（路由扫描）。
+  - `py_compile` 8 改动文件（main/action_planner/security/recalc_queue/intent_classifier/action_executor/chat/llm_gateway）→ 8/8 OK。
+- **脚本归位**：全部过程脚本/证据均在 `docs/project_record/night_runs/`（gitignored），无过程文件泄漏进代码目录。
+- **ISS-025 闭环判定**：**`[CODE_CLOSED]`**——代码侧主链路全收口：
+  - A 类 47（22 高危写 + `kickout` 归属校验）已加硬鉴权（`get_current_user`）；
+  - B 类 73 内部端点 env 闸门已落地（75 端点 `internal_endpoint_guard`，prod 默认 401；recalc 漂移 night26 Task A 已修）；
+  - C 类 11 按设计保留匿名（非缺项）。
+  - **验收侧 11 项待用户本机**（push 比对远端 / DB 真跑 / 真实看板绿标 / 用户拍板），属上线决策或需真实环境，非代码缺项 → **可判「ISS-025 代码闭环，验收待真机」**。
+- **本夜 commit 链**（本地 `p0-security-fixes`，未 push）：`81ad561`(Task B) `a894b68`(Task A)；两处真问题已修、零回归已验。
+- **零真 LLM、零 DB 写、不 kill 后端、未 push**。

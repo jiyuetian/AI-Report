@@ -334,5 +334,7 @@
 - **决策（任务书 + 分批建议）**：Batch1 优先收口最高危 A 类写端点；Batch2（B 类 73）内部端点走 env 闸门（prod 默认关）；C 类 11 按设计保留匿名。
 - **修复进度**：
   - **Batch1（2026-10-03 night22 Task B，DONE）**：22 个目标端点全加 `Depends(get_current_user)`，`kickout/{user_id}` 加归属校验（非本人且非超管 → 403）；body 取值 `current_user` → `current_user["user_id"]`（chat / tokens / token_applications 三处）。commit `8f6c56d`（本地未 push）。验证 `_verify_iss025_batch1.py` 22/22、全量回归零回归（health 15/15、ISS-060 13/13、history 10/10）。
-  - **Batch2（待做）**：B 类 73 端点 env 闸门（ISS-053 依赖钉固后 / Task E 富余才做）。
-- **状态**：`[IN_PROGRESS]` Batch1 DONE、Batch2 待排期。详见 `docs/project_record/05-ISS025鉴权审计.md` 与 `22-ISS025无鉴权端点全量扫描.md`。
+  - **Batch2（B 类 73 内部端点 env 闸门，DONE）**：75 个端点（清单称 73，差异 2 属统计口径）加 `Depends(internal_endpoint_guard)`，prod 默认 `ENABLE_INTERNAL_ENDPOINTS=off` → 无 token 返回 401 不执行；dev 设 `on` 放开。night23/24/25 连通性验证器持续 PASS。
+  - **recalc 路由漂移修复（2026-10-04 night26 Task A，DONE）**：`backend/app/main.py:228` 前缀 `/api/v1` → `/api/v1/recalc`，闭环 B 类 gate 路径漂移 H1（原 6 路由挂在 `/api/v1/*` 与前端调用点 `/api/v1/recalc/*` 错位，前端 4 调用点 prod 无 token 仍 401——gate 生效，但路径错位属结构缺陷，已修）。同步更正 `22-ISS025无鉴权端点全量扫描.md` B 类清单 6 处 + `_night24_verify_b.py`。
+- **C 类 11 保留匿名**：按设计保留（如 `/health`、静态资源等），非缺项。
+- **状态**：`[CODE_CLOSED]` 代码侧主链路全收口——A 类 47（22 写 + `kickout` 归属校验）已加硬鉴权、B 类 gate 已落地且无路径漂移、C 类按设计保留。**验收侧 11 项待用户本机**（push 比对远端 / DB 真跑 / 真实看板绿标 / 用户拍板），属上线决策或需真实环境，非代码缺项 → 可判「ISS-025 代码闭环，验收待真机」。详见 `docs/project_record/05-ISS025鉴权审计.md` 与 `22-ISS025无鉴权端点全量扫描.md`、night26 `NIGHT_SUMMARY.md` Task A/E。
