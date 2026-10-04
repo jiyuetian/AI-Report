@@ -803,3 +803,13 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - **零真 LLM、零 DB 写、不 kill 后端、未 push**。
 - 交付物（gitignored）：`_night26_taskA_verify.py`(→`_night26_taskA_result.json`)、`night26_taskA_recalc_fix.md`、`night25_route_drift.md`(标已修复)。
 
+
+## §42 night26 Task B · _ACTION_VERB_RE 过匹配加固
+
+- **根因**：night25 Task B 给 `_ACTION_VERB_RE`（`action_planner.py:38`）加裸词「加」修复复合句 add 被吞；副作用是裸「加」以 `.search()` 命中任意含「加」字（增加/更加/参加/附加/相加/叠加/愈加），导致非动作句被误判为动作子句、破坏 `split_clauses` 合并逻辑。
+- **修法**（两处，唯一 tracked 代码改动 `action_planner.py`）：① 长词优先（`加上|添加|新增` 置于裸 `加` 之前，消除死分支）；② 裸「加」加否定环视 `(?<![增更附参相叠愈越倍交])加`，仅当「加」前非这些字才命中。
+- **验证** `_night26_taskB_verify.py`（gitignored，零真 LLM）：反例 7/7 不命中（增加销售额/更加清晰/参加活动/附加说明/相加/叠加显示/愈加明显），正例 5/5 命中（加一个趋势图/添加柱状图/加上平均值/再来一个/改成饼图）→ `ALL_PASS`（误命中 0、未命中 0）。
+- **回归**：night25 Task B 6 边界 + R1/R2 重跑 → `ALL_6_SCENARIOS_PASS` + `REGRESSION R1-R2 PASS`（零回归，零真 LLM）。`py_compile` action_planner.py OK。
+- **零真 LLM、零 DB 写、不 kill 后端、未 push**。
+- 交付物（gitignored）：`_night26_taskB_verify.py`(→`_night26_taskB_result.json`)、`night26_taskB_action_verb.md`。
+
