@@ -845,3 +845,13 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
   - **验收侧 11 项待用户本机**（push 比对远端 / DB 真跑 / 真实看板绿标 / 用户拍板），属上线决策或需真实环境，非代码缺项 → **可判「ISS-025 代码闭环，验收待真机」**。
 - **本夜 commit 链**（本地 `p0-security-fixes`，未 push）：`81ad561`(Task B) `a894b68`(Task A)；两处真问题已修、零回归已验。
 - **零真 LLM、零 DB 写、不 kill 后端、未 push**。
+
+## §45 night26 Task D · 11 项「需真机人工」验收脚本化准备
+
+- 一键本地检查器 `night_runs/_night26_taskD_acceptance_local.py`（只读 git/进程探测，不 push/不写DB/不杀后端）：覆盖 ①-2（ahead of origin 提交数）/ ②-2（未 push 提交列表）/ ②-4（127.0.0.1:8000 监听探测）。
+- 最小步骤卡 `night_runs/night26_taskD_acceptance_cards.md`：11 项全有最小步骤——
+  - 可自动化 3 项（①-2/②-2/②-4）：脚本直接出结果；
+  - 需真机触发 3 项（③C LLM429 切层 / ④-3 LLM429 套件 / ④-4 真 LLM 冒烟）：给命令 + 预期（用克隆看板 `dash_p0verify_0001`，禁碰真实看板）；
+  - 需用户拍板 5 项（⑤-1~⑤-5 上线决策）：决策项，拍板后执行对应 git/pip 命令。
+- 用户真机操作量压缩为「跑脚本 + 点选 + 拍板」；脚本已 `py_compile` OK。
+- 零真 LLM、零 DB 写、不 kill 后端、未 push。
