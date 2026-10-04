@@ -1210,6 +1210,30 @@ async def send_message_stream(
                 response_data["new_config"] = last_new_config
             response_data["action_results"] = action_results
 
+            # night27 Task E (ISS-066)：保证 complete 事件 message 非空，杜绝前端空气泡
+            # 动作轮单动作执行成功但执行器未回传 message 时，response_data["message"] 仍为空串 → 前端空气泡。
+            # 按统一规则 R1-R5：优先用意图回执文案回退，仍无则统一兜底，动作未成功时诚实标注 ai_error。
+            if not response_data.get("message"):
+                try:
+                    _fb = generate_intent_response(intent_type, intent_result.get("analysis", {}), context)
+                except Exception:
+                    _fb = None
+                if _fb:
+                    response_data["message"] = _fb
+                elif action_results and any(r.get("success") for r in action_results):
+                    # 动作实际成功但无可读回执：补一句中性确认，不冒领 AI 成果（R4 未触发，因为本就无需 AI）
+                    response_data["message"] = "已为你执行完成，请查看看板更新。"
+                else:
+                    # R1/R2/R4：动作未成功且无回执 → 诚实标注 AI 未参与，给出抉择入口（对齐对话 ai_error 语义）
+                    response_data["message"] = "本次操作未产生具体结果，请重试或改用规则引导。"
+                    if not response_data.get("ai_error"):
+                        response_data["ai_error"] = {
+                            "stage": "action_execution",
+                            "error": "动作执行未返回可读回执",
+                            "options": ["retry", "rule_fallback"],
+                            "message": "操作未产生具体结果，请重试或改用规则引导。",
+                        }
+
         # night14 Task1：AI 行为埋点（fail-fast：写入失败只告警，不阻断对话）
         # 动作轮：逐动作写一行；非动作轮（clarify / fallback / unknown 自然回复）：写一行汇总。
         # 以 asyncio.create_task fire-and-forget 注入，零延迟、不阻塞 SSE 响应。
