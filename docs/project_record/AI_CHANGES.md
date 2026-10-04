@@ -706,3 +706,31 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 
 ### ⑤ 状态
 - `[DONE]` 2026-10-04（0 回归，零代码改动，本地未 push；登记用本 commit）。
+
+---
+
+## §36 night25 Task B · AI 对话边界加固（ISS-041/ISS-042/CHANGE_CHART 更深边界）
+
+> 红线：零 DB 写、不重启后端、禁真 LLM（mock 分类器/规划器 stub）、验证脚本与过程文件 gitignored。
+> 结论：6 类更深边界场景全 PASS；并修复一处复合动作拆分缺陷（_ACTION_VERB_RE 加"加"）。
+
+### ① 6 类场景（离线 mock LLM，零网络）
+- ① 三重动作链（删A改B加C）：`删掉第一张图，把饼图改成柱图，再加一个销售额趋势图` → is_compound、3 动作按 删→改→加 顺序。**PASS**
+- ② 撤销后再改：`把饼图改成柱图` → 源图型(饼图)唯一→精确锁定 c2，不反问 which_chart。**PASS**
+- ③ 歧义锚点（多图）：`把那个图改一下` → 必须澄清（semantic_clarify），不静默改 charts[0]。**PASS**
+- ④ 超 5 轮截断后承接：pending_clarify.clarify_round=5 + `第二张` → 仍解析为 change_chart 锁定 c2。**PASS**
+- ⑤ 锚点命中但图型非法：`把饼图改成飞饼图` → 不崩溃、不静默落库非法图型（澄清 which_chart）。**PASS**
+- ⑥ 一句两意图拆分：`删掉第一张图并且加一个趋势图` → is_compound、删+加两动作。**PASS**
+- 复现：`python docs/project_record/night_runs/_night25_taskB_verify.py` → `RESULT: ALL_6_SCENARIOS_PASS`。
+
+### ② 代码加固（修复复合拆分缺陷）
+- `backend/app/core/action_planner.py` · `_ACTION_VERB_RE` 增加独立词 **"加"**。
+- 修复前：复合句 `把饼图改成柱图，加一个趋势图` 中「加一个趋势图」不含「加上/新增/添加」，被判为无动作动词子句，**回并入上一子句**，add 动作被吞（三重链退化成 删+澄清）。实测 night23 双动作(删+加)靠「再」连接词拆分，但「加」作独立连接词时仍会丢失。
+- 修复后：独立「加」被识别为动作动词 → 子句独立成句 → 三重/双动作链均可正确拆分。回归：双动作复合、单意图行为不变（verifier R1-R2 守卫）。
+
+### ③ 交付物
+- `docs/project_record/night_runs/AI_TEST_CASES_v1.md`（6 场景 + 加固说明 + 回归守卫）。
+- `docs/project_record/night_runs/_night25_taskB_verify.py`（可执行回归，内联 mock LLM）。
+
+### ④ 状态
+- `[DONE]` 2026-10-04（6/6 PASS + R1-R2 回归 PASS；含 1 处代码加固；本地未 push）。
