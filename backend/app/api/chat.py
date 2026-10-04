@@ -1215,11 +1215,14 @@ async def send_message_stream(
             # 按统一规则 R1-R5：优先用意图回执文案回退，仍无则统一兜底，动作未成功时诚实标注 ai_error。
             if not response_data.get("message"):
                 try:
-                    _fb = generate_intent_response(intent_type, intent_result.get("analysis", {}), context)
+                    # night27 Task E 修复（教练核实）：generate_intent_response 是 async def 且返回 dict，
+                    # 必须 await 并取 .message 字符串，否则会把 coroutine/dict 塞进 message → SSE json.dumps 崩溃。
+                    _fb = await generate_intent_response(intent_type, intent_result.get("analysis", {}), context)
                 except Exception:
                     _fb = None
-                if _fb:
-                    response_data["message"] = _fb
+                _fb_msg = _fb.get("message") if isinstance(_fb, dict) else None
+                if _fb_msg:
+                    response_data["message"] = _fb_msg
                 elif action_results and any(r.get("success") for r in action_results):
                     # 动作实际成功但无可读回执：补一句中性确认，不冒领 AI 成果（R4 未触发，因为本就无需 AI）
                     response_data["message"] = "已为你执行完成，请查看看板更新。"

@@ -888,3 +888,36 @@ python backend/_night24_verify_a.py secure  -> MODE=secure settings.ENABLE_INTER
 - 后端 `py_compile` chat.py / quality.py 全绿。
 - 结构级验收脚本 `tests/_fixtures/real/_verify_night27_iss062_066.py` **23/23 PASS**（含 ISS-065 自动跳转已删除的反向断言）。
 - 浏览器真机复测（自动质检触发 / 批量修复超时取消重试 / 重置真回滚 / 单动作对话不空气泡）属体验确认项，需用户本机起服务后确认（与历史 night 模式一致：代码 DONE、真机待验收）。
+
+## §47 night27 补丁 · ISS-066 守卫 await/dict 缺陷修正（教练核实，本地未 push）
+
+> 教练在 commit `2f9ebfa`（Task E 守卫）中发现两处缺陷，在「单动作轮 message 为空」场景会让 SSE 流崩溃。本补丁独立成 commit，未 push。
+
+### 缺陷（根因）
+- `generate_intent_response` 是 `async def`（chat.py:114），守卫里缺 `await` → `_fb` 是 coroutine（恒真），`if _fb:` 命中，把 coroutine 赋进 `response_data["message"]`。
+- 该函数返回 **dict**（message/action/suggested_followups），即便补 await，`response_data["message"] = _fb` 也会把 dict 塞进 message。
+- 后果：`full_response["message"]` 为 coroutine/dict → `sse_event` → `json.dumps` → `TypeError`（coroutine 不可序列化）→ SSE 中断。结构级 grep 没拦住此 bug。
+
+### 修复（chat.py:1216-1235，elif/else 兜底分支不变）
+```python
+try:
+    # 必须 await（async def）+ 取 .message 字符串；否则 coroutine/dict 进 message → SSE 崩溃
+    _fb = await generate_intent_response(intent_type, intent_result.get("analysis", {}), context)
+except Exception:
+    _fb = None
+_fb_msg = _fb.get("message") if isinstance(_fb, dict) else None
+if _fb_msg:
+    response_data["message"] = _fb_msg
+```
+
+### 验收（真实验证，非结构 grep）
+- 新增 `tests/_fixtures/real/_verify_iss066_message.py`，直接 `import` 真实 `generate_intent_response` 并 `await`：
+  - 复现旧 bug：不 await → coroutine → `json.dumps` 抛 `TypeError`（PASS，证明根因）。
+  - 修复后：`response_data["message"]` 为**非空 str**，`json.dumps(full_response, ensure_ascii=False)` 不抛异常（PASS）。
+  - 兜底分支 A/B：message 恒非空 str 且可序列化、失败时诚实置 `ai_error`（PASS）。
+  - 运行结果：**10/10 PASS**，exit 0。
+- 后端 `py_compile` chat.py 全绿。
+- 经验沉淀：`docs/project_record/verify_script_guide.md` 记铁律「结构性断言不能替代运行时断言——async/await 与 JSON 序列化类缺陷必须真跑分支」。
+
+### 提交
+- 单独 commit `fix(backend): ISS-066 守卫补 await + 取 .message 字符串`（chat.py + 验证脚本 + 指南，未 push）。
