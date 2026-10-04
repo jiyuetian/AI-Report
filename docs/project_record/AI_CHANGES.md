@@ -956,3 +956,11 @@ if _fb_msg:
 ### ⑥ 状态
 - **代码闭环**，验收待真机（ISS-025 验收侧 11 项 + night27 五处浏览器复测）。
 - 待 push：分支 `p0-security-fixes`（HEAD `898ca30`）；沙箱 GitHub git 协议被 SIGTERM，需用户本机带 `127.0.0.1:7897` 代理。
+
+### §48.1 收口复核补正（2026-10-04 续，对照完整提示词）
+- **axios 真实漏洞（修正旧「非漏洞源」误判）**：`osv_precise_audit.py` 精确 SEMVER 复核 → `axios 1.19.0` 真实落在漏洞区间，修复版 `1.20.0`（12 条 GHSA，HIGH/MODERATE 混合）。提示词「1.19.0 安全版」系过时判断；「上一轮把 axios 判为漏洞包」并非误判。→ 同步修正 `AI能力交付说明.md §3.3/§5/§6` + `ISSUES.md` ISS-053。
+- **前端锁同步 BLOCKED**：沙箱 `npm install axios@1.20.0 --save-exact` 被 SIGTERM（与 git/npm audit 同因），`package-lock.json` 未变更（`git diff` 空，安全）。已定位未落锁，诚实登记 `[BLOCKED-前端锁同步]`；待本机执行 `npm install axios@1.20.0 --save-exact --registry=https://registry.npmjs.org` + `npm audit fix`。
+- **其余 npm 命中真实修复版**：brace-expansion(1.1.18→1.1.19 / 2.1.4→2.1.5)、echarts(5.6.0→6.1.0)、esbuild(0.21.5→0.25.0)、js-yaml(4.3.1→4.3.2, HIGH)、react-router(6.30.6→7.18.0)、vite(5.4.21→6.4.x)；**braces 3.0.3 无修复版（HIGH 残余）**。
+- **Task D 回归汇总补产**：`night_runs/night28/回归汇总.md`——11 个 `_verify_*` 本会话实时真跑全部 ALL_PASS（ISS-066 10/10、night27 23/23、ISS-058 5/5、ISS-059 9/9、clarify 13/13、health 15/15、history 10/10、TaskI 32/32、TaskG ALL、TaskJK 17/17、ISS-025 Batch1 22/22）+ `tsc --noEmit` exit 0 + `compileall` COMPILE_OK → **ALL_PASS 零回归**。
+- **ISS-053 状态翻转**（提示词 Task 0 要求）：`[DONE-代码]` → `[DONE-后端]` + `[BLOCKED-前端锁同步]`。
+- 新增 commit：`fix(docs): ISS-053 精确OSV复核 axios真实漏洞+状态翻转`（ISSUES.md）；`docs: night28 Task E 修正 axios 真实漏洞表述`（AI能力交付说明.md）。

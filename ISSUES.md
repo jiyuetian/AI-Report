@@ -257,8 +257,11 @@
   | jinja2 | 3.1.3 | 3.1.4 | CVE-2024-34064（xmlattr 属性注入） | MODERATE |
   | email-validator | 2.1.0 | 2.1.1 | CVE-2024-1916（EmailStr ReDoS） | MODERATE |
   | httpx | 0.26.0 | 0.27.2 | CVE-2024-47081（.netrc 凭据经代理泄漏） | MODERATE |
-- **前端**：`package.json` 全部用 `^` 范围（安装时自动取最新 minor/patch），建议 CI 跑 `npm audit` + `npm update` 并重新生成 `package-lock.json` 落锁；重点核对 `axios`（^1.6.7，锁文件若 <1.7.4 受 CVE-2024-28849、<1.8.0 受 CVE-2025-27152 SSRF）。
-- **状态**：`[DONE-代码]`（钉版已落 `requirements.txt` + 本登记）；**待办**：①`pip install` 实装后端钉版（需联网，沙箱未跑）；②前端 `npm audit`/`npm update` 落锁（待 CI/用户执行）。
+- **前端（night28 精确 OSV 复核，修正旧误判）**：`package.json` 全部用 `^` 范围。先前认为 `axios 1.19.0` 是「安全版」系**过时判断**——精确 OSV SEMVER 核查（`night_runs/night28/osv_precise_audit.py` + `npm_osv_precise.json`）确认 **axios 1.19.0 真实落在漏洞区间，修复版 = `1.20.0`**（12 条 GHSA，HIGH/MODERATE 混合）。故「上一轮把 axios 判为漏洞包」并非误判，axios 确为真实漏洞包。其余 npm 命中：brace-expansion(1.1.18→1.1.19 / 2.1.4→2.1.5)、echarts(5.6.0→6.1.0)、esbuild(0.21.5→0.25.0)、js-yaml(4.3.1→4.3.2, HIGH)、react-router(6.30.6→7.18.0)、vite(5.4.21→6.4.x)；**braces 3.0.3 无修复版（HIGH，残余）**。npm 侧多为 dev/传递依赖，建议 `npm audit fix` + CI 落锁。
+- **状态（night28 翻转）**：`[DONE-后端]` + `[BLOCKED-前端锁同步]`。
+  - **后端**：night28 重新审计并钉版 `requirements.txt`（commit `898ca30`），pip-audit **33 CVE → 2 CVE**（仅 ecdsa 0.19.2 上游无修复版，残余）；`pip install` 实装需联网，沙箱不可，待用户本机。
+  - **前端 axios（真实漏洞，已定位未落锁）**：修复版 `axios@1.20.0 --save-exact`，沙箱 `npm install` 被 SIGTERM 无法同步 `package-lock.json`（与 git/npm audit 同因）→ **BLOCKED**，待用户本机执行：`cd frontend && npm install axios@1.20.0 --save-exact --registry=https://registry.npmjs.org`，并跑 `npm audit fix` 收口传递依赖（braces 3.0.3 无修复版，残余，交 Dependabot/CI）。
+  - **Dependabot 告警原文**：沙箱 github.com:443 TIMEOUT，无法拉取 `security/dependabot/1` 原文；以本地精确 OSV 审计为准（axios 真实命中已证实，非误判）。
 
 ---
 
