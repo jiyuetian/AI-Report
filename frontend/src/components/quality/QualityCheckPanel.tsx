@@ -168,6 +168,11 @@ export default function QualityCheckPanel({
   const [applyingPlan, setApplyingPlan] = useState(false)
   // 当前批量修复模式（用于分别控制两个按钮的 loading 态）：'blocking' | 'all'
   const [planMode, setPlanMode] = useState<'blocking' | 'all'>('all')
+  // ISS-063：批量修复内联状态（超时/取消/重试/成功与部分失败均内联可见，不再只靠 message.loading）
+  const [applyError, setApplyError] = useState<string | null>(null)
+  const [applyResult, setApplyResult] = useState<{ success: number; failed: number; note?: string } | null>(null)
+  const [applyElapsed, setApplyElapsed] = useState(0)
+  const planAbortRef = useRef<AbortController | null>(null)
 
   // 每条问题当前选中的处理方案：默认=后端标记的推荐方案，用户可在表格里下拉切换
   const [strategyMap, setStrategyMap] = useState<Record<string, string>>({})
@@ -253,6 +258,9 @@ export default function QualityCheckPanel({
   const [selectedStrategy, setSelectedStrategy] = useState('')
   const [customValue, setCustomValue] = useState('')
   const [fixing, setFixing] = useState(false)
+  // ISS-064：重置（撤销清洗）的二次确认弹窗与 loading 态
+  const [resetModalOpen, setResetModalOpen] = useState(false)
+  const [resetting, setResetting] = useState(false)
   
   // 切换文件时同步质检状态，并清理上一文件的AI轮询
   useEffect(() => {
@@ -266,7 +274,11 @@ export default function QualityCheckPanel({
   }, [fileId])
   
   // 一次性守卫：同一 datasetId 只自动处理一次，避免切 tab / StrictMode 重复触发
+  // 注意：守卫赋值必须发生在"实际执行"时（见自动质检 effect 内定时器回调），不能在 effect 顶部提前赋值，
+  // 否则 cleanup 清掉定时器后重挂载会命中守卫直接 return，导致首次自动质检被永久跳过（ISS-062）
   const autoHandledRef = useRef<string>('')
+  // 自动质检 404 后的 1.5s 重试定时器，随 effect cleanup 一起清理，避免组件卸载后悬空触发
+  const autoRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 注：真正的自动质检 effect 定义在 runCheck / loadExisting 之后（声明顺序要求）
   
   // 统计阻断项
@@ -322,8 +334,10 @@ export default function QualityCheckPanel({
       const data = await response.json()
 
       if (!response.ok) {
-        if (!silent) message.destroy('qc')
-        message.error(data.detail?.message || '质检失败')
+        if (!silent) {
+          message.destroy('qc')
+          message.error(data.detail?.message || '质检失败')
+        }
         setAiStatus('failed')
         return null
       }
@@ -349,11 +363,13 @@ export default function QualityCheckPanel({
       pollAiResult(datasetId)
       return grouped
     } catch (error: any) {
-      if (!silent) message.destroy('qc')
-      if (error?.name === 'AbortError') {
-        message.error('质检超时，请重试')
-      } else {
-        message.error('质检请求失败')
+      if (!silent) {
+        message.destroy('qc')
+        if (error?.name === 'AbortError') {
+          message.error('质检超时，请重试')
+        } else {
+          message.error('质检请求失败')
+        }
       }
       setAiStatus('failed')
       return null
@@ -400,20 +416,36 @@ export default function QualityCheckPanel({
   useEffect(() => {
     if (!datasetId) return
     if (autoHandledRef.current === datasetId) return
-    autoHandledRef.current = datasetId
 
     if (autoCheck === false) {
+      // 历史数据集：先读已存结果（不重跑、不弹 toast）；无记录（如修复上线前的数据集）则静默兜底跑一次
+      autoHandledRef.current = datasetId
       loadExisting().then(n => {
-        // 后端没有任何已存记录（例如修复上线前的数据集）→ 静默兜底跑一次
         if (n === null) runCheck({ silent: true })
       })
       return
     }
 
+    // 新数据集：500ms 后自动跑一次；守卫在「实际执行」时才赋值，避免 cleanup 清定时器后重挂载
+    // 命中守卫直接 return 而永久跳过（ISS-062）。若数据表尚未就绪（404/!ok），1.5s 后静默重试一次，
+    // 仍失败则静默保留（不弹错误、不阻断），由用户手动点「重新质检」。
     const timer = setTimeout(() => {
-      runCheck()
+      autoHandledRef.current = datasetId
+      runCheck({ silent: true }).then(result => {
+        if (result === null) {
+          autoRetryRef.current = setTimeout(() => {
+            runCheck({ silent: true })
+          }, 1500)
+        }
+      })
     }, 500)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      if (autoRetryRef.current) {
+        clearTimeout(autoRetryRef.current)
+        autoRetryRef.current = null
+      }
+    }
   }, [datasetId, autoCheck, loadExisting, runCheck])
   
   const openFix = (checkKey: string, issue: ApiQualityIssue) => {
@@ -520,24 +552,34 @@ export default function QualityCheckPanel({
       message.info('当前问题均无自动推荐方案，请逐条选择处理')
       return
     }
+    // 重置上一次结果/错误，开始新的批量修复
+    setApplyError(null)
+    setApplyResult(null)
+    setApplyElapsed(0)
     setApplyingPlan(true)
-    message.loading({ content: `正在按推荐方案批量修复 ${plan.length} 项...`, key: 'plan', duration: 0 })
+    // ISS-063：60s 超时 + 可取消；窗口内联状态条实时反馈进度
+    const ctrl = new AbortController()
+    planAbortRef.current = ctrl
+    const stopwatch = setInterval(() => setApplyElapsed(e => e + 1), 1000)
+    const timeout = setTimeout(() => ctrl.abort(), 60000)
     try {
       const resp = await authorizedFetch(`${API_BASE}/quality/fix-batch`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataset_id: datasetId, items: plan }),
+        signal: ctrl.signal,
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) {
-        message.destroy('plan')
-        message.error(data.detail?.message || '批量修复失败，请重试或逐条修复')
+        setApplyError(data.detail?.message || '批量修复失败，请重试或逐条修复')
         return
       }
-      message.destroy('plan')
+      // 内联展示成功 / 部分失败结果
       if (data.failed > 0) {
+        setApplyResult({ success: data.success, failed: data.failed })
         message.warning(`已修复 ${data.success} 项，${data.failed} 项失败（可逐条处理）`)
       } else {
+        setApplyResult({ success: data.success, failed: 0 })
         message.success(`已按推荐方案修复 ${data.success} 项，正在重新质检...`)
       }
       // 重新质检：拿到最新结果，判断是否可以自动进入看板生成
@@ -546,33 +588,62 @@ export default function QualityCheckPanel({
         const remainBlocking = newChecks.some(c => c.blocking && c.status === 'fail')
         const remainWarn = newChecks.reduce((s, c) => s + c.issues.length, 0)
         if (!remainBlocking) {
-          // 无阻断项 → 自动流转到看板生成（对齐方案B"一键采纳推荐方案→继续"）
+          // 无阻断项 → 提示用户手动点「生成看板」（ISS-065：删除自动弹窗，避免打断用户操作流）
           message.success(
             remainWarn > 0
-              ? `质检通过（无阻断项），剩余 ${remainWarn} 个非阻断提示已自动保留，正在进入看板生成...`
-              : '质检全部通过，正在进入看板生成...'
+              ? `质检通过（无阻断项），剩余 ${remainWarn} 个非阻断提示已自动保留，请点「生成看板」继续`
+              : '质检全部通过，请点「生成看板」继续'
           )
-          setTimeout(() => { onProceed?.() }, 700)
         } else {
           message.warning('仍有阻断性问题未修复，请在下方表格逐条处理后继续')
         }
       }
-    } catch (e) {
-      message.destroy('plan')
-      message.error('批量修复请求失败（网络异常），请重试')
+    } catch (e: any) {
+      if (e?.name === 'AbortError') {
+        setApplyError('批量修复已取消（超时 60s 未响应或手动取消）')
+      } else {
+        setApplyError('批量修复请求失败（网络异常），请重试')
+      }
     } finally {
+      clearTimeout(timeout)
+      clearInterval(stopwatch)
+      planAbortRef.current = null
       setApplyingPlan(false)
     }
   }, [datasetId, checking, runCheck, strategyMap, onProceed])
 
-  // 重置 — 清除所有修复记录
-  const resetAll = () => {
-    const newState: CheckState = {
-      checks: groupIssuesByType([]),
-      fixedKeys: new Set(),
+  // 重置 — 撤销清洗层，回滚到原始数据（ISS-064）
+  // 仅清空前端状态不足以回滚，必须调用后端 /quality/{dataset_id}/reset 真正删除清洗层物理表 +
+  // 将 QualityIssue.status 置 ignored，否则"修复写清洗层、重置未回滚"会留下脏数据。
+  const resetAll = async () => {
+    if (!datasetId) return
+    setResetting(true)
+    // 清理可能残留的 duration:0 提示（如批量修复的 'plan'），避免卡在界面
+    message.destroy('plan')
+    try {
+      const resp = await authorizedFetch(`${API_BASE}/quality/${datasetId}/reset`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        message.error(data.detail?.message || '重置失败，请重试')
+        return
+      }
+      // 真实回滚成功后清空本地质检状态
+      const newState: CheckState = { checks: groupIssuesByType([]), fixedKeys: new Set() }
+      updateState(newState)
+      setApplyError(null)
+      setApplyResult(null)
+      message.success('已重置：清洗层已撤销，数据回滚到原始状态，正在重新质检...')
+      // 自动重跑质检，刷新面板（silent：不弹中间 loading，由面板状态反映）
+      await runCheck({ silent: true })
+    } catch (e) {
+      message.error('重置请求失败（网络异常），请重试')
+    } finally {
+      setResetting(false)
+      setResetModalOpen(false)
     }
-    updateState(newState)
-    message.info('已重置所有质检状态')
   }
   
   const { Text } = Typography
@@ -604,7 +675,7 @@ export default function QualityCheckPanel({
       }
       extra={
         <Space>
-          <Button size="small" onClick={resetAll}>重置</Button>
+          <Button size="small" onClick={() => setResetModalOpen(true)}>重置数据（撤销清洗）</Button>
           <Button icon={<ReloadOutlined />} loading={checking} onClick={() => runCheck()}>重新质检</Button>
         </Space>
       }
@@ -818,6 +889,46 @@ export default function QualityCheckPanel({
       )}
 
       <Divider />
+      {/* ISS-063：批量修复内联状态条（超时/取消/重试/成功与部分失败均内联可见，不再只靠 message.loading） */}
+      {(applyingPlan || applyError || applyResult) && (
+        <div style={{ marginBottom: 12 }}>
+          {applyingPlan && (
+            <Alert
+              type="info"
+              showIcon
+              message={
+                <span>
+                  正在按推荐方案批量修复（{planMode === 'blocking' ? '仅必拦项' : '全部问题'}）… 已用时 {applyElapsed}s
+                </span>
+              }
+              action={
+                <Button size="small" onClick={() => planAbortRef.current?.abort()}>
+                  取消
+                </Button>
+              }
+            />
+          )}
+          {!applyingPlan && applyError && (
+            <Alert
+              type="error"
+              showIcon
+              message={applyError}
+              action={
+                <Button size="small" danger onClick={() => applyRecommendedPlan(planMode === 'blocking')}>
+                  重试修复
+                </Button>
+              }
+            />
+          )}
+          {!applyingPlan && applyResult && (
+            applyResult.failed > 0 ? (
+              <Alert type="warning" showIcon message={`已修复 ${applyResult.success} 项，${applyResult.failed} 项失败（可逐条处理）`} />
+            ) : (
+              <Alert type="success" showIcon message={`已修复全部 ${applyResult.success} 项问题`} />
+            )
+          )}
+        </div>
+      )}
       {/* 底部按钮区（2026-09-18 对齐原型）：左"仅处理必拦项，继续"，右"一键 AI 修复全部问题（N项）→" */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ color: '#8c8c8c', fontSize: 13 }}>
@@ -911,6 +1022,19 @@ export default function QualityCheckPanel({
             )}
           </>
         )}
+      </Modal>
+
+      {/* ISS-064：重置（撤销清洗）二次确认弹窗 */}
+      <Modal
+        title="重置数据（撤销清洗）"
+        open={resetModalOpen}
+        onCancel={() => setResetModalOpen(false)}
+        okText="确定重置"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading: resetting }}
+        onOk={resetAll}
+      >
+        <p>此操作将<strong>删除清洗层并撤销所有已采纳的修复</strong>，数据回滚到原始上传状态。确定要重置吗？</p>
       </Modal>
     </Card>
     </SkillPanel>
