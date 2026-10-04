@@ -1,52 +1,58 @@
 # Web框架
-fastapi==0.110.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.32  # ISS-053 CVE-2024-53981 已修复（0.0.32）；night24 Task D 上提钉版
+fastapi==0.136.3  # night28 Task A：原 0.110.0 过旧且锁定 starlette<0.37 无法修复 CVE；对齐实际运行环境(0.136.3)
+uvicorn[standard]==0.27.0  # 未命中漏洞，保持
+python-multipart==0.0.32  # ISS-053 CVE-2024-53981 已修复（0.0.32）
 
 # 数据库
-sqlalchemy[asyncio]==2.0.27
-alembic==1.13.1
-asyncpg==0.29.0
-redis==5.0.1
+sqlalchemy[asyncio]==2.0.27  # 未命中漏洞，保持
+alembic==1.19.2  # 对齐实际运行环境
+asyncpg==0.29.0  # 实际环境未安装；保持原钉版（未命中漏洞）
+redis==8.1.0  # 对齐实际运行环境
 
 # 数据处理
-pandas==3.0.3  # ISS-053 CVE 已修复；night24 Task D 上提 3.x（全链路验证待联网环境/CI）
-numpy==1.26.0
-openpyxl==3.1.2
-pyarrow==15.0.0
+pandas==3.0.3  # 保持
+numpy==2.4.6  # 对齐实际运行环境
+openpyxl==3.1.5  # 对齐实际运行环境
+pyarrow==25.0.1  # ISS-053 CVE-2024-52338(≥17.0.0) / CVE-2026-25087(≥23.0.1) 已修复；原 15.0.0 高危
 
 # DuckDB
-duckdb==0.10.0
+duckdb==1.5.5  # ISS-053 CVE-2024-41672(≥1.1.0) 已修复；原 0.10.0 高危
 
 # AI集成
-openai==1.12.0
+openai==2.24.0  # 对齐实际运行环境
 
 # 工具
-pydantic==2.6.1
-pydantic-settings==2.1.0
-python-dotenv==1.0.0
-structlog==24.1.0
-email-validator==2.3.0  # ISS-053 CVE-2024-1916 已修复（2.1.1+）；night24 Task D 上提钉版
-jsonschema==4.21.0
-jinja2==3.1.6  # ISS-053 CVE-2024-34064 已修复（3.1.4+）；night24 Task D 上提钉版
-pyyaml==6.0.1
+pydantic==2.12.5  # 对齐实际运行环境
+pydantic-settings==2.15.0  # 对齐实际运行环境
+python-dotenv==1.2.2  # ISS-053 CVE-2026-28684(≥1.2.2) 已修复；原 1.0.0 高危
+structlog==26.1.0  # 对齐实际运行环境
+email-validator==2.3.0  # ISS-053 CVE-2024-1916 已修复（2.1.1+）
+jsonschema==4.26.0  # 对齐实际运行环境
+jinja2==3.1.6  # ISS-053 CVE-2024-34064 已修复（3.1.4+）
+pyyaml==6.0.3  # 对齐实际运行环境
 
 # 文件处理
-python-magic==0.4.27
-aiofiles==23.2.1
-chardet==5.2.0
+python-magic==0.4.27  # 实际环境未安装；保持原钉版
+aiofiles==25.1.0  # 对齐实际运行环境
+chardet==7.6.0  # 对齐实际运行环境
 # P1: 多格式输入扩展
-python-docx==1.1.0
-PyMuPDF==1.24.0
+python-docx==1.2.0  # 对齐实际运行环境
+PyMuPDF==1.27.2.3  # 对齐实际运行环境
 
 # 安全
-bcrypt==4.0.1
-python-jose[cryptography]==3.3.0
-passlib==1.7.4
+bcrypt==4.0.1  # 保持
+python-jose[cryptography]==3.5.0  # ISS-053 CVE-2024-33663/33664/2026-85394/29370 已修复（≥3.4.0）；对齐实际运行环境(3.5.0)，其约束 pyasn1>=0.5.0 拉入已修复的 pyasn1 0.6.4
+passlib==1.7.4  # 保持
 
 # 开发工具
-pytest==8.0.0
-pytest-asyncio==0.23.0
-httpx==0.28.1  # ISS-053 CVE-2024-47081 已修复（0.27.0+）；night24 Task D 上提钉版
-ruff==0.2.0
-black==24.1.0
+pytest==9.1.1  # CVE-2025-71176(≥9.0.3) 已修复；对齐实际运行环境
+pytest-asyncio==0.23.0  # 实际环境未安装；保持
+httpx==0.28.1  # ISS-053 CVE-2024-47081 已修复（0.27.0+）
+ruff==0.2.0  # 实际环境未安装；保持
+black==26.3.1  # CVE-2024-21503/2026-2120/2026-2121 已修复（26.3.1）；原 24.1.0 高危（dev 工具，非运行时）
+
+# 传递依赖显式加钉（night28 Task A：修复经 fastapi / python-jose 拉入的高危子依赖）
+starlette==1.3.1  # CVE-2024-47874/2025-54121/2026-48710/48817/48818/54282/54283 全部修复（≥1.3.1）；原经 fastapi 0.110.0 锁 0.36.3 高危
+
+# 注：ecdsa（经 python-jose[cryptography] 拉入）CVE-2024-23342 上游无已发布修复版（最新 0.19.2 仍受影响），
+#     列为残余风险；待上游发版后在此显式加钉。当前 JWT 实际使用 RS/HS 签名时该路径不被触发。
