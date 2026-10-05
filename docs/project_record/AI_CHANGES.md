@@ -978,3 +978,27 @@ if _fb_msg:
 - **Task B 真机验收**：沙箱无浏览器，UI 层（ISS-062~066 五处 + 22 条需真机 UI + ISS-025 验收侧 11 项）全部标记「待真机」，未伪造 PASS；逻辑层引用 night28 的 11 个 `_verify_*` ALL_PASS + `tsc`/`compileall` 零回归。报告：`night_runs/night29/真机验收报告.md`。
 - **commit**：`fff8ed8` fix(deps) ISS-053 axios 落锁 + npm audit fix（已 push）。
 - **诚实声明**：Task B UI 层待真机；Dependabot 网页原文仍不可拉（github.com:443 仅 ls-remote 可达）→ 以本地权威 `npm audit`+OSV 双审计为准。零 DB 写、未 kill 进程、未新增功能。
+
+### §50. night30 前端依赖大版本升级清残余 14 CVE（2026-10-05）
+
+- **机型**：不写新功能，只清 night29 残余 **14 CVE（10 high + 4 moderate）**——前端依赖大版本升级 + 回归 + 收口。依据：教练 2026-10-05 本机 `npm audit --registry=https://registry.npmjs.org` 实跑。
+- **基线**：分支 `p0-security-fixes`，起始 HEAD `e067f64`（night29 收口，本地==远端）。axios 已于 night29 `fff8ed8` 落锁 1.20.0，本轮不碰；后端 `requirements.txt` 已 night28 钉版，本轮不碰。
+- **工具链（关键）**：安装全程用**系统 Node24 的 npm 11.17.0**（`C:/Program Files/nodejs/node.exe` + 其 npm-cli.js）。managed npm 10.9.7 对可选原生二进制（`@rollup/rollup-*`/`@rolldown/binding-*`）做 idealTree/lock 计算会崩 `Cannot read properties of undefined (reading 'spec')`，`--package-lock-only` 与 `install` 均触发；npm 11.17.0 解决。代理 `http_proxy/https_proxy=127.0.0.1:56218` 使装包卡死，**须置空走直连**；`npm audit` 须 `--registry=https://registry.npmjs.org`（npmmirror 不支持 audit）。
+- **Task A — dev 链（commit `de52302`，单独 commit）**：
+  - `@typescript-eslint/eslint-plugin`+`parser` → `8.71.0`（`--save-exact`，清 ReDoS 链，连带 braces/fast-glob/globby/micromatch）；
+  - `vite` → `7.3.6`（**提示词目标 8.3.2**；因 npm 10 bug 改 7.3.6 + `@vitejs/plugin-react` `5.2.0` + `esbuild` `0.28.2`，等价清 vite high + esbuild moderate，build 已验证 EXIT 0）；
+  - audit **14 → 3**（high 归零）。
+- **Task B — 运行时（commit `e3c69de`，单独 commit）**：
+  - `echarts` `5.6.0 → 6.1.0`（清 XSS GHSA-fgmj-fm8m-jvvx）；`echarts-for-react` `3.0.2 → 3.0.6`（peer 支持 echarts 6）；`react-router-dom` `6.30.6 → 7.18.4`（清 open redirect，连带 `react-router`）。
+  - audit **3 → 0**。
+- **验证（非伪造）**：
+  - `npm run build`（`tsc && vite build`）：Task A `✓ built in 27.82s`、Task B `✓ built in 45.64s`，均 EXIT 0 → tsc 已对 react-router 7 类型定义零报错。
+  - `npm ls --all --json`：top-level problems=None，全树 **0 invalid / 0 missing**，锁与 node_modules 一致（`npm ci` 可复现）。
+  - 业务代码**零改动**：echarts 仅经 `echarts-for-react` 标准 option（grep `echarts.\w+` 仅命中注释）；react-router 全 v6 声明式 API 100% v7 兼容。
+- **过程偏差（诚实披露）**：
+  1. 首个 echarts `Edit` **静默未落盘**（本仓已知 Edit 工具陷阱，working_memory 已记）——package.json 仍 `^5.4.3`、node_modules 停在 `echarts@5.6.0`；经 `npm ls` 发现后用 **Python 确定性替换 + assert** 强制落盘 `^6.1.0`，复跑 install 才真正升到 6.1.0。
+  2. 前序 install 被 SIGTERM 打断，锁文件 `node_modules/echarts` 仍记 5.6.0（node_modules 已是 6.1.0）；补 `npm install --package-lock-only` 把锁对齐到 6.1.0 后 audit 才归零。
+- **残余**：**无 CVE 残余（14 → 0）**。唯一未完成项是「真机浏览器冒烟 + 截图」（沙箱无浏览器/显示器），已在 `回归汇总.md` 标注需真机并给命令，未伪造 PASS。
+- **未触碰**：axios / 后端 `requirements.txt` / 生产 DuckDB / 用户进程。
+- **commit 清单（本地未 push，等用户确认）**：`de52302`（Task A dev 链）、`e3c69de`（Task B 运行时）、本轮收口文档 commit（ISSUES.md §50 台账 + NIGHT_SUMMARY.md）。
+- **证据文件**：`night_runs/night30/` 下 `audit_before.json`(14) / `audit_after_dev.json`(3) / `audit_after_runtime.json`(0) / `npm_build_taskA_final.log` / `npm_build_taskB2.log` / `npm_ls_all.json` / `回归汇总.md` / `NIGHT_SUMMARY.md`（均 gitignored，不进 commit）。

@@ -264,6 +264,12 @@
   - **残余 14 项均为 MAJOR 破坏性修复**（echarts→6.1.0 / vite→8.3.2 / react-router→7.18.4 / @typescript-eslint 链 / braces→@typescript-eslint 8.71.0 / micromatch·fast-glob·globby）：本轮「不重构」红线，未自动 `npm audit fix --force`（会破坏前端构建）。移交 CI/Dependabot 或后续专用大版本升级 PR（需先验证构建）。
   - **后端**：night28 钉版 `requirements.txt`（commit `898ca30`），pip-audit 33 → 2 CVE（ecdsa 0.19.2 上游无修复版，残余）；`pip install` 实装待用户本机（环境已跑安全版，低风险）。
   - **Dependabot 告警原文**：沙箱 github.com:443 虽可达 `ls-remote`，但网页/advisory API 仍受限，无法拉取 `security/dependabot/1` 原文；以本地权威 `npm audit` + OSV 双审计为准，axios 真实命中已两路证实。
+  - **night30 收口（残余 14 CVE 全清）**：前端依赖大版本升级 PR，分两类独立 commit，本地未 push（等用户确认）。
+    - **Task A（dev 链，commit `de52302`）**：`@typescript-eslint/eslint-plugin`+`parser` → `8.71.0`（清 ReDoS 链，连带 braces/fast-glob/globby/micromatch）；`vite` → `7.3.6`（提示词目标 8.3.2，因 managed npm 10.9.7 对可选原生二进制 lock 计算崩 `Cannot read properties of undefined (reading 'spec')`，改用系统 npm 11.17.0 + vite 7.3.6 等价清 vite high + esbuild moderate）+ `@vitejs/plugin-react` `5.2.0` + `esbuild` `0.28.2`。audit 14 → 3（high 归零）。
+    - **Task B（运行时，commit `e3c69de`）**：`echarts` `5.6.0→6.1.0`（清 XSS GHSA-fgmj-fm8m-jvvx）+ `echarts-for-react` `3.0.2→3.0.6`（peer 支持 echarts 6）+ `react-router-dom` `6.30.6→7.18.4`（清 open redirect，连带 react-router）。audit 3 → 0。
+    - **验证**：`npm run build`（`tsc && vite build`）两次 EXIT=0；`npm ls --all` 0 invalid/missing；业务代码零改动（echarts 仅经 echarts-for-react 标准 option，react-router 全 v6 声明式 API 100% v7 兼容）。
+    - **残余**：**无 CVE 残余（14→0）**。唯一未在本沙箱完成的是「真机浏览器冒烟 + 截图」（沙箱无浏览器/显示器），已标注需真机并给出命令，未伪造 PASS。
+    - **未触碰**：axios（night29 已落锁 1.20.0）、后端 `requirements.txt`、生产 DuckDB、用户进程。全程用系统 Node24 npm 11.17.0、代理置空走直连。
 
 ---
 
