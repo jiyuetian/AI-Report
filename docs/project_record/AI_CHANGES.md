@@ -1031,3 +1031,28 @@ if _fb_msg:
 - **未触碰**：axios / 后端 `requirements.txt` / 生产 DuckDB / 用户进程。
 - **commit 清单（本地未 push，等用户确认）**：`de52302`（Task A dev 链）、`e3c69de`（Task B 运行时）、本轮收口文档 commit（ISSUES.md §50 台账 + NIGHT_SUMMARY.md）。
 - **证据文件**：`night_runs/night30/` 下 `audit_before.json`(14) / `audit_after_dev.json`(3) / `audit_after_runtime.json`(0) / `npm_build_taskA_final.log` / `npm_build_taskB2.log` / `npm_ls_all.json` / `回归汇总.md` / `NIGHT_SUMMARY.md`（均 gitignored，不进 commit）。
+
+
+### §52. night32 全量回归 + 执行层补测 + 覆盖矩阵 v3（2026-10-04）
+
+- **机型**：在 night31 收口（HEAD `b594414`，本地 3 commit 领先 origin）基础上做**全量回归 + 9 意图动作执行层补盲 + 覆盖矩阵 v3**。硬约束：不写新业务功能；仅测试补盲/回归/文档收口；发现真 bug 才最小改动；禁批量删除；一类一 commit。
+- **基线**：分支 `p0-security-fixes`，起始 HEAD `b594414`（night31 收口）。未改任何业务代码。
+- **Task A — 全量回归（commit `b0701a9`，单独 commit）**：
+  - `backend/tests/test_quality_checker.py` 修复：旧 fixture 唯一度 50% 命中 UNIQ_KEY_RATIO 降级 WARNING 分支，测不到 BLOCKING 路径的 `row_count` 修复；改为真实主键场景（唯一度 ≥95% 走 BLOCKING），断言 `row_count==2` + `row_indices` 长度 ==2；复跑 5 passed。
+  - 真跑取证（`night_runs/night32/`，gitignored）：pytest 全量 **67 passed / 1 failed**（1 项为 `test_frontend_static` 环境依赖失败，非回归，登记 ISS-067）；12 个 `_verify_*.py` 脚本**全部 rc=0 PASS**；golden 20 数据集 **20/20 ✅**（脚手架 `success` 计数器误报 0，逐数据集均 100% 匹配，非数据回归）；`compileall backend/app` rc=0；前端 `tsc`/`build`/`audit` 全绿（audit **0 vulnerabilities**）；API 路由鉴权 AST 静态扫描 **217 路由**（WRITE 116/READ 101），ISS-025 目标端点（rollback/shares/create/chat/message/tokens/status）无鉴权漂移。
+  - 详见 `night_runs/night32/全量回归报告.md`。
+- **Task B — 9 意图动作执行层补测（commit `c2b47fa`，单独 commit）**：
+  - 新增 `backend/tests/test_night32_taskb_exec.py`：**10 tests / 10 passed**，覆盖 9 意图 `ActionExecutor.execute()` 路由/产出/护栏（ATTRIBUTION/QUALITY_FIX/CHART_FIX/CREATE_CONFIG/UPDATE_CONFIG/DELETE_CONFIG/BULK_UPDATE_DATA/QUERY_METRIC/RECALC_METRIC）；离线、mock LLM、隔离临时 DB，**不直写生产 DuckDB**。
+  - 关键发现：config-CRUD 执行器层不强制超管（设计性，鉴权在 API 层）→ 登记低严重度加固 backlog（ISS-068）。
+  - 详见 `night_runs/night32/执行层补测报告.md`。
+- **Task C — 覆盖矩阵 v3（gitignored 过程文档，无独立 commit）**：
+  - 解析 night31 v2（177 条），对主表 + O 表新增「night32 复跑」列（YES=本轮 12 脚本/pytest 覆盖；carried(n31)=night31 已验；—=历史基线）；新增 **P-1~P-9（9 意图动作执行层）9 条**。
+  - 总览：**PASS 103 + PASS\* 43 + 需真机 22 + FAIL 0 + O 类 9 + P 类 9 = 186 条**（功能矩阵内 FAIL 0；环境依赖测试 fail 不计入矩阵，登记 ISS-067）。
+  - 产物 `night_runs/night32/AI_TEST_CASES_v3_运行矩阵.md`（gitignored，不进 commit）。
+- **Task D — 收口（本 commit）**：ISSUES.md 追加 ISS-067（环境依赖测试失败）/ ISS-068（config-CRUD 执行器层超管护栏缺口）+ 本 §52 + `docs/project_record/NIGHT_SUMMARY_night32.md`。
+- **FAIL 清单**：功能矩阵内 **0 FAIL**。非阻塞待办 3 项（均非代码回归）：① ISS-067 环境依赖测试失败；② golden 脚手架 `success` 计数器 bug（误报 0，低优先级待修）；③ `auth_whitelist.json` 本 checkout 缺失（INFO，待补后复核 66 个无鉴权写端点）。
+- **需真机（同 night28/31，22 条，不计入自动回归）**：A1-3/A4-1/A4-4/A4-6/A5-1/D-1~D-8/F-11/F-12/F-7/G-1~G-5/H-4；前端结构守卫已确认存在，视觉渲染/截图仍待用户真机。
+- **诚实披露/偏差**：本会话仅文档 + 测试，无业务代码改动、无依赖升级、无 build、无 CVE 变动。Edit 工具在本仓对 Python/Markdown 曾静默未落盘（已知陷阱），本次改用 Python 确定性替换 + assert 强制落盘并回读验证（pytest 复跑 15 passed 交叉验证）。
+- **未触碰**：后端业务代码 / 前端业务代码 / 生产 DuckDB / 用户进程 / `requirements.txt` / 已闭环 ISS-053 / axios / `data/`。
+- **commit 清单（本地未 push，等用户授权）**：`b0701a9`(Task A) / `c2b47fa`(Task B) / 本轮收口 commit。
+- **证据文件**：`night_runs/night32/` 下 `全量回归报告.md` / `执行层补测报告.md` / `AI_TEST_CASES_v3_运行矩阵.md` / 各 `_verify_*.log` / `pytest_*.log` / `golden_regression.log` / `fe_*.log` / `route_auth_scan.log` / `route_auth_inventory.json` / `taskb_exec_run.log`（均 gitignored，不进 commit）。

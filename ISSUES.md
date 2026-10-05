@@ -408,6 +408,24 @@
 
 ---
 
+## ISS-067 测试 `test_frontend_static::test_acceptance_charts_js_has_contain_label` 环境依赖失败（night32 全量回归暴露，环境依赖型）
+
+- **现象（night32 Task A1 pytest 全量）**：`backend/tests/test_frontend_static.py::test_acceptance_charts_js_has_contain_label` 失败，`FileNotFoundError: ai-report-acceptance-report/assets/charts.js`。
+- **根因**：该测试读取前端构建产物 `ai-report-acceptance-report/assets/charts.js`，该文件是 acceptance report 的生成物，本 checkout 未生成（构建步骤未跑），故文件不存在 → 测试失败。**属测试环境依赖，非代码回归**。
+- **影响**：pytest 全量由 night30 的 0 fail 变为 1 fail（仅此一项）；所有业务单测仍 67 passed。
+- **决策（登记，不修本轮）**：标记为 `[ENV-DEP]`（环境依赖，非缺陷）。修复方式二选一：① CI 先在测试前生成该产物；② 测试内以 `pytest.skip` 守卫「产物不存在则跳过」。本轮不擅自改动测试逻辑，避免掩盖真实构建问题；建议后续排期。
+- **状态**：`[ENV-DEP]`（2026-10-04 night32，登记于 Task D）。night32 其余 12 `_verify_*` 脚本 + golden 20/20 + 前端 tsc/build/audit 全绿，无代码回归。
+
+## ISS-068 config-CRUD 动作执行层不强制超管（设计性，低严重度加固 backlog）
+
+- **现象（night32 Task B 执行层补测暴露）**：`ActionExecutor` 对 `CREATE_CONFIG` / `UPDATE_CONFIG` 动作**不在执行器层校验超管**；初版 3 个超管断言失败（非超管执行成功）。
+- **根因**：`backend/app/core/crud_chain.yaml` 设计上只对三类加 gate——`bulk_update_data`（隔离）、`manage_permissions`（超管）、`delete_config`（受保护键）；`create/update_config` 的鉴权责任**统一在 API 层**（`Depends(get_current_user)` + 端点内 `require_admin`）。
+- **风险评估**：属设计性（非缺陷），但意味着若某 create/update_config 端点漏加 `get_current_user`，执行器层不会是第二道防线 → 纵深防御缺口。
+- **决策（登记，不修本轮）**：标记为 `[BACKLOG-LOW]`（低严重度加固项）。建议后续在执行器层对 config-CRUD 也加 `require_admin` 或至少 `require_auth` 作为兜底；本轮不改，避免与 API 层鉴权重叠引入回归。
+- **状态**：`[BACKLOG-LOW]`（2026-10-04 night32，登记于 Task D）。详见 `night_runs/night32/执行层补测报告.md`（gitignored）。
+
+---
+
 ## night28 收口记录（覆盖闭环，非缺陷）
 
 > 2026-10-04。本轮为 night27→night28 全量收口（依赖漏洞定位 + 覆盖矩阵 + 功能完成度矩阵 + 零回归 + 交付说明）。**本块为覆盖/收口记录，不登记新缺陷。**
@@ -432,5 +450,5 @@
 - night27 五处（ISS-062~066）浏览器体验复测。
 
 ### 待办（用户本机）
-- push 分支 `p0-security-fixes`（最新本地 commit 见 `git log`：night30 `62bc1d2`、night31 `329b5b9`(Task A 状态对账)/`7f0aa51`(Task B 补盲)/本收口 commit；**均待用户确认 push**，沙箱 git 协议被 SIGTERM 无法代 push）。
+- push 分支 `p0-security-fixes`（最新本地 commit 见 `git log`：night30 `62bc1d2`、night31 `329b5b9`(Task A 状态对账)/`7f0aa51`(Task B 补盲)/`b594414`(night31 收口)、night32 `b0701a9`(Task A 测试修复)/`c2b47fa`(Task B 执行层测试)/本轮收口 commit；**均待用户授权后 push** —— 按红线「push 前等用户确认」，未获授权不代 push）。
 - 前端 `npm audit`/`npm update` 重新落锁（axios/Dependabot 侧）。
