@@ -424,6 +424,7 @@
 - #14 CREATE_CONFIG / #15 UPDATE_CONFIG / #16 DELETE_CONFIG / #17 BULK_UPDATE_DATA
 - #19 QUERY_METRIC 指标查询 / #20 RECALC_METRIC 下游重算触发
 - #18 MANAGE_PERMISSIONS（仅 J-7 红线测试，动作本身无对话用例，🟡 部分）
+- **[night31 已闭环]** 上述 9 项（#6/#9/#10/#14/#15/#16/#17/#19/#20）已由 `backend/tests/test_night31_taskb.py` 补建**意图识别层**离线用例（4 tests / 18 子断言全 PASS，零 LLM）；**动作执行层**仍需真机（DB+鉴权）。`34项功能完成度矩阵` 同步 9 项 ❌→✅。
 
 ### 待真机验收（不计入自动回归）
 - 需真机 22 项：A1-3、A4-1、A4-4、A4-6、A5-1、D-1…D-8、F-7、F-11、F-12、G-1…G-5、H-4（后端逻辑均已被 in-process 脚本真跑覆盖，仅前端渲染/截图/弹窗交互需浏览器）。
@@ -431,5 +432,5 @@
 - night27 五处（ISS-062~066）浏览器体验复测。
 
 ### 待办（用户本机）
-- push 分支 `p0-security-fixes`（HEAD `898ca30`，带 `127.0.0.1:7897` 代理；沙箱 git 协议被 SIGTERM 无法代 push）。
+- push 分支 `p0-security-fixes`（最新本地 commit 见 `git log`：night30 `62bc1d2`、night31 `329b5b9`(Task A 状态对账)/`7f0aa51`(Task B 补盲)/本收口 commit；**均待用户确认 push**，沙箱 git 协议被 SIGTERM 无法代 push）。
 - 前端 `npm audit`/`npm update` 重新落锁（axios/Dependabot 侧）。

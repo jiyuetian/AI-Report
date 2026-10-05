@@ -979,6 +979,35 @@ if _fb_msg:
 - **commit**：`fff8ed8` fix(deps) ISS-053 axios 落锁 + npm audit fix（已 push）。
 - **诚实声明**：Task B UI 层待真机；Dependabot 网页原文仍不可拉（github.com:443 仅 ls-remote 可达）→ 以本地权威 `npm audit`+OSV 双审计为准。零 DB 写、未 kill 进程、未新增功能。
 
+### §51. night31 状态对账 + 用例补盲 + 收口（2026-10-05）
+
+- **机型**：不写新功能，只做**状态对账（消灭台账漂移）+ 测试盲区补盲 + 收口**。依据：教练 2026-10-05 本机核对 ISSUES.md 全部 `ISS-*` 状态 vs 代码/提交/`_verify_*.py`，并离线复跑既有用例。
+- **红线（严格遵守）**：未改任何后端/前端业务代码；未碰生产 DuckDB、后端运行中进程、`backend/requirements.txt`、已闭环的 ISS-053；批量删除类操作全程未触发；push 前等用户确认。
+- **基线**：分支 `p0-security-fixes`，起点 HEAD `62bc1d2`（night30 收口）；本会话本地 commit 链 `329b5b9`(Task A) → `7f0aa51`(Task B) → (Task D 收口 commit)，均**未 push**。
+- **Task A — 全量状态对账（commit `329b5b9`）**：
+  - 逐条核对 ISSUES.md 全部 34 条 `ISS-*`，仅 **2 处状态漂移**：
+    - **ISS-033**「再来一个」未推断 add_chart：代码已于 night13 commit `2fd76dd` 实现（`backend/app/core/action_planner.py` P0-1 指代消解 L70-73/L700/L1030-1035 + `chat.py` L395-409 上下文注入）→ 台账漏翻 `[OPEN]`，现**翻 `[DONE]`** 并补证据。
+    - **ISS-031** glm-5.3-flash 仅作兜底：实为 failover 设计原则（长期约束）非待办 → `[OPEN]` 误导，翻 **`[CONSTRAINT]` 长期约束(非待办)**。
+  - ISS-037 附属项「对话丢消息入口探针诊断日志」确认外部/不适用，不翻 ISS-037 状态。
+  - 过程文件 `night_runs/night31/状态对账表.md`（gitignored，不进 commit）。
+- **Task B — 测试盲区补盲（commit `7f0aa51`）**：
+  - 新增 `backend/tests/test_night31_taskb.py`：覆盖 `34项功能完成度矩阵` 中 **9 项 ❌ 无用例**功能——ATTRIBUTION / QUALITY_FIX / CHART_FIX / CREATE_CONFIG / UPDATE_CONFIG / DELETE_CONFIG / BULK_UPDATE_DATA / QUERY_METRIC / RECALC_METRIC。
+  - **离线、零 LLM**：走意图分类规则路径（`INTENT_PATTERNS` + `_extract_params`，`context={}` 无 field_profiles，绝不触发 LLM 网络），运行时断言（非关键词 grep）`intent_type` + 关键参数（批量更新 `isolated=True`、配置 CRUD 抽到 key、指标查询解析 metric）+ 3 条优先级回归。
+  - 实测 **4 tests / 18 子断言全 PASS**；同步更新矩阵 9 项 ❌→✅（意图识别层），覆盖率 24/34(70.6%) → 33/34(97.1%)。
+  - 文件用 `test_*.py` 而非 `_verify_*.py`：仓库 `.gitignore` 全局忽略 `_*.py`（含 `_verify_*.py`），本用例需提交。
+  - **诚实声明**：仅闭环**意图识别层**；配置 CRUD/批量更新/权限的**动作执行层**需真机（DB+鉴权），不伪造 PASS。
+- **Task C — 可跑用例真跑 + 覆盖矩阵 v2（gitignored 过程文档，无独立 commit）**：
+  - 复跑 10 个离线 `_verify_*.py` 脚本 + 1 个 pytest，**全部 PASS**（ISS-058 5/5、ISS-059 9/9、clarify 13/13、health 15/15、ISS-066 10/10、night27 23/23、history 10/10、TaskG 18/18、TaskI 32/32、TaskJ/K ALL、TaskB 4 tests）。
+  - 生成 `night_runs/night31/AI_TEST_CASES_v2_运行矩阵.md`：继承 night28 的 168 条分类（**0 回归**，因本会话未改任何业务代码），新增「本会话复跑」列标记 60 行 + 新增 **O-1~O-9 意图识别层 9 条**。
+  - 覆盖率：**PASS 103 + PASS\* 43 + 需真机 22 + FAIL 0 + 新增 O 类 9 = 177 条**。
+- **Task D — 收口（本 commit）**：ISSUES.md 状态对账（A 已提交）+ 本 §51 + `night_runs/night31/NIGHT_SUMMARY.md`。
+- **FAIL 清单**：**（空）0 FAIL**。本会话仅对账/补测/复跑，**未引入任何代码变更**，故无回归可能；ISS-033 状态漂移已在 Task A 修正（代码 night13 已实现，仅台账漏翻）。
+- **需真机（同 night28，22 条，不计入自动回归）**：A1-3/A4-1/A4-4/A4-6/A5-1/D-1~D-8/F-11/F-12/F-7/G-1~G-5/H-4；其前端**结构守卫**已由 `tests/_fixtures/real/_verify_night27_iss062_066.py`(23/23) 与本会话复跑确认存在，视觉渲染/截图仍待用户真机。
+- **诚实披露/偏差**：本会话仅文档+测试，无依赖升级/无 build；无 CVE 变动（night30 已 0）。Edit 工具在本仓对 ISSUES.md 曾静默未落盘（ISS-031 那次），已用 Python 确定性替换+assert 强制落盘并回读验证。
+- **未触碰**：后端业务代码 / 前端业务代码 / 生产 DuckDB / 用户进程 / `requirements.txt` / 已闭环 ISS-053 / axios。
+- **commit 清单（本地未 push，等用户确认）**：`329b5b9`(Task A) / `7f0aa51`(Task B) / 本收口 commit。
+- **证据文件**：`night_runs/night31/` 下 `状态对账表.md` / `补盲用例清单.md` / `AI_TEST_CASES_v2_运行矩阵.md` / `NIGHT_SUMMARY.md` / 11 个 `run_*.log`（均 gitignored，不进 commit）。
+
 ### §50. night30 前端依赖大版本升级清残余 14 CVE（2026-10-05）
 
 - **机型**：不写新功能，只清 night29 残余 **14 CVE（10 high + 4 moderate）**——前端依赖大版本升级 + 回归 + 收口。依据：教练 2026-10-05 本机 `npm audit --registry=https://registry.npmjs.org` 实跑。
