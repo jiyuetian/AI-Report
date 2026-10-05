@@ -964,3 +964,17 @@ if _fb_msg:
 - **Task D 回归汇总补产**：`night_runs/night28/回归汇总.md`——11 个 `_verify_*` 本会话实时真跑全部 ALL_PASS（ISS-066 10/10、night27 23/23、ISS-058 5/5、ISS-059 9/9、clarify 13/13、health 15/15、history 10/10、TaskI 32/32、TaskG ALL、TaskJK 17/17、ISS-025 Batch1 22/22）+ `tsc --noEmit` exit 0 + `compileall` COMPILE_OK → **ALL_PASS 零回归**。
 - **ISS-053 状态翻转**（提示词 Task 0 要求）：`[DONE-代码]` → `[DONE-后端]` + `[BLOCKED-前端锁同步]`。
 - 新增 commit：`fix(docs): ISS-053 精确OSV复核 axios真实漏洞+状态翻转`（ISSUES.md）；`docs: night28 Task E 修正 axios 真实漏洞表述`（AI能力交付说明.md）。
+
+### §49. night29 验收收口轮（2026-10-05）
+
+- **机型**：不写新功能，只做「让 night28 成果真正落地并被验证」。代码侧已收口，瓶颈在验收。
+- **Task 0 push**：实测沙箱 `github.com:443` 现已可达（旧「git SIGTERM」记忆过时），`git push origin p0-security-fixes` EXIT 0，remote == local `fff8ed8`。注意远端 push 前已在 `0ee6895`（=night28 HEAD），night28 实际早于本回合已被推上；本回合仅新增并推送 `fff8ed8`（前端锁）。
+- **Task A ISS-053 定论（权威 npm audit）**：
+  - `npm audit --registry=https://registry.npmjs.org --json` 沙箱实跑成功（bulk POST 200）→ 确认 **axios 1.0.0–1.19.0 为 HIGH（修复 `<1.20.0`）**，与 night28 OSV 一致 → axios 确为真实漏洞包，非误判；提示词「若 npm audit 无高危→撤销 54306b2/0ee6895」分支不适用，两 commit 保留。
+  - 落锁：`npm install axios@1.20.0 --save-exact --registry=https://registry.npmjs.org` EXIT 0 → package.json `axios=1.20.0` + lock 同步（`git diff --stat` 有 lock）。
+  - 收口：`npm audit fix`（非破坏性）→ brace-expansion + js-yaml 修复 → 漏洞 **17 → 14**；复跑确认 axios 已移除。
+  - 残余 14 项全 `fix=MAJOR` 破坏性（echarts/vite/react-router/@typescript-eslint/braces 链）→ 本轮「不重构」未自动 `--force`，移交 CI/Dependabot。
+  - ISS-053 翻转 `[DONE-后端]`+`[BLOCKED-前端锁同步]` → `[DONE]`（ISSUES.md）。
+- **Task B 真机验收**：沙箱无浏览器，UI 层（ISS-062~066 五处 + 22 条需真机 UI + ISS-025 验收侧 11 项）全部标记「待真机」，未伪造 PASS；逻辑层引用 night28 的 11 个 `_verify_*` ALL_PASS + `tsc`/`compileall` 零回归。报告：`night_runs/night29/真机验收报告.md`。
+- **commit**：`fff8ed8` fix(deps) ISS-053 axios 落锁 + npm audit fix（已 push）。
+- **诚实声明**：Task B UI 层待真机；Dependabot 网页原文仍不可拉（github.com:443 仅 ls-remote 可达）→ 以本地权威 `npm audit`+OSV 双审计为准。零 DB 写、未 kill 进程、未新增功能。

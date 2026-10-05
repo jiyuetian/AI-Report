@@ -258,10 +258,12 @@
   | email-validator | 2.1.0 | 2.1.1 | CVE-2024-1916（EmailStr ReDoS） | MODERATE |
   | httpx | 0.26.0 | 0.27.2 | CVE-2024-47081（.netrc 凭据经代理泄漏） | MODERATE |
 - **前端（night28 精确 OSV 复核，修正旧误判）**：`package.json` 全部用 `^` 范围。先前认为 `axios 1.19.0` 是「安全版」系**过时判断**——精确 OSV SEMVER 核查（`night_runs/night28/osv_precise_audit.py` + `npm_osv_precise.json`）确认 **axios 1.19.0 真实落在漏洞区间，修复版 = `1.20.0`**（12 条 GHSA，HIGH/MODERATE 混合）。故「上一轮把 axios 判为漏洞包」并非误判，axios 确为真实漏洞包。其余 npm 命中：brace-expansion(1.1.18→1.1.19 / 2.1.4→2.1.5)、echarts(5.6.0→6.1.0)、esbuild(0.21.5→0.25.0)、js-yaml(4.3.1→4.3.2, HIGH)、react-router(6.30.6→7.18.0)、vite(5.4.21→6.4.x)；**braces 3.0.3 无修复版（HIGH，残余）**。npm 侧多为 dev/传递依赖，建议 `npm audit fix` + CI 落锁。
-- **状态（night28 翻转）**：`[DONE-后端]` + `[BLOCKED-前端锁同步]`。
-  - **后端**：night28 重新审计并钉版 `requirements.txt`（commit `898ca30`），pip-audit **33 CVE → 2 CVE**（仅 ecdsa 0.19.2 上游无修复版，残余）；`pip install` 实装需联网，沙箱不可，待用户本机。
-  - **前端 axios（真实漏洞，已定位未落锁）**：修复版 `axios@1.20.0 --save-exact`，沙箱 `npm install` 被 SIGTERM 无法同步 `package-lock.json`（与 git/npm audit 同因）→ **BLOCKED**，待用户本机执行：`cd frontend && npm install axios@1.20.0 --save-exact --registry=https://registry.npmjs.org`，并跑 `npm audit fix` 收口传递依赖（braces 3.0.3 无修复版，残余，交 Dependabot/CI）。
-  - **Dependabot 告警原文**：沙箱 github.com:443 TIMEOUT，无法拉取 `security/dependabot/1` 原文；以本地精确 OSV 审计为准（axios 真实命中已证实，非误判）。
+- **状态（night29 定论，权威依据 = `npm audit --registry=https://registry.npmjs.org`）**：`[DONE]`。
+  - **权威 npm audit 复核（night29，沙箱实跑成功）**：`npm audit --registry=https://registry.npmjs.org --json` 成功拉取官方 advisory（bulk POST 200）→ **确认 axios 1.0.0–1.19.0 为 HIGH（修复版 `<1.20.0`）**，与 night28 精确 OSV 结论完全一致，axios 确为真实漏洞包（非误判）。证据：`night_runs/night29/npm_audit_authoritative.json`（17 vulns：4 moderate + 13 high）。
+  - **前端锁已同步（night29，已 push `fff8ed8`）**：`npm install axios@1.20.0 --save-exact --registry=https://registry.npmjs.org` 成功落锁（package.json `axios=1.20.0` + package-lock.json 同步变更，`git diff --stat` 有 lock）；复跑 `npm audit` 确认 **axios 已移除**。随后 `npm audit fix`（非破坏性）收口 brace-expansion + js-yaml → 漏洞 **17 → 14**。
+  - **残余 14 项均为 MAJOR 破坏性修复**（echarts→6.1.0 / vite→8.3.2 / react-router→7.18.4 / @typescript-eslint 链 / braces→@typescript-eslint 8.71.0 / micromatch·fast-glob·globby）：本轮「不重构」红线，未自动 `npm audit fix --force`（会破坏前端构建）。移交 CI/Dependabot 或后续专用大版本升级 PR（需先验证构建）。
+  - **后端**：night28 钉版 `requirements.txt`（commit `898ca30`），pip-audit 33 → 2 CVE（ecdsa 0.19.2 上游无修复版，残余）；`pip install` 实装待用户本机（环境已跑安全版，低风险）。
+  - **Dependabot 告警原文**：沙箱 github.com:443 虽可达 `ls-remote`，但网页/advisory API 仍受限，无法拉取 `security/dependabot/1` 原文；以本地权威 `npm audit` + OSV 双审计为准，axios 真实命中已两路证实。
 
 ---
 
