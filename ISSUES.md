@@ -16,7 +16,7 @@
 - **现象**：`glm-5.3-flash` 为推理模型（响应带 reasoning tokens，实测一次约 197 reasoning tokens / 140 completion tokens）。相对主用 `kimi-k3`（sensenova）**延迟更高**。
 - **决策**：**只作 failover 备胎，绝不设主用**。主链路保持 sensenova(kimi-k3) → 失败才走 zhipu(glm-5.3-flash)。
 - **依据**：若把它设主用，每次对话/每次 brain/run 都会多花思维链时间，拖慢整体响应；且推理模型在 json_mode 下已验证可正常返回 content（未踩 sensenova-6.8-flash-lite 的坑），作备胎安全。
-- **状态**：`[OPEN]` 长期约束，与 ISS-030 联动（换模型时也遵守此原则）。
+- **状态**：`[CONSTRAINT]` 长期约束（非待办），与 ISS-030 联动（换模型时也遵守此原则）。
 
 ---
 
@@ -39,8 +39,8 @@
 ## ISS-033 上下文指代「再来一个」未推断为 add_chart
 
 - **现象（2026-09-28 night7 Item2 复测）**：T2 刚 `add_chart` 新增趋势图后，T3「再来一个」被分类为 `unknown`（0 action），系统反问澄清而非顺势再加一张图。非崩溃，属意图分类对省略上下文指代的覆盖不足。
-- **决策**：低优先级。若要做，应在 intent_classifier / 上下文记忆层对「再来一个 / 再加一个 / 也来一个」在上一轮为 add_chart 时推断为 add_chart（沿用上轮分析方向）。D 边界（诚实兜底）在此场景下仍成立：未假称已添加。
-- **状态**：`[OPEN]` 待排期（下一轮对话增强主线处理）。
+- **决策（已落地，night13 第5件）**：在 `action_planner.py` 新增 P0-1 指代消解——`_ADD_REPEAT_RE` 正则匹配「再来一个 / 再来一张 / 再加一个 / 再加一张 / 另一个 / 也来一个 / 也加一个 / 再给我一个 / 复制一个 / 多来一个」，配合 `_resolve_history_anaphora`（仅当上下文记忆 `memory.last_action` 为 change_chart / add_chart 时生效）产出「再加一张类似图」的 add_chart 动作，不落 UNKNOWN；`chat.py` L395-409 同步注入最近对话历史（含 `执行:action_type`），使闲聊 / UNKNOWN 轮能承接「再来一个 / 刚才那个 / 就改成X」。D 边界仍成立：未假称已添加。
+- **状态**：`[DONE]`（2026-09-30 night13 第5件，commit `2fd76dd`，本地未 push）。代码证据：`action_planner.py` L70-73（正则）/ L700（`_resolve_history_anaphora`）/ L1030-1035（派发）；`chat.py` L395-409（P0-1 上下文注入）。原 night7 观察（T3「再来一个」落 unknown）已闭环；本项无 `_verify` 专项脚本（代码即证据，与 night31 Task B 9 项补盲区分）。
 
 ---
 
