@@ -82,30 +82,33 @@ def test_distribution_detects_iqr_outlier(quality_conn):
 
 def test_unique_row_count_reflects_total_duplicate_rows():
     """
-    修复回归：唯一性校验的 row_count 不应再固定为 0。
-    之前 _check_unique 把 row_indices 留空列表，导致前端"数量"列恒为 0，
-    与 message 中"涉及 N 行"自相矛盾，且去重修复无法精确定位行。
-    修复后 row_count 应等于实际重复行 rowid 数。
+    修复回归：唯一性校验的 row_count 不应再固定为 0（BLOCKING 路径）。
+
+    说明：2026-09-17 引入 UNIQ_KEY_RATIO=0.95 唯一度复核——只有"形似主键且实际
+    唯一度≥95%"的列才按唯一键 BLOCKING 处理；形似主键但唯一度偏低（如 1:N 业务外键）
+    会降级为 WARNING（row_indices=[]，intentional，非原 bug）。本测试改用"真实主键
+    偶发重复"场景（唯一度≥95%）以真正走到 BLOCKING 路径，验证 row_count 修复仍有效。
     """
     con = duckdb.connect(":memory:")
-    # 3 重复值：id=1 出现 3 次、id=2 出现 2 次、id=3 唯一 → 重复行共 5
+    # 真实主键场景：id=1..20 各 1 行，外加 1 个重复值 id=1（共 21 行，20 个不同）
+    # 唯一度 = 20/21 ≈ 95.2% ≥ 0.95 → 走 BLOCKING；重复行共 2（两个 id=1）
     con.execute("CREATE TABLE pk (id INT)")
     con.executemany(
         "INSERT INTO pk VALUES (?)",
-        [(1,), (1,), (1,), (2,), (2,), (3,)],
+        [(i,) for i in list(range(1, 21)) + [1]],
     )
     qc = QualityChecker(_DB(con), None)
     res = qc.check_table("pk", [{"name": "id", "type": "INTEGER"}])
     unique_issues = [i for i in res["issues"] if i["type"] == "unique"]
     assert unique_issues, "未触发唯一性阻断项"
     issue = unique_issues[0]
-    # 核心断言：row_count 必须真实反映"涉及行数"，不能再是 0
-    assert issue["row_count"] == 5, (
-        f"唯一性问题 row_count 应为 5（实际重复行数），实际 {issue['row_count']}。"
+    # 核心断言：BLOCKING 路径的 row_count 必须真实反映"涉及行数"，不能再是 0
+    assert issue["row_count"] == 2, (
+        f"唯一性问题(BLOCKING) row_count 应为 2（实际重复行数），实际 {issue['row_count']}。"
         "原 bug：_check_unique 把 row_indices 留空 → 前端数量列恒为 0"
     )
     # message 文案要前后一致
-    assert "涉及 5 行" in issue["message"]
+    assert "涉及 2 行" in issue["message"]
     # row_indices 要为修复提供全部重复行号（去重/标记/删除都用得上）
-    assert len(issue.get("row_indices") or []) == 5
+    assert len(issue.get("row_indices") or []) == 2
     con.close()
