@@ -1,6 +1,14 @@
 # night15-16 Task G：CRUD 动作前置规则引擎（fail-fast + rule_id 回链）
 # 与 clean_chain.yaml（数据清洗层，碰 DuckDB 表）平行：本文件只做【参数层前置校验】，绝不碰 DB。
 # 每条规则带唯一 rule_id，命中即 fail-fast 并回链 rule_id，便于定位「哪条规则拦了」。
+#
+# 【设计决定 · ISS-068（[WONTFIX-BY-DESIGN]，night33）】
+# create_config / update_config / delete_config 的执行器层【不】再加 is_superuser 校验。
+# 理由：config-CRUD 的鉴权责任统一在 API 层（Depends(get_current_user)，按端点再叠加 require_admin），
+#       执行器层 (CrudChainGuard) 仅对【高危操作】做纵深防御——bulk_update_data(隔离库)、
+#       manage_permissions(超管)、delete_config(受保护键)。若在 create/update/delete_config 加 is_superuser，
+#       会误伤「API 层已放行、但调用方非超管」的合法路径，引入回归。故维持现状，登记为设计性决定。
+#       如未来需要执行器层兜底，应加 require_auth（任意已登录用户）而非 require_superuser。
 crud_rules:
   # BULK_UPDATE_DATA 红线④：只能在隔离临时数据集上执行，禁止碰 aibi.db 生产库
   - rule_id: crud_bulk_isolation

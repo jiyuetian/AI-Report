@@ -1033,7 +1033,7 @@ if _fb_msg:
 - **证据文件**：`night_runs/night30/` 下 `audit_before.json`(14) / `audit_after_dev.json`(3) / `audit_after_runtime.json`(0) / `npm_build_taskA_final.log` / `npm_build_taskB2.log` / `npm_ls_all.json` / `回归汇总.md` / `NIGHT_SUMMARY.md`（均 gitignored，不进 commit）。
 
 
-### §52. night32 全量回归 + 执行层补测 + 覆盖矩阵 v3（2026-10-04）
+### §52. night32 全量回归 + 执行层补测 + 覆盖矩阵 v3（2026-10-06）
 
 - **机型**：在 night31 收口（HEAD `b594414`，本地 3 commit 领先 origin）基础上做**全量回归 + 9 意图动作执行层补盲 + 覆盖矩阵 v3**。硬约束：不写新业务功能；仅测试补盲/回归/文档收口；发现真 bug 才最小改动；禁批量删除；一类一 commit。
 - **基线**：分支 `p0-security-fixes`，起始 HEAD `b594414`（night31 收口）。未改任何业务代码。

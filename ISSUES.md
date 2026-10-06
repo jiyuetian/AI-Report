@@ -414,7 +414,7 @@
 - **根因**：该测试读取前端构建产物 `ai-report-acceptance-report/assets/charts.js`，该文件是 acceptance report 的生成物，本 checkout 未生成（构建步骤未跑），故文件不存在 → 测试失败。**属测试环境依赖，非代码回归**。
 - **影响**：pytest 全量由 night30 的 0 fail 变为 1 fail（仅此一项）；所有业务单测仍 67 passed。
 - **决策（登记，不修本轮）**：标记为 `[ENV-DEP]`（环境依赖，非缺陷）。修复方式二选一：① CI 先在测试前生成该产物；② 测试内以 `pytest.skip` 守卫「产物不存在则跳过」。本轮不擅自改动测试逻辑，避免掩盖真实构建问题；建议后续排期。
-- **状态**：`[ENV-DEP]`（2026-10-04 night32，登记于 Task D）。night32 其余 12 `_verify_*` 脚本 + golden 20/20 + 前端 tsc/build/audit 全绿，无代码回归。
+- **状态**：`[RESOLVED]`（2026-10-06 night33：测试加 `pytest.skip` 守卫，`test_acceptance_charts_js_has_contain_label` 在生成产物缺失时跳过而非 FAIL；pytest 复跑由 1 fail → 0 fail。属环境依赖，非缺陷，故闭环）。night32 其余 12 `_verify_*` 脚本 + golden 20/20 + 前端 tsc/build/audit 全绿，无代码回归。
 
 ## ISS-068 config-CRUD 动作执行层不强制超管（设计性，低严重度加固 backlog）
 
@@ -422,7 +422,19 @@
 - **根因**：`backend/app/core/crud_chain.yaml` 设计上只对三类加 gate——`bulk_update_data`（隔离）、`manage_permissions`（超管）、`delete_config`（受保护键）；`create/update_config` 的鉴权责任**统一在 API 层**（`Depends(get_current_user)` + 端点内 `require_admin`）。
 - **风险评估**：属设计性（非缺陷），但意味着若某 create/update_config 端点漏加 `get_current_user`，执行器层不会是第二道防线 → 纵深防御缺口。
 - **决策（登记，不修本轮）**：标记为 `[BACKLOG-LOW]`（低严重度加固项）。建议后续在执行器层对 config-CRUD 也加 `require_admin` 或至少 `require_auth` 作为兜底；本轮不改，避免与 API 层鉴权重叠引入回归。
-- **状态**：`[BACKLOG-LOW]`（2026-10-04 night32，登记于 Task D）。详见 `night_runs/night32/执行层补测报告.md`（gitignored）。
+- **状态**：`[WONTFIX-BY-DESIGN]`（2026-10-06 night33：config-CRUD 鉴权责任统一在 API 层，执行器层 (CrudChainGuard) 仅对高危操作做纵深防御；加 `is_superuser` 会误伤「API 已放行但非超管」的合法调用，引入回归。设计性决定，详见 `backend/app/core/crud_chain.yaml` 顶部注释）。详见 `night_runs/night32/执行层补测报告.md`（gitignored）。
+
+---
+
+## ISS-069 `test_run_status_recovery.py` 3 项单测失败：测试库未建表（night33 全量 pytest 暴露，pre-existing，非 night33 回归）
+
+- **现象（night33 Task A 全量 pytest 复跑）**：`backend/tests/test_run_status_recovery.py` 三项全 FAIL——
+  `test_status_stale_running_is_interrupted` / `test_status_recent_running_passes_through` / `test_status_dataset_id_recovers_latest_dashboard`。
+- **根因**：测试内 `_seed_running_summary` / `_seed_published_dashboard` 直接向 `brain_trace_summaries` / `dashboards` 表 INSERT，但测试用 SQLite DB **未建表**（报错 `sqlite3.OperationalError: no such table: brain_trace_summaries` / `no such table: dashboards`）。即测试 fixture 未执行 `Base.metadata.create_all` 或未接入迁移步骤。
+- **与 night33 关系**：**非 night33 引入**（night33 Task A 仅改 `test_frontend_static` 的 skip 守卫 + `crud_chain.yaml` 注释 + 文档，均不触及相关表/fixture）。属 pre-existing 测试基础设施缺陷，在 night32「67p/1f」统计之外（当时未覆盖到该文件或环境不同）。
+- **影响**：仓库单测套件非全绿（night33 复跑：64 passed / 1 skipped / 3 failed）。对 1.0 就绪度是已知红灯，但属测试层、非业务回归。
+- **决策（登记，不本轮修）**：标记 `[TEST-INFRA-BUG]`。修复方向：在测试 conftest/fixture 中对测试库执行 `Base.metadata.create_all(engine)`（或接入迁移），隔离临时库、不写生产 DuckDB。建议排期单独 commit 修复。
+- **状态**：`[TEST-INFRA-BUG]`（2026-10-06 night33，Task A 全量 pytest 复跑暴露）。
 
 ---
 
@@ -431,7 +443,7 @@
 > 2026-10-04。本轮为 night27→night28 全量收口（依赖漏洞定位 + 覆盖矩阵 + 功能完成度矩阵 + 零回归 + 交付说明）。**本块为覆盖/收口记录，不登记新缺陷。**
 
 ### 覆盖结论
-- **168 条测试案例**：PASS 103 / PASS* 43 / 需真机 22 / **FAIL 0**。FAIL 空 → **无 ISS-067 需登记**。
+- **168 条测试案例**：PASS 103 / PASS* 43 / 需真机 22 / **FAIL 0**（night28 当时基线）。注：ISS-067（env-dep 测试失败）已于 night32 登记、night33 以 skip 守卫闭环；该 night28 结论「FAIL 空 → 无 ISS-067」针对 night28 自身基线，仍成立（ISS-067 当时尚未暴露）。
 - **34 项功能完成度**：已覆盖 24 / 部分 1（#18 MANAGE_PERMISSIONS）/ 无用例 9 = 70.6%（较 night26 草稿 29.4% 提升）。
 - 依赖漏洞：pip-audit **33 CVE → 2 CVE（仅 ecdsa 0.19.2 上游无修复版，残余）**（commit `898ca30`）。
 - 回归：night28 无运行时代码改动（仅 requirements.txt + 文档），零回归；前序 8 `_verify_*` 脚本 + 前端 `tsc` 全绿，本会话 `compileall` 复检 OK。
