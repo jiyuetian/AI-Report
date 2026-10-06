@@ -1078,5 +1078,5 @@ if _fb_msg:
   - **环境坑（已绕过）**：本沙箱 `git fetch` 仅更新 `FETCH_HEAD` 不持久化 remote-tracking ref（`refs/remotes/origin/main` 盘上不存在），故用 `git ls-remote` 取真实 SHA 驱动 merge-tree；网络本身可达（ls-remote/fetch rc=0）。
   - **决策升级**：「⑤-1 合 main」须用户先拍板——确认 `origin/main` 是否被 force-push/重置误替换；建议以当前 `p0-security-fixes`（206 commits、0 CVE）为交付真相，而非把疑似被重置的 main 合入。完整报告见 `night_runs/night33/合主分支预演报告.md`（gitignored）。
   - **未执行**：未 `git merge`、未 `--allow-unrelated-histories`、未改工作树、未残留 merge 状态，严守「只预演不真合」红线。
-- **Task C（浏览器真机验收 + runbook）**：待执行（见后续提交）。
-- **Task D（ISSUES 翻转 + §53 收口 + NIGHT_SUMMARY）**：待执行（见后续提交）。
+- **Task C（浏览器真机验收 + runbook）**：commit `20fd71a`（2026-10-06）。交付 `docs/project_record/真机验收 runbook.md`（22 UI 用例 + ISS-025 22 网关点 + night27 五处复测矩阵）+ 诚实截图占位 `night_runs/night33/真机验收截图证据.md`（gitignored）。**环境阻塞**：沙箱无可用浏览器工具（agent-browser 包装损坏 + 无 npm + 无 Chromium），无法生成截图；依据红线「禁编造截图」，所有视觉/交互项标 `[需真机浏览器验证]`，结构/静态核验项本会话复跑 PASS（ISS-025 22/22、night27 23/23）。
+- **Task D（ISSUES 翻转 + §53 收口 + NIGHT_SUMMARY）**：本 commit。ISS-067→[RESOLVED]、ISS-068→[WONTFIX-BY-DESIGN]、ISS-069 登记（待处理）、ISS-070 golden 计数器已修、ISS-071 合 main BLOCKER 挂账，均写入 `06-ISS债清单.md`；本 §53 收口；`docs/project_record/NIGHT_SUMMARY_night33.md` 产出。**push 仍跳过**，等用户授权（本地领先 `origin/p0-security-fixes`：含 `a0d1732`+`a828a52`+`20fd71a` 等；合 main 因 unrelated histories 为 BLOCKER，见预演报告）。
