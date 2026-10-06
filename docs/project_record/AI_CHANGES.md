@@ -1056,3 +1056,27 @@ if _fb_msg:
 - **未触碰**：后端业务代码 / 前端业务代码 / 生产 DuckDB / 用户进程 / `requirements.txt` / 已闭环 ISS-053 / axios / `data/`。
 - **commit 清单（本地未 push，等用户授权）**：`b0701a9`(Task A) / `c2b47fa`(Task B) / 本轮收口 commit。
 - **证据文件**：`night_runs/night32/` 下 `全量回归报告.md` / `执行层补测报告.md` / `AI_TEST_CASES_v3_运行矩阵.md` / 各 `_verify_*.log` / `pytest_*.log` / `golden_regression.log` / `fe_*.log` / `route_auth_scan.log` / `route_auth_inventory.json` / `taskb_exec_run.log`（均 gitignored，不进 commit）。
+
+
+### §53. night33 合主分支预演 + 收口进度（累计：Task A 已合 / Task B 预演 / Task C / Task D 待）
+
+- **基线**：分支 `p0-security-fixes`，night32 收口 HEAD `d19457c`（本地==远端）。本 §53 为 night33 累计进度区，随 Task B/C/D 提交逐步扩展。
+- **Task A — backlog 清零（commit `a0d1732`，已合，2026-10-06）**：
+  - A1 ISS-067 `[ENV-DEP]`→`[RESOLVED]`：`test_frontend_static.py` 加 skip 守卫（生成产物 `charts.js` 缺失则跳过，pytest 2 passed / 1 skipped）。
+  - A2 ISS-068 `[BACKLOG-LOW]`→`[WONTFIX-BY-DESIGN]`：`crud_chain.yaml` 顶部加设计决定注释（config-CRUD 执行器层不加 `is_superuser`，鉴权在 API 层，加会误伤合法非超管调用引入回归；如需兜底应 `require_auth` 而非 `require_superuser`）。
+  - A3 golden 脚手架计数器 bug：修正 night32 ad-hoc `_run_golden.py` 的 `getattr(r,"success")` 误报；复跑 `GOLDEN total=20 success=20` 真跑证。
+  - A4 文档瑕疵：AI_CHANGES §52 标题日期 `2026-10-04`→`2026-10-06`（经 `git show -s --format=%ci d19457c` 确证 commit 实际作者日 2026-10-06）；ISS-067 旧冲突句更正。
+  - 新增 **ISS-069** `[TEST-INFRA-BUG]`（night33 全量 pytest 暴露，pre-existing 非 night33 回归）：`test_run_status_recovery.py` 3 项失败（`no such table: brain_trace_summaries`/`dashboards`，测试库未建表）；留单独 commit 排期，未擅自修、未伪造 PASS。
+  - 全量 pytest：64 passed / 1 skipped / 3 failed（3 fail = ISS-069，已登记）。
+
+- **Task B — 合主分支技术预演（2026-10-06，本 commit，⛔ BLOCKER）**：
+  - **干跑合并结论：`origin/main` 与 `p0-security-fixes` 是两条「无共同祖先」的独立历史，无法直接合并。**
+  - 证据：`git merge-base --all` 空（rc=1）；两分支根不同（main 根 `7c3cb7b` init / p0 根 `f42dcc66`）；提交重叠 0；`git merge-tree --write-tree` 报 `fatal: refusing to merge unrelated histories`（rc=128）。
+  - main 真实 tip `82de1c0`（11 commits，根 `7c3cb7b` init + 接管报告层 + axios 升 1.12.0 修 CVE-2025-58754）；p0 本地 `a0d1732`（206 commits，根 `f42dcc66`）。
+  - **依赖差异极大**（package.json 对照）：`vite 7.3.6↔^5.1.0` / `react-router-dom ^7.18.4↔^6.22.0` / `echarts ^6.1.0↔^5.4.3` / `@vitejs/plugin-react ^5.0.4↔^4.2.1` / `@typescript-eslint 8.71.0↔^7.0.0`；`package-lock.json` 差异 4576 行。
+  - **关键澄清**：提示词假设「合入 main 清 10 漏洞」不成立——当前分支 axios 已 `1.20.0`（≥ main 的 1.12.0，CVE 已覆盖），且 night30 已将前端 CVE 清到 0；把 main 合入反而会把 vite7/router7/echarts6/eslint8.71 的大版本升级**整体回退**到旧栈、重新引入旧 CVE 面。
+  - **环境坑（已绕过）**：本沙箱 `git fetch` 仅更新 `FETCH_HEAD` 不持久化 remote-tracking ref（`refs/remotes/origin/main` 盘上不存在），故用 `git ls-remote` 取真实 SHA 驱动 merge-tree；网络本身可达（ls-remote/fetch rc=0）。
+  - **决策升级**：「⑤-1 合 main」须用户先拍板——确认 `origin/main` 是否被 force-push/重置误替换；建议以当前 `p0-security-fixes`（206 commits、0 CVE）为交付真相，而非把疑似被重置的 main 合入。完整报告见 `night_runs/night33/合主分支预演报告.md`（gitignored）。
+  - **未执行**：未 `git merge`、未 `--allow-unrelated-histories`、未改工作树、未残留 merge 状态，严守「只预演不真合」红线。
+- **Task C（浏览器真机验收 + runbook）**：待执行（见后续提交）。
+- **Task D（ISSUES 翻转 + §53 收口 + NIGHT_SUMMARY）**：待执行（见后续提交）。
