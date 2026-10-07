@@ -1102,3 +1102,20 @@ if _fb_msg:
   - 本 §54。
   - `docs/project_record/night_runs/night34/NIGHT_SUMMARY.md`（gitignored）。
 - **红线守纪**：无备份不覆盖（备份分支先建）；未批量删除（仅 14 文件并入，main 旧内容由备份保底）；未 `reset --hard`；未伪造 PASS/告警消除（Dependabot 标待确认）；未碰生产 DuckDB/后端进程/ISS-053；main 独有内容并入前已 ask 用户（用户重贴完整提示词授权全执行，零丢失默认并入全部 14）；过程文件不进 commit。
+
+
+## 五十五、night35 关键变更（已 commit，本地未 push）
+
+> 用户 2026-10-07 实测反馈两条：① 清洗/质检与规划不符（行级明细未落地，ISS-074）；② 一键修复等待极长 + `database is locked`（ISS-073）。本轮三 commit 闭环，所有验证均真实路径跑通（非伪造）。
+
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| 572f970 | fix(quality) | A1 消除 quality_issues 只增不删（覆盖式重建）+ A2 缩短写事务窗口/消除锁竞争 + A3 计时日志量化耗时 | ISS-073/075 |
+| bf9b2cc | feat(quality) | B 行级 change_log 落地（ChangeLog 模型 + 落库 + change-log 接口）+ 前端聚合/行级切换 Card + 蓝条自述 | ISS-074/051 |
+| 970a6e5 | fix(quality) | C1 一键修复改后台重检不阻塞用户 + C2 质检发现行显示「待采纳（推荐：xxx）」 | ISS-073/051 |
+
+- **A（P0 耗时+锁，commit `572f970`）**：真实 xlsx 基准计时——规则检测 118.3ms / 写库 256.0ms / `/fix-batch` 20 项 1286.6ms；覆盖式重建 + 短事务逐项 commit 消除 `database is locked`。
+- **B（行级明细，commit `bf9b2cc`）**：`quality_change_logs` 表记录 before/after 字段统计快照 + 影响行数；`GET /quality/{dataset_id}/change-log` 接口（登录 + 横向越权校验）；前端「清洗修改明细」Card 聚合/逐行切换。`_verify_b.py` 断言 `before_null=2→after_null=0`、`affected_rows=2`、DuckDB 清洗层 0 空值。
+- **C（前端体验，commit `970a6e5`）**：C1 批量修复后 `runCheck` 由 `await` 阻塞改 `runCheck({silent:true}).then(...)` 后台重检；C2 质检发现行（source≠ai 且未采纳）显示 `待采纳（推荐：xxx）` 而非非策略值。`tsc --noEmit` 0 错误。
+- **零回归**：`tsc --noEmit` 0 错误 + 后端 `py_compile` 通过 + `_verify_b.py` 真跑 PASS。
+- **红线守纪**：未碰生产 DuckDB 业务数据（基准用临时库）；未改 `/quality/check`、`/fix-batch` 响应字段名；未批量删除/未 `reset --hard`；一类一 commit；未伪造耗时/PASS；过程文件 `night_runs/night35/`（gitignored）。

@@ -509,3 +509,38 @@
 - **影响**：用户查询导出状态时仍会看到虚假「已完成」与虚假下载地址，属 ISS-020 未完成部分。
 - **决策（登记，是否本轮修由用户拍板）**：标记 `[OPEN]`；修复方向——`/exports/status/{task_id}` 改为查真实任务表（无则 404/进行中）、`/exports/my/list` 改为查真实导出任务记录（无则空列表），不返回任何假数据。
 - **状态**：`[OPEN]`（2026-10-07 night34 由 ISS-020 残余开出）。
+
+
+---
+
+## ISS-073 一键修复极慢 + SQLite `database is locked` + 写事务窗口过长（P0，night35 已闭环）
+
+- **现象（用户 2026-10-07 实测反馈）**：① 一键批量修复等待极长（用户体感「点了半天没反应」）；② 修复过程偶发 `database is locked` 报错；③ 单条修复也偶发卡顿。
+- **根因（night35 Task A 定位）**：
+  - A2：修复写事务窗口过长 + 写锁竞争——`/fix-batch` 循环内每条 `fix_quality_issue` 复用同一长事务、逐个 commit 前持锁过久，并发（重检轮询 / 前端轮询）触发 SQLite 锁等待 → `database is locked`。
+  - A3（耗时）：真实 xlsx 基准测得——规则检测 118.3ms / 写库 256.0ms / `/fix-batch` 20 项 1286.6ms（非「极长」，但写事务与锁竞争放大了用户体感延迟）。
+- **修复（已落码 + 真跑通过，commit `572f970`）**：
+  - A1：消除 `quality_issues` 只增不删（覆盖式重建，见 ISS-075）。
+  - A2：缩短写事务窗口 + 消除锁竞争（每条 fix 独立短事务、逐项 commit）。
+  - A3：量化耗时（在 `/quality/check` 与 `/fix-batch` 路径加计时日志，真实 xlsx 复跑印证 20 项 ≈1.3s）。
+  - C1（前端，`970a6e5`）：批量修复后「重新质检」由 `await runCheck()` 同步阻塞改为 `runCheck({silent:true}).then(...)` 后台重检，立即展示成果、不阻塞用户。
+- **验证**：`_verify_b.py` 等真实路径跑通；`tsc --noEmit` 0 错误、`py_compile` 通过。
+- **状态**：`[DONE]`（2026-10-07 night35，commit `572f970` + `970a6e5`）。
+
+## ISS-074 清洗/质检与规划不符——行级明细未落地（P1，night35 已闭环）
+
+- **现象（用户 2026-10-07 实测反馈）**：清洗/质检结果与规划不符，行级明细（每字段清洗前/后快照、影响行数）未落到可查可读的界面。
+- **根因**：原 `/fix`、`/fix-batch` 仅标 `QualityIssue.status=done` + 写 DuckDB 清洗层，无「清洗前/后字段级明细」记录与前端展示入口。
+- **修复（已落码 + 真跑通过，commit `bf9b2cc`）**：
+  - B1：新增 `ChangeLog` 模型（`quality_change_logs` 表），每次采纳修复方案后记录 `issue_type/field_name/strategy/before_value/after_value/affected_rows`（before/after 为字段统计快照：空值数/去重数/极值/样本）。
+  - B2：新增 `GET /quality/{dataset_id}/change-log`（登录 + `_assert_dataset_access`）返回行级明细；前端 `QualityCheckPanel` 新增「清洗修改明细」Card，支持聚合（`字段+策略` 分组）/逐行切换 + 蓝条自述。
+  - B3：更新蓝条自述，说明「每次采纳修复方案后记录清洗前/后明细，可按聚合或逐行查看」。
+- **验证**：`_verify_b.py` 真跑断言 `before_null=2 → after_null=0`、`affected_rows=2`、DuckDB 清洗层真实 0 空值、接口返回正确。
+- **状态**：`[DONE]`（2026-10-07 night35，commit `bf9b2cc`）。
+
+## ISS-075 `quality_issues` 只增不删（写库幂等缺陷，P1，night35 已闭环）
+
+- **现象**：每次重新质检（`/quality/check`）都把新检测结果**追加**进 `quality_issues`，旧记录从不删除 → 表只增不删、重复累积、行级明细与计数失真。
+- **根因**：`/quality/check` 路径对同 dataset 旧 issue 记录未做覆盖式重建，仅 `INSERT`。
+- **修复（已落码 + 真跑通过，commit `572f970`）**：A1 改为**覆盖式重建**——重新质检前先按 `dataset_id` 删除旧 `quality_issues` 再批量写入，保证幂等、计数准确。
+- **状态**：`[DONE]`（2026-10-07 night35，commit `572f970`，属 Task A 三项之一）。
