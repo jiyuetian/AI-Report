@@ -21,6 +21,7 @@ from app.core.intent_classifier import classify_intent, IntentType
 from app.core.action_executor import ActionExecutor, ActionType
 from app.core.moderation import check_moderation, ContentModerator, BoundaryType
 from app.core.ai_action_log import log_ai_action
+from app.core.ai_fail_reason import classify_ai_fail_reason
 from app.models.chat import ChatSession, ChatMessage, TokenQuota
 from app.models.dashboard import Dashboard
 from app.models.dataset import Dataset
@@ -570,21 +571,9 @@ async def get_chat_history(
     }
 
 
+
+
 @router.post("/message", response_class=StreamingResponse)
-def _classify_ai_fail_reason(error: str) -> str:
-    """night36 Task A2：把 LLM 失败错误归一为枚举（ok/timeout/rate_limited/empty_response/not_wired/rule_only/other）。"""
-    e = (error or "").lower()
-    if "timeout" in e or "超时" in e:
-        return "timeout"
-    if "429" in e or "限流" in e or "rate" in e or "ratelimit" in e:
-        return "rate_limited"
-    if "empty" in e or "空" in e or "无内容" in e or "no content" in e:
-        return "empty_response"
-    if "not wired" in e or "未接" in e or "offline" in e or "不可达" in e or "未连接" in e or "not connected" in e:
-        return "not_wired"
-    return "other"
-
-
 async def send_message_stream(
     request: ChatMessageRequest,
     background_tasks: BackgroundTasks,
@@ -1303,18 +1292,27 @@ async def send_message_stream(
         # 都必须在此统一构造完整响应，否则低置信/unknown 路径会因 full_response 未定义而抛 UnboundLocalError，
         # 被 safe_stream 捕获成“对话生成中断”，表现为 AI 对所有非高置信指令都报错。
         # night36 Task A2/A4：统一"AI 参与"信号（向后兼容，只新增字段，不改名既有字段）
-        _cb = (intent_result or {}).get("classified_by", "rule")
-        _action_source = "llm" if _cb in ("llm", "llm_add_chart") else "rule"
+        _intent_result = intent_result or {}
+        # 取顶层 classified_by；add_chart 走 LLM 提取时该值嵌套在 extracted_params.classified_by
+        _cb = _intent_result.get("classified_by") or (_intent_result.get("extracted_params") or {}).get("classified_by") or "rule"
+        # night36-fix F5：把"AI 参与"拆成两段，消除 classified_by=llm 但无回复文案时
+        # 徽标"规则兜底"与 action_source=llm 自相矛盾的问题。
+        _ai_participated_intent = _cb in ("llm", "llm_add_chart")  # AI 是否参与意图识别/规划
+        _action_source = "llm" if _ai_participated_intent else "rule"
         if response_data.get("ai_error"):
-            _ai_participated = False
-            _ai_failed_reason = _classify_ai_fail_reason(response_data["ai_error"].get("error", ""))
+            _ai_participated_reply = False
+            _ai_failed_reason = classify_ai_fail_reason(response_data["ai_error"].get("error", ""))
+            _ai_participated = False  # 失败：两段都未成功参与
         elif llm_reply_used:
-            _ai_participated = True
+            _ai_participated_reply = True
             _ai_failed_reason = "ok"
             _action_source = "llm"
+            _ai_participated = True
         else:
-            _ai_participated = False
+            _ai_participated_reply = False
             _ai_failed_reason = "rule_only"
+            # 向后兼容：意图段参与（如 add_chart 走 LLM 结构化提取）也算"AI 参与"
+            _ai_participated = _ai_participated_intent
         full_response = {
             "message": response_data["message"],
             "intent": intent_result,
@@ -1328,6 +1326,8 @@ async def send_message_stream(
             "session_id": session_id,
             # night36 Task A2/A4：统一"AI 参与"信号（向后兼容，只新增字段）
             "ai_participated": _ai_participated,
+            "ai_participated_intent": _ai_participated_intent,
+            "ai_participated_reply": _ai_participated_reply,
             "ai_failed_reason": _ai_failed_reason,
             "action_source": _action_source,
         }

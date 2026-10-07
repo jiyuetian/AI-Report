@@ -21,6 +21,7 @@ from app.core.security import get_current_user
 from app.core.brain_config_manager import BrainTraceManager
 from app.core.duckdb_manager import get_duckdb
 from app.core.config import settings
+from app.core.ai_fail_reason import classify_ai_fail_reason
 from app.core.brain_modules import (
     detect_theme, generate_analysis_goals, generate_charts_with_llm,
     orchestrate_and_score
@@ -543,20 +544,11 @@ def _compute_field_profiles(duck, table_name: str, fields: List[str],
 
 
 def _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason):
-    """night36 Task A2：看板侧把 S3 失败原因归一为与 chat.py 对齐的枚举。"""
+    """night36 Task A2：看板侧把 S3 失败原因归一为与 chat.py 对齐的枚举。
+    night36-fix F1：复用 app.core.ai_fail_reason.classify_ai_fail_reason（单一事实来源，避免分叉）。"""
     if not s3_ai_failed:
         return "rule_only"
-    r = (s3_ai_reason or "")
-    rl = r.lower()
-    if "超时" in r or "timeout" in rl:
-        return "timeout"
-    if "限流" in r or "429" in r or "rate" in rl:
-        return "rate_limited"
-    if "不可达" in r or "未接" in r or "offline" in rl:
-        return "not_wired"
-    return "other"
-
-
+    return classify_ai_fail_reason(s3_ai_reason or "")
 async def brain_run_pipeline(
     run_id: str,
     dataset_id: str,
