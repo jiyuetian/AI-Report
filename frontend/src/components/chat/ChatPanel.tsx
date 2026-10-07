@@ -259,6 +259,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       let aiParticipated = false;
       let actionSource: 'llm' | 'rule' | 'hybrid' = 'rule';
       let aiFailedReason: string = 'rule_only';
+      let aiParticipatedIntent = false;
+      let aiParticipatedReply = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -289,6 +291,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 aiParticipated = data.ai_participated === true;
                 actionSource = (data.action_source as 'llm' | 'rule' | 'hybrid') || 'rule';
                 aiFailedReason = data.ai_failed_reason || 'rule_only';
+                aiParticipatedIntent = data.ai_participated_intent === true;
+                aiParticipatedReply = data.ai_participated_reply === true;
 
                 // 执行动作（包含render_updates）
                 if (data.action && onAction) {
@@ -336,8 +340,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         original_message: canOverride ? content : (aiError || !aiParticipated ? content : undefined),
         ai_error: aiError,
         ai_participated: aiParticipated,
-        ai_participated_intent: data.ai_participated_intent === true,
-        ai_participated_reply: data.ai_participated_reply === true,
+        ai_participated_intent: aiParticipatedIntent,
+        ai_participated_reply: aiParticipatedReply,
         action_source: actionSource,
         ai_failed_reason: aiFailedReason
       };
@@ -370,6 +374,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       let aiError: AiError | null = null;
       let aiParticipated = false;
       let aiFailedReason = 'rule_only';
+      let aiParticipatedIntent = false;
+      let aiParticipatedReply = false;
+      let actionSource: 'llm' | 'rule' | 'hybrid' = 'rule';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -385,6 +392,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 assistantContent = data.message || '';
                 aiError = data.ai_error || null;
                 aiParticipated = data.ai_participated === true;
+                aiParticipatedIntent = data.ai_participated_intent === true;
+                aiParticipatedReply = data.ai_participated_reply === true;
+                actionSource = (data.action_source as 'llm' | 'rule' | 'hybrid') || 'rule';
                 aiFailedReason = data.ai_failed_reason || 'rule_only';
               }
             } catch (e) { /* 忽略解析错误 */ }
@@ -397,8 +407,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         content: assistantContent || m.content,
         ai_error: aiError,
         ai_participated: aiParticipated,
-        ai_participated_intent: false,
-        ai_participated_reply: aiParticipated,
+        ai_participated_intent: aiParticipatedIntent || (msg.ai_participated_intent ?? false),
+        ai_participated_reply: aiParticipatedReply,
+        action_source: actionSource,
         ai_failed_reason: aiFailedReason,
       } : m));
     } catch (e) {
