@@ -3,7 +3,7 @@ import time
 from typing import Optional, List, Dict
 from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from pydantic import BaseModel
 
 from app.core.duckdb_manager import get_duckdb
@@ -159,9 +159,11 @@ async def check_quality(
         }
         
         # 1. 规则检测（主闸门，毫秒级）
+        t0_check = time.perf_counter()
         checker = QualityChecker(db, brain_config)
         rule_result = checker.check_table(table_name, table_info["columns"])
         rule_issues = rule_result.get("issues", [])
+        t_rule_detect = time.perf_counter()
         
         # 重置该数据集的AI缓存，并后台异步启动AI补充检测
         _AI_RESULT_CACHE[dataset_id] = {"status": "running"}
@@ -205,12 +207,11 @@ async def check_quality(
         }
         
         # 保存规则检测结果到数据库（AI结果由后台任务完成后追加）
+        # A1：对该 dataset 覆盖式重建——先 delete 再插新行，一次 commit（消除只增不删）
+        t_write = time.perf_counter()
         await sql_db.execute(
-            update(QualityIssue)
-            .where(QualityIssue.dataset_id == dataset_id)
-            .values(status="ignored")
+            delete(QualityIssue).where(QualityIssue.dataset_id == dataset_id)
         )
-        
         for iss in all_issues:
             qa = QualityIssue(
                 dataset_id=dataset_id,
@@ -222,8 +223,11 @@ async def check_quality(
                 affect_rows=iss.get("row_count", 0),
             )
             sql_db.add(qa)
-        
-        await sql_db.flush()
+        await sql_db.commit()
+        t_done = time.perf_counter()
+        # A3：分段耗时日志
+        print(f"[质检][{dataset_id}] 规则检测 {(t_rule_detect - t0_check)*1000:.1f}ms | "
+              f"写库 {(t_done - t_write)*1000:.1f}ms | 总 {(t_done - t0_check)*1000:.1f}ms | 问题数 {len(all_issues)}")
         return result
         
     except HTTPException:
@@ -533,7 +537,9 @@ async def fix_quality_issues_batch(request: QualityFixBatchRequest, sql_db: Asyn
     """
     results = []
     success = 0
+    t_batch = time.perf_counter()
     for idx, item in enumerate(request.items):
+        t_item = time.perf_counter()
         try:
             await fix_quality_issue(
                 QualityFixRequest(
@@ -544,17 +550,29 @@ async def fix_quality_issues_batch(request: QualityFixBatchRequest, sql_db: Asyn
                 ),
                 sql_db,
             )
+            # A2：单项结束即提交，缩短写事务窗口，消除与后台AI检测/并发请求的 SQLite 写锁竞争（database is locked）
+            await sql_db.commit()
             success += 1
+            dt = (time.perf_counter() - t_item) * 1000
             results.append({"index": idx, "column": item.column, "strategy": item.fix_strategy, "ok": True})
+            print(f"[批量修复][{request.dataset_id}] 项#{idx} {item.column}/{item.fix_strategy} 成功 {dt:.1f}ms")
         except HTTPException as e:
             await sql_db.rollback()
+            dt = (time.perf_counter() - t_item) * 1000
             results.append({
                 "index": idx, "column": item.column, "strategy": item.fix_strategy, "ok": False,
                 "error": (e.detail or {}).get("message") if isinstance(e.detail, dict) else str(e.detail),
             })
+            print(f"[批量修复][{request.dataset_id}] 项#{idx} {item.column}/{item.fix_strategy} 失败 {dt:.1f}ms: {results[-1]['error']}")
         except Exception as e:
             await sql_db.rollback()
+            dt = (time.perf_counter() - t_item) * 1000
             results.append({"index": idx, "column": item.column, "strategy": item.fix_strategy, "ok": False, "error": str(e)})
+            print(f"[批量修复][{request.dataset_id}] 项#{idx} {item.column}/{item.fix_strategy} 异常 {dt:.1f}ms: {str(e)}")
+    t_batch_done = (time.perf_counter() - t_batch) * 1000
+    # A3：总耗时 + 逐项(ms)日志
+    print(f"[批量修复][{request.dataset_id}] 总 {t_batch_done:.1f}ms | 成功 {success}/{len(request.items)} | "
+          f"单项(ms)={[ 'OK' if r['ok'] else 'FAIL' for r in results ]}")
     return {
         "dataset_id": request.dataset_id,
         "total": len(request.items),
@@ -589,12 +607,9 @@ async def reset_quality(
         db.conn.execute(f'DROP TABLE IF EXISTS "{cleaned}"')
         dropped = True
 
-    # 撤销所有质检问题的修复状态
-    await sql_db.execute(
-        update(QualityIssue)
-        .where(QualityIssue.dataset_id == dataset_id)
-        .values(status="ignored")
-    )
+    # A1：覆盖式清空该 dataset 的质检问题与清洗规则（而非置 ignored 累积），一次 commit
+    await sql_db.execute(delete(QualityIssue).where(QualityIssue.dataset_id == dataset_id))
+    await sql_db.execute(delete(CleanRule).where(CleanRule.dataset_id == dataset_id))
     await sql_db.commit()
 
     # 清除 AI 补充检测缓存，使下次质检重新走规则+AI
