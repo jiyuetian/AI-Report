@@ -350,6 +350,61 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
+  // night36-fix F4：「重试 AI」只重生成回复文案，不重新执行动作（避免重复加图/改图）
+  const regenerateReply = async (msg: ChatMessage) => {
+    if (!msg.id || !sessionId) return;
+    setIsLoading(true);
+    try {
+      const res = await authorizedFetch('/api/v1/chat/regenerate-reply', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, message_id: msg.id })
+      });
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('无法读取响应');
+      let assistantContent = '';
+      let aiError: AiError | null = null;
+      let aiParticipated = false;
+      let aiFailedReason = 'rule_only';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = new TextDecoder().decode(value);
+        for (const line of text.split('\n\n')) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6);
+            if (dataStr === '[DONE]') continue;
+            try {
+              const event = JSON.parse(dataStr);
+              if (event.event === 'complete') {
+                const data = JSON.parse(event.data);
+                assistantContent = data.message || '';
+                aiError = data.ai_error || null;
+                aiParticipated = data.ai_participated === true;
+                aiFailedReason = data.ai_failed_reason || 'rule_only';
+              }
+            } catch (e) { /* 忽略解析错误 */ }
+          }
+        }
+      }
+      // 就地更新该助手消息（不新增气泡），不重跑动作
+      setMessages(prev => prev.map(m => m.id === msg.id ? {
+        ...m,
+        content: assistantContent || m.content,
+        ai_error: aiError,
+        ai_participated: aiParticipated,
+        ai_participated_intent: false,
+        ai_participated_reply: aiParticipated,
+        ai_failed_reason: aiFailedReason,
+      } : m));
+    } catch (e) {
+      console.error('重试 AI 失败:', e);
+      throttledMessage.error('重试失败，请稍后再试', 'retry-fail');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // 点击推荐追问
   const handleFollowupClick = (text: string) => {
     setInputValue(text);
@@ -520,7 +575,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                         <Button
                           size="small"
                           type="primary"
-                          onClick={() => sendMessage({ text: msg.original_message || '', forceRuleFallback: false })}
+                          onClick={() => regenerateReply(msg)}
                           disabled={isLoading}
                         >
                           重试 AI
@@ -553,7 +608,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                         <Button
                           size="small"
                           type="primary"
-                          onClick={() => sendMessage({ text: msg.original_message || '', forceRuleFallback: false })}
+                          onClick={() => regenerateReply(msg)}
                           disabled={isLoading}
                         >
                           重试 AI

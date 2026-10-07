@@ -1493,6 +1493,108 @@ async def send_message_stream(
     )
 
 
+class RegenerateReplyRequest(BaseModel):
+    """night36-fix F4：「重试 AI」入参——只重生成回复文案，不重跑动作。"""
+    session_id: str
+    message_id: str
+
+
+@router.post("/regenerate-reply", response_class=StreamingResponse)
+async def regenerate_reply(
+    req: RegenerateReplyRequest,
+    db: AsyncSession = Depends(get_db),
+    _auth: Dict = Depends(get_current_user)
+):
+    """night36-fix F4：「重试 AI」只重生成回复文案，不重新执行动作。
+
+    取上一条助手消息对应的用户指令 + 当前看板上下文，调用 LLM 重新生成自然语言回复；
+    全程不调用 ActionExecutor，避免动作被重复执行（如重复加图/改图）。
+    """
+    async def _stream():
+        try:
+            # 1) 取助手消息
+            q = await db.execute(
+                select(ChatMessage).where(
+                    ChatMessage.id == req.message_id,
+                    ChatMessage.session_id == req.session_id
+                )
+            )
+            assistant_msg = q.scalar_one_or_none()
+            if not assistant_msg or assistant_msg.role != "assistant":
+                yield await sse_event("error", {"message": "消息不存在或不是助手消息"})
+                yield "data: [DONE]\n\n"
+                return
+            # 2) 取该助手消息之前最近的一条用户消息作为原始指令
+            q2 = await db.execute(
+                select(ChatMessage).where(
+                    ChatMessage.session_id == req.session_id,
+                    ChatMessage.role == "user",
+                    ChatMessage.created_at < assistant_msg.created_at,
+                ).order_by(ChatMessage.created_at.desc()).limit(1)
+            )
+            user_msg = q2.scalar_one_or_none()
+            user_text = (user_msg.content if user_msg else assistant_msg.content) or ""
+            # 3) 当前看板上下文（用于让 LLM 基于最新看板状态生成回复）
+            session_q = await db.execute(select(ChatSession).where(ChatSession.id == req.session_id))
+            session = session_q.scalar_one_or_none()
+            context: Dict[str, Any] = {"current_config": {}, "dataset_info": {}, "history": []}
+            if session and session.dashboard_id:
+                from app.models.dashboard import Dashboard
+                dq = await db.execute(select(Dashboard).where(Dashboard.id == session.dashboard_id))
+                dash = dq.scalar_one_or_none()
+                if dash and dash.config:
+                    context["current_config"] = dash.config if isinstance(dash.config, dict) else {}
+            # 4) 调 LLM 重生成回复（不执行任何动作）
+            result = await generate_llm_natural_response(user_text, context)
+            if result.get("ok"):
+                new_content = result["content"]
+                ai_participated = True
+                ai_failed_reason = "ok"
+                ai_error = None
+            else:
+                new_content = assistant_msg.content or ""
+                ai_participated = False
+                ai_failed_reason = classify_ai_fail_reason(result.get("error") or "other")
+                ai_error = {
+                    "stage": "regenerate_reply",
+                    "error": result.get("error") or "AI 调用失败",
+                    "options": ["retry", "rule_fallback"],
+                    "message": result.get("error") or "AI 调用失败，请重试或改用规则引导。",
+                }
+            # 5) 落库：仅更新文案，不触碰看板 config / 不执行动作
+            assistant_msg.content = new_content
+            await db.commit()
+            full_response = {
+                "message": new_content,
+                "intent": assistant_msg.intent_analysis,
+                "action": None,
+                "actions": [],
+                "action_results": [],
+                "action_error": None,
+                "ai_error": ai_error,
+                "render_updates": [],
+                "suggested_followups": [],
+                "session_id": req.session_id,
+                "ai_participated": ai_participated,
+                "ai_participated_intent": False,
+                "ai_participated_reply": ai_participated,
+                "ai_failed_reason": ai_failed_reason,
+                "action_source": "llm",
+            }
+            yield await sse_event("complete", full_response)
+        except Exception as e:
+            print(f"[Chat] regenerate_reply 失败: {e}")
+            yield await sse_event("error", {"message": f"重试失败：{str(e)[:160]}"})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+
 def _build_history(raw_msgs, max_rounds=5, max_chars=600):
     """按轮分组装配对话历史（night19 任务B / ISS-015 ①）。
 
