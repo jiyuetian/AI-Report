@@ -1,9 +1,9 @@
 """质检API - M1-08a/b 六类质检 + AI补充检测 + 清洗层写入"""
 import time
 from typing import Optional, List, Dict
-from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func
 from pydantic import BaseModel
 
 from app.core.duckdb_manager import get_duckdb
@@ -11,7 +11,7 @@ from app.core.quality_checker import QualityChecker
 from app.core.ai_quality_checker import AIQualityChecker
 from app.core.database import get_db, async_session_factory
 from app.core.security import get_current_user
-from app.models.quality import QualityIssue, CleanRule
+from app.models.quality import QualityIssue, CleanRule, ChangeLog
 from app.models.dataset import Dataset
 from app.api.datasets import _assert_dataset_access
 
@@ -121,6 +121,35 @@ def get_cleaned_table(dataset_id: str) -> str:
     db = get_duckdb()
     return db.create_cleaned_from_original(dataset_id)
 
+
+
+
+def _capture_column_stats(db, cleaned_table: str, column: str) -> dict:
+    """清洗前后捕获字段统计快照（空值数/去重数/极值/样本），用于 change_log 行级明细。"""
+    col = f'"{column}"'
+    try:
+        null_c = db.conn.execute(
+            f"SELECT COUNT(*) FROM \"{cleaned_table}\" "
+            f"WHERE {col} IS NULL OR TRIM(CAST({col} AS VARCHAR)) = ''"
+        ).fetchone()[0]
+        distinct_c = db.conn.execute(f"SELECT COUNT(DISTINCT {col}) FROM \"{cleaned_table}\"").fetchone()[0]
+        samples = [str(v[0]) for v in db.conn.execute(
+            f"SELECT DISTINCT {col} FROM \"{cleaned_table}\" WHERE {col} IS NOT NULL LIMIT 5"
+        ).fetchall()]
+        stat = {"null_count": null_c, "distinct_count": distinct_c, "samples": samples}
+        try:
+            mn, mx = db.conn.execute(
+                f"SELECT MIN(TRY_CAST({col} AS DOUBLE)), MAX(TRY_CAST({col} AS DOUBLE)) "
+                f"FROM \"{cleaned_table}\" WHERE TRY_CAST({col} AS DOUBLE) IS NOT NULL"
+            ).fetchone()
+            if mn is not None:
+                stat["min"] = mn
+                stat["max"] = mx
+        except Exception:
+            pass
+        return stat
+    except Exception as e:
+        return {"error": str(e)}
 
 @router.post("/check")
 async def check_quality(
@@ -302,6 +331,9 @@ async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = D
     
     try:
         # 根据修复策略执行实际数据修改（写入清洗层）
+        # B1：捕获清洗前字段统计快照（行级明细 before）
+        before_stats = _capture_column_stats(db, cleaned_table, column)
+
         if request.fix_strategy == "keep_first":
             db.conn.execute(f"""
                 DELETE FROM {cleaned_table} 
@@ -465,6 +497,30 @@ async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = D
 
         elif request.fix_strategy in ("mark_anomaly", "mark_duplicate"):
             pass  # 不做实际修改，仅标记状态
+
+        # B1：捕获清洗后字段统计快照（行级明细 after）；mark_* 不实际改数据，不记 change_log
+        after_stats = _capture_column_stats(db, cleaned_table, column)
+        if request.fix_strategy not in ("mark_anomaly", "mark_duplicate"):
+            # 取该质检问题的影响行数（权威"影响行数"来源）
+            _iss_res = await sql_db.execute(
+                select(QualityIssue).where(
+                    QualityIssue.dataset_id == dataset_id,
+                    QualityIssue.type == request.issue_type,
+                    QualityIssue.field_name == request.column,
+                    QualityIssue.status == "todo",
+                )
+            )
+            _iss = _iss_res.scalars().first()
+            _affected = _iss.affect_rows if _iss else None
+            sql_db.add(ChangeLog(
+                dataset_id=dataset_id,
+                issue_type=request.issue_type,
+                field_name=request.column,
+                strategy=request.fix_strategy,
+                before_value=before_stats,
+                after_value=after_stats,
+                affected_rows=_affected,
+            ))
             
         elif request.fix_strategy == "drop":
             db.conn.execute(f"""
@@ -621,6 +677,37 @@ async def reset_quality(
         "message": "已重置质检并撤销清洗层（数据已回滚到原始状态）",
     }
 
+
+
+
+@router.get("/{dataset_id}/change-log")
+async def get_change_log(
+    dataset_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sql_db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """获取清洗修复的行级变更明细（before/after 快照），需登录 + 数据集归属校验（ISS-051）。"""
+    await _assert_dataset_access(sql_db, dataset_id, current_user)
+    result = await sql_db.execute(
+        select(ChangeLog)
+        .where(ChangeLog.dataset_id == dataset_id)
+        .order_by(ChangeLog.created_at.desc())
+        .limit(limit).offset(offset)
+    )
+    rows = result.scalars().all()
+    total_res = await sql_db.execute(
+        select(func.count()).select_from(ChangeLog).where(ChangeLog.dataset_id == dataset_id)
+    )
+    total = total_res.scalar() or 0
+    return {
+        "dataset_id": dataset_id,
+        "change_logs": [c.to_dict() for c in rows],
+        "total_count": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 @router.post("/_internal/test-quality")
 async def test_quality_check(current_user: Dict = Depends(get_current_user)):

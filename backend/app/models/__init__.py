@@ -3,7 +3,7 @@ from app.models.base import Base
 from app.models.user import User, Role, UserRole
 from app.models.file import File
 from app.models.dataset import Dataset
-from app.models.quality import QualityIssue, CleanRule
+from app.models.quality import QualityIssue, CleanRule, ChangeLog
 from app.models.dashboard import Dashboard, DashboardVersion
 from app.models.chart import Chart
 from app.models.chat import ChatSession, ChatMessage, TokenQuota, TokenApplication
@@ -24,7 +24,7 @@ __all__ = [
     "User", "Role", "UserRole",
     "File",
     "Dataset",
-    "QualityIssue", "CleanRule",
+    "QualityIssue", "CleanRule", "ChangeLog",
     "Dashboard", "DashboardVersion",
     "Chart",
     "ChatSession", "ChatMessage",

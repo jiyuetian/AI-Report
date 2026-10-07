@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Card, Button, Tag, Table, Modal, Radio, Input, Space, Divider, Alert, message, Typography, Empty, Select, Tooltip } from 'antd'
 import {
   CheckCircleOutlined, WarningOutlined, CloseCircleOutlined,
@@ -158,6 +158,28 @@ function groupIssuesByType(apiIssues: ApiQualityIssue[]): GroupedCheckResult[] {
   return result
 }
 
+// 修复策略中文标签（B2 修改明细展示用）
+const STRATEGY_LABEL_MAP: Record<string, string> = {
+  keep_first: '保留首条(去重)', keep_last: '保留末条(去重)',
+  fill_mean: '均值填充', fill_median: '中位数填充', fill_mode: '众数填充', fill_constant: '常量填充',
+  fill_boundary: '边界截断', winsorize: '缩尾(Winsorize)', coerce_numeric: '数值化',
+  convert_standard: '日期标准化', map_closest: '码值归一', set_today: '未来日期→今天',
+  swap_values: '交换日期', drop: '删除空行',
+}
+
+// B2：把 before/after 统计快照渲染成可读摘要
+function describeStats(b: any, a: any): string {
+  if (!b || !a) return '-'
+  const parts: string[] = []
+  if (b.null_count !== undefined && b.null_count !== a.null_count)
+    parts.push(`空值 ${b.null_count}→${a.null_count}`)
+  if (b.distinct_count !== undefined && b.distinct_count !== a.distinct_count)
+    parts.push(`去重 ${b.distinct_count}→${a.distinct_count}`)
+  if (b.min !== undefined && (b.min !== a.min || b.max !== a.max))
+    parts.push(`极值 ${b.min}~${b.max}→${a.min}~${a.max}`)
+  return parts.length ? parts.join('，') : '无变化'
+}
+
 export default function QualityCheckPanel({
   fileId, fileName, datasetId, onProceed, onStatusChange, autoCheck = true,
 }: QualityCheckPanelProps) {
@@ -261,6 +283,13 @@ export default function QualityCheckPanel({
   // ISS-064：重置（撤销清洗）的二次确认弹窗与 loading 态
   const [resetModalOpen, setResetModalOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
+
+  // B2：清洗修复行级变更明细（ISS-051）——聚合/逐行切换
+  const [changeLog, setChangeLog] = useState<any[]>([])
+  const [changeLogOpen, setChangeLogOpen] = useState(false)
+  const [changeView, setChangeView] = useState<'agg' | 'row'>('agg')
+  const [changeLogLoading, setChangeLogLoading] = useState(false)
+  const changeLogLoadedRef = useRef(false)
   
   // 切换文件时同步质检状态，并清理上一文件的AI轮询
   useEffect(() => {
@@ -412,6 +441,23 @@ export default function QualityCheckPanel({
     }
   }, [datasetId, updateState])
 
+  // B2：拉取清洗修复的行级变更明细（before/after 快照）
+  const loadChangeLog = useCallback(async () => {
+    if (!datasetId) return
+    setChangeLogLoading(true)
+    try {
+      const res = await authorizedFetch(`${API_BASE}/quality/${datasetId}/change-log?limit=200`, { headers: authHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        setChangeLog(data.change_logs || [])
+      }
+    } catch {
+      // 忽略瞬时错误
+    } finally {
+      setChangeLogLoading(false)
+    }
+  }, [datasetId])
+
   // 自动质检：只对「新上传」的数据集跑一次；恢复的历史数据集直接读已存结果（不重跑、不弹 toast）
   useEffect(() => {
     if (!datasetId) return
@@ -520,6 +566,7 @@ export default function QualityCheckPanel({
     setFixModal({ open: false, checkKey: '', issue: null })
     setFixing(false)
     message.success(`已修复 ${issue.column}，问题移除`)
+    loadChangeLog()
   }
 
   // 一键采纳推荐方案 — 对齐 B 的"推荐清洗计划"交互：后端已为每类问题标记 recommended 策略，
@@ -584,6 +631,7 @@ export default function QualityCheckPanel({
       }
       // 重新质检：拿到最新结果，判断是否可以自动进入看板生成
       const newChecks = await runCheck()
+      loadChangeLog()
       if (newChecks) {
         const remainBlocking = newChecks.some(c => c.blocking && c.status === 'fail')
         const remainWarn = newChecks.reduce((s, c) => s + c.issues.length, 0)
@@ -649,6 +697,24 @@ export default function QualityCheckPanel({
   const { Text } = Typography
   const fixCheck = state.checks.find(c => c.key === fixModal.checkKey)
   
+  // B2：聚合视图（按 字段+策略 分组）
+  const aggGroups = useMemo(() => {
+    const m: Record<string, any> = {}
+    for (const log of changeLog) {
+      const key = `${log.field_name}__${log.strategy}`
+      if (!m[key]) {
+        m[key] = {
+          field_name: log.field_name, strategy: log.strategy,
+          issue_type: log.issue_type, count: 0, affected: 0,
+          before: log.before_value, after: log.after_value,
+        }
+      }
+      m[key].count += 1
+      m[key].affected += (log.affected_rows || 0)
+    }
+    return Object.values(m)
+  }, [changeLog])
+
   // 计算所有扁平化问题（用于表格展示）
   const allFlatIssues = state.checks.flatMap(check => 
     check.issues.map(issue => ({
@@ -887,6 +953,89 @@ export default function QualityCheckPanel({
       {allFlatIssues.length === 0 && (
         <Empty description="未检测到数据质量问题" style={{ margin: '32px 0' }} />
       )}
+
+      {/* B2/B3：清洗修复行级变更明细（before/after 快照）+ 蓝条自述 */}
+      <Card
+        size="small"
+        style={{ marginTop: 16 }}
+        title="清洗修改明细（行级 before / after）"
+        extra={
+          <Button
+            size="small"
+            type="link"
+            onClick={() => {
+              setChangeLogOpen(o => !o)
+              if (!changeLogLoadedRef.current) {
+                changeLogLoadedRef.current = true
+                loadChangeLog()
+              }
+            }}
+          >
+            {changeLogOpen ? '收起' : `展开（${changeLog.length}）`}
+          </Button>
+        }
+      >
+        {changeLogOpen && (
+          <>
+            {/* B3 蓝条自述：说明每次修复都会落行级 before/after 明细，可审计回溯 */}
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="每次采纳修复方案后，系统会记录该字段的清洗前/后明细（空值数、去重数、极值等），可在此按「聚合」或「逐行」查看，便于审计与回溯。"
+            />
+            <Radio.Group
+              value={changeView}
+              onChange={e => setChangeView(e.target.value)}
+              optionType="button"
+              buttonStyle="solid"
+              size="small"
+              style={{ marginBottom: 12 }}
+            >
+              <Radio value="agg">按字段聚合</Radio>
+              <Radio value="row">逐行明细</Radio>
+            </Radio.Group>
+            {changeLogLoading && <div style={{ color: '#8c8c8c', fontSize: 13 }}>加载中…</div>}
+            {!changeLogLoading && changeLog.length === 0 && (
+              <Empty description="暂无清洗修改记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            )}
+            {!changeLogLoading && changeLog.length > 0 && changeView === 'agg' && (
+              <Table
+                size="small"
+                pagination={false}
+                dataSource={aggGroups}
+                rowKey={(r: any) => `${r.field_name}__${r.strategy}`}
+                columns={[
+                  { title: '字段', dataIndex: 'field_name', key: 'field_name' },
+                  { title: '修复策略', dataIndex: 'strategy', key: 'strategy', render: (v: string) => STRATEGY_LABEL_MAP[v] || v },
+                  { title: '问题类型', dataIndex: 'issue_type', key: 'issue_type' },
+                  { title: '修改次数', dataIndex: 'count', key: 'count', render: (v: number) => <Tag>{v}</Tag> },
+                  { title: '影响行数', dataIndex: 'affected', key: 'affected', render: (v: number) => <Tag color="orange">{v}</Tag> },
+                  { title: '清洗前 → 后', key: 'delta', render: (_: any, r: any) => describeStats(r.before, r.after) },
+                ]}
+              />
+            )}
+            {!changeLogLoading && changeLog.length > 0 && changeView === 'row' && (
+              <Table
+                size="small"
+                pagination={{ pageSize: 10 }}
+                dataSource={changeLog}
+                rowKey={(r: any) => r.id}
+                columns={[
+                  { title: '字段', dataIndex: 'field_name', key: 'field_name', width: 120 },
+                  { title: '问题类型', dataIndex: 'issue_type', key: 'issue_type', width: 90 },
+                  { title: '策略', dataIndex: 'strategy', key: 'strategy', width: 120, render: (v: string) => STRATEGY_LABEL_MAP[v] || v },
+                  { title: '影响行数', dataIndex: 'affected_rows', key: 'affected_rows', width: 80, render: (v: number) => <Tag color="orange">{v}</Tag> },
+                  { title: '清洗前', dataIndex: 'before_value', key: 'before_value', width: 160, render: (v: any) => v ? `空值${v.null_count ?? '-'} 去重${v.distinct_count ?? '-'}` : '-' },
+                  { title: '清洗后', dataIndex: 'after_value', key: 'after_value', width: 160, render: (v: any) => v ? `空值${v.null_count ?? '-'} 去重${v.distinct_count ?? '-'}` : '-' },
+                  { title: '修改时间', dataIndex: 'created_at', key: 'created_at', width: 160 },
+                ]}
+              />
+            )}
+          </>
+        )}
+      </Card>
+
 
       <Divider />
       {/* ISS-063：批量修复内联状态条（超时/取消/重试/成功与部分失败均内联可见，不再只靠 message.loading） */}

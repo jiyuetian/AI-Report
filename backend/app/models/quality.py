@@ -59,3 +59,30 @@ class CleanRule(Base):
     
     # 关系
     dataset = relationship("Dataset", back_populates="clean_rules")
+
+
+class ChangeLog(Base):
+    """清洗修复行级变更明细（ISS-051）：每次采纳修复方案后记录字段清洗前/后快照"""
+    __tablename__ = "quality_change_logs"
+
+    dataset_id: Mapped[str] = mapped_column(
+        ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # 问题类型（与 QualityIssue.type 一致）
+    issue_type: Mapped[str] = mapped_column(String(30), nullable=False)
+
+    # 字段名
+    field_name: Mapped[Optional[str]] = mapped_column(String(100))
+
+    # 采用的修复策略（与 fix_quality_issue 的 fix_strategy 一致）
+    strategy: Mapped[Optional[str]] = mapped_column(String(30))
+
+    # 清洗前字段统计快照（JSON：null_count / distinct_count / samples / min / max）
+    before_value: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
+
+    # 清洗后字段统计快照（JSON）
+    after_value: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
+
+    # 受影响行数（取 QualityIssue.affect_rows，权威"影响行数"）
+    affected_rows: Mapped[Optional[int]] = mapped_column(Integer)
