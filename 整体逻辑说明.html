@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BI看板系统 - 整体逻辑说明</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --primary: #1677ff;
+    --primary-light: #e6f0ff;
+    --success: #52c41a;
+    --warning: #faad14;
+    --error: #ff4d4f;
+    --text: #1a1a2e;
+    --text-secondary: #666;
+    --border: #e8e8e8;
+    --code-bg: #f5f5f5;
+    --sidebar-w: 260px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  /* Sidebar */
+  .sidebar {
+    position: fixed; left: 0; top: 0; width: var(--sidebar-w); height: 100vh;
+    background: #1a1a2e; overflow-y: auto; padding: 24px 0; z-index: 100;
+  }
+  .sidebar-title {
+    color: #fff; font-size: 18px; font-weight: 700; padding: 0 24px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 16px;
+  }
+  .sidebar a {
+    display: block; color: rgba(255,255,255,0.65); text-decoration: none;
+    padding: 8px 24px; font-size: 14px; transition: all 0.2s;
+  }
+  .sidebar a:hover { color: #fff; background: rgba(255,255,255,0.08); }
+  .sidebar a.active { color: #4dabf7; background: rgba(77,171,247,0.1); border-left: 3px solid #4dabf7; }
+  .sidebar a.sub { padding-left: 40px; font-size: 13px; }
+  /* Main */
+  .main { margin-left: var(--sidebar-w); padding: 40px 48px; max-width: 1100px; }
+  /* Typography */
+  h1 { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+  h2 { font-size: 22px; font-weight: 700; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--primary); }
+  h3 { font-size: 18px; font-weight: 600; margin: 28px 0 12px; }
+  h4 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+  p { margin-bottom: 12px; }
+  /* Cards */
+  .card { background: var(--card); border-radius: 12px; padding: 24px; margin: 16px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .card-accent { border-left: 4px solid var(--primary); }
+  .card-success { border-left: 4px solid var(--success); }
+  .card-warning { border-left: 4px solid var(--warning); }
+  .card-error { border-left: 4px solid var(--error); }
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+  .badge-primary { background: var(--primary-light); color: var(--primary); }
+  .badge-success { background: #f6ffed; color: var(--success); border: 1px solid #b7eb8f; }
+  .badge-warning { background: #fffbe6; color: var(--warning); border: 1px solid #ffe58f; }
+  .badge-error { background: #fff2f0; color: var(--error); border: 1px solid #ffccc7; }
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+  th { background: #fafafa; text-align: left; padding: 10px 14px; border-bottom: 2px solid var(--border); font-weight: 600; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: #fafcff; }
+  /* Code */
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; font-size: 13px; }
+  code { font-family: 'SF Mono', 'Fira Code', Consolas, monospace; }
+  pre code { background: none; padding: 0; }
+  code:not(pre code) { background: var(--code-bg); padding: 2px 6px; border-radius: 3px; }
+  /* Flow */
+  .flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
+  .flow-step { background: var(--card); border: 2px solid var(--primary); border-radius: 8px; padding: 10px 18px; font-weight: 600; font-size: 14px; }
+  .flow-arrow { color: var(--primary); font-size: 20px; }
+  .flow-step.active { background: var(--primary); color: #fff; }
+  /* Pipeline stages */
+  .pipeline-stage { display: flex; gap: 16px; margin: 12px 0; align-items: flex-start; }
+  .stage-num { min-width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; color: #fff; }
+  .stage-num.s1 { background: #1677ff; }
+  .stage-num.s2 { background: #722ed1; }
+  .stage-num.s3 { background: #13c2c2; }
+  .stage-num.s4 { background: #eb2f96; }
+  .stage-num.s5 { background: #fa8c16; }
+  .stage-content { flex: 1; }
+  /* Callout */
+  .callout { background: var(--primary-light); border-left: 4px solid var(--primary); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .callout-warn { background: #fffbe6; border-left-color: var(--warning); }
+  .callout-error { background: #fff2f0; border-left-color: var(--error); }
+  .callout-success { background: #f6ffed; border-left-color: var(--success); }
+  /* Tag list */
+  .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .tag { padding: 4px 12px; border-radius: 16px; font-size: 13px; }
+  /* Section anchors */
+  .section { scroll-margin-top: 20px; }
+  /* Status grid */
+  .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
+  .status-item { text-align: center; padding: 16px; border-radius: 8px; }
+  .status-item.blocking { background: #fff2f0; border: 1px solid #ffccc7; }
+  .status-item.warning { background: #fffbe6; border: 1px solid #ffe58f; }
+  .status-item.info { background: #e6f7ff; border: 1px solid #91d5ff; }
+  .status-item h4 { margin: 0 0 4px; }
+  .status-item p { margin: 0; font-size: 13px; color: var(--text-secondary); }
+  /* Fix list */
+  .fix-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; }
+  .fix-icon { min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .fix-icon.done { background: var(--success); color: #fff; }
+  .fix-icon.new { background: var(--primary); color: #fff; }
+  /* Scrollbar */
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="sidebar-title">BI看板系统<br><span style="font-size:12px;font-weight:400;opacity:0.6">整体逻辑说明</span></div>
+  <a href="#overview" class="active">系统架构总览</a>
+  <a href="#pipeline">S1-S5 看板生成Pipeline</a>
+  <a href="#s1" class="sub">S1 主题识别</a>
+  <a href="#s2" class="sub">S2 目标生成</a>
+  <a href="#s3" class="sub">S3 图表推荐</a>
+  <a href="#s4" class="sub">S4 编排优化</a>
+  <a href="#s5" class="sub">S5 评分验证</a>
+  <a href="#m3">M3 自然语言修改图表</a>
+  <a href="#intent" class="sub">意图分类</a>
+  <a href="#feasibility" class="sub">可行性检查</a>
+  <a href="#action" class="sub">动作执行</a>
+  <a href="#override" class="sub">用户优先级Override</a>
+  <a href="#quality">多报表质检隔离</a>
+  <a href="#exception">异常处理机制</a>
+  <a href="#prd">与PRD 4.7一致性</a>
+  <a href="#fixes">本次修复实现清单</a>
+</nav>
+
+<!-- Main Content -->
+<div class="main">
+
+<!-- ====== 总览 ====== -->
+<section id="overview" class="section">
+<h1>BI看板系统 - 整体逻辑说明</h1>
+<p style="color:var(--text-secondary);font-size:14px">所有功能已实现并通过构建验证（<code>npm run build</code> exit code 0）</p>
+
+<div class="card card-accent">
+<h3>核心架构：两大子系统</h3>
+<table>
+<tr><th>子系统</th><th>模块编号</th><th>核心职责</th><th>触发时机</th></tr>
+<tr><td><b>策略大脑（Brain）</b></td><td>M2-03~08</td><td>自动生成看板配置（S1-S5五阶段Pipeline）</td><td>用户上传数据 → 质检通过 → 点击"生成看板"</td></tr>
+<tr><td><b>对话助手（Chat）</b></td><td>M3-01~04</td><td>自然语言修改图表（意图分类 → 可行性检查 → 动作执行）</td><td>看板生成后 → 用户在对话面板输入自然语言指令</td></tr>
+</table>
+</div>
+
+<div class="flow">
+<span class="flow-step active">数据上传</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step">质检</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">S1 主题识别</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">S2 目标生成</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">S3 图表推荐</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">S4 编排优化</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">S5 评分验证</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step">看板渲染</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step">M3 对话修改</span>
+</div>
+
+<div class="callout">
+<b>设计原则：</b>规则优先 + LLM增强 + 全链路降级保底。每个环节都有规则兜底，LLM断线不影响基础看板生成。
+</div>
+</section>
+
+<!-- ====== S1-S5 Pipeline ====== -->
+<section id="pipeline" class="section">
+<h2>S1-S5 看板生成Pipeline</h2>
+<p>五阶段全链路Trace落库（<code>brain_traces</code>表），每阶段输入/输出/指标均可追溯。配置存储于<code>brain_configs</code>表，支持版本管理 + 热更新 + 回滚。</p>
+</section>
+
+<!-- S1 -->
+<section id="s1" class="section">
+<div class="pipeline-stage">
+<div class="stage-num s1">S1</div>
+<div class="stage-content">
+<h3>主题识别（Theme Detection）</h3>
+<p><b>文件：</b><code>s1_theme_detector.py</code> &nbsp; <b>模块：</b>M2-03</p>
+
+<h4>策略：词典规则优先 + LLM兜底</h4>
+<table>
+<tr><th>步骤</th><th>逻辑</th><th>降本措施</th></tr>
+<tr><td>1. 加载词典</td><td>从<code>brain_configs</code>读取主题词典（支持热更新）</td><td>词典可在线编辑，无需重启</td></tr>
+<tr><td>2. 词典匹配</td><td>字段名/样本数据 vs 关键词列表，计算匹配度得分</td><td>纯内存操作，零LLM调用</td></tr>
+<tr><td>3. 高置信度直接返回</td><td>置信度 ≥ <b>0.8</b> 时不调LLM</td><td>省LLM Token成本</td></tr>
+<tr><td>4. LLM兜底</td><td>词典未命中或低置信度时，LLM识别主题</td><td>仅在必要时调用</td></tr>
+</table>
+
+<h4>默认主题词典</h4>
+<table>
+<tr><th>主题标签</th><th>关键词</th></tr>
+<tr><td>担保风控</td><td>担保、抵押、质押、保证、留置、担保金额、抵押率、质押率</td></tr>
+<tr><td>逾期分析</td><td>逾期、违约、不良、坏账、呆账、逾期天数、逾期金额</td></tr>
+<tr><td>地区分布</td><td>地区、省份、城市、区域、所在地、行政区划</td></tr>
+<tr><td>客户画像</td><td>客户、借款人、企业、个人、客户编号、客户名称</td></tr>
+<tr><td>产品分析</td><td>产品、贷款、借据、合同、产品类型、贷款种类</td></tr>
+</table>
+
+<div class="callout-success">
+<b>输出：</b><code>theme_tag</code>（主题标签）+ <code>confidence</code>（置信度0-1）+ <code>method</code>（dictionary/llm）+ <code>matched_keywords</code>
+</div>
+</div>
+</div>
+</section>
+
+<!-- S2 -->
+<section id="s2" class="section">
+<div class="pipeline-stage">
+<div class="stage-num s2">S2</div>
+<div class="stage-content">
+<h3>目标生成（Goal Generation）</h3>
+<p><b>文件：</b><code>s2_goal_generator.py</code> &nbsp; <b>模块：</b>M2-04</p>
+
+<h4>策略：规则快速生成 + LLM增强（可选）</h4>
+<table>
+<tr><th>模式</th><th>触发条件</th><th>速度</th><th>LLM调用</th></tr>
+<tr><td>纯规则模式</td><td>默认<code>use_llm=False</code></td><td>毫秒级</td><td>无</td></tr>
+<tr><td>LLM增强模式</td><td><code>use_llm=True</code>且主题≠"未知"</td><td>秒级</td><td>1次（带fallback降级）</td></tr>
+</table>
+
+<h4>规则生成逻辑</h4>
+<table>
+<tr><th>目标类型</th><th>数量</th><th>优先级</th><th>示例</th></tr>
+<tr><td>必出目标</td><td>3个</td><td>10/9/8</td><td>趋势监控、地区对比、风险分布</td></tr>
+<tr><td>候选目标</td><td>3个</td><td>6/5/4</td><td>风险预警、占比分析、期限结构</td></tr>
+</table>
+<p>粒度过滤：<code>macro</code>粒度时过滤掉"画像"和"明细"类目标。</p>
+
+<h4>目标类型覆盖</h4>
+<div class="tag-list">
+<span class="tag badge-primary">KPI</span>
+<span class="tag badge-primary">趋势</span>
+<span class="tag badge-primary">对比</span>
+<span class="tag badge-primary">分布</span>
+<span class="tag badge-primary">预警</span>
+<span class="tag badge-primary">画像</span>
+<span class="tag badge-primary">关联</span>
+</div>
+
+<div class="callout-success">
+<b>输出：</b>6个候选分析目标，每个含 <code>goal_id</code>、<code>title</code>（中文业务化表述）、<code>description</code>、<code>type</code>、<code>priority</code>、<code>expected_charts</code>
+</div>
+
+<div class="callout">
+<b>业务化表述要求：</b>避免技术术语。例如说"看看哪些地区风险高"而非"进行地区风险维度分析"。LLM增强时Prompt中明确要求通俗易懂。
+</div>
+</div>
+</div>
+</section>
+
+<!-- S3 -->
+<section id="s3" class="section">
+<div class="pipeline-stage">
+<div class="stage-num s3">S3</div>
+<div class="stage-content">
+<h3>图表推荐（Chart Recommendation）</h3>
+<p><b>文件：</b><code>s3_chart_engine.py</code> + <code>s3_llm_enhancer.py</code> + <code>s3_chart_rules.yaml</code> &nbsp; <b>模块：</b>M2-05/06</p>
+
+<h4>双层策略：规则引擎 + LLM增强</h4>
+<table>
+<tr><th>层级</th><th>引擎</th><th>触发</th><th>可靠性</th><th>LLM依赖</th></tr>
+<tr><td>第一层</td><td>规则引擎（YAML）</td><td>始终运行</td><td>100%（无外部依赖）</td><td>无</td></tr>
+<tr><td>第二层</td><td>LLM增强器</td><td>LLM可用时增强</td><td>带Schema自愈 + 重试≤2</td><td>可选</td></tr>
+<tr><td>降级兜底</td><td>规则引擎</td><td>LLM失败后</td><td>强制覆盖5种图表类型</td><td>无</td></tr>
+</table>
+
+<h4>① 字段类型推断（FieldType）</h4>
+<table>
+<tr><th>字段类型</th><th>关键词正则匹配</th></tr>
+<tr><td><code>DATE</code></td><td><code>日期?|时间|年月?|day|date|time</code></td></tr>
+<tr><td><code>NUMBER</code></td><td><code>金额|额|率|数|值|量|价格|total|amount|count|num|balance</code></td></tr>
+<tr><td><code>GEO</code></td><td><code>地区|省份?|城市|区|地址|geo|region|province|city</code></td></tr>
+<tr><td><code>CATEGORY</code></td><td><code>类型|类别|种类|方式|状态|type|category|status</code></td></tr>
+<tr><td><code>TEXT</code></td><td>默认（无匹配时）</td></tr>
+</table>
+
+<h4>② 规则引擎（YAML规则文件）</h4>
+<p>规则按 <b>priority 降序</b> 匹配，第一个命中的生效：</p>
+<table>
+<tr><th>规则名</th><th>优先级</th><th>字段条件</th><th>图表类型</th></tr>
+<tr><td>总金额KPI</td><td>100</td><td>number + 金额关键词 + sum聚合</td><td>KPI</td></tr>
+<tr><td>总笔数KPI</td><td>99</td><td>number + 笔数关键词 + count聚合</td><td>KPI</td></tr>
+<tr><td>时间趋势-单指标</td><td>95</td><td>date×1 + number×1</td><td>折线图(line)</td></tr>
+<tr><td>时间趋势-多指标</td><td>94</td><td>date×1 + number(2~5)</td><td>折线图(line)</td></tr>
+<tr><td>分类对比-横向</td><td>90</td><td>category×1 + number×1 + 基数≤20</td><td>柱状图(bar横向)</td></tr>
+<tr><td>分类对比-纵向</td><td>89</td><td>category×1 + number×1 + 基数5~50</td><td>柱状图(bar纵向)</td></tr>
+<tr><td>地区对比-地图</td><td>88</td><td>geo×1 + number×1</td><td>地图(map)</td></tr>
+<tr><td>占比分布-饼图</td><td>85</td><td>category×1 + number×1 + 基数2~8</td><td>饼图(pie)</td></tr>
+<tr><td>占比分布-环形</td><td>84</td><td>同上，donut=true</td><td>饼图(pie环形)</td></tr>
+<tr><td>散点图-相关性</td><td>75</td><td>number×2</td><td>散点图(scatter)</td></tr>
+<tr><td>热力图-矩阵</td><td>74</td><td>category×2 + number×1</td><td>热力图(heatmap)</td></tr>
+<tr><td>明细表-行级</td><td>50</td><td>grain=detail</td><td>表格(table)</td></tr>
+</table>
+
+<h4>③ 图表约束</h4>
+<table>
+<tr><th>图表</th><th>约束规则</th></tr>
+<tr><td>饼图</td><td>最大8个切片，超过自动收敛Top7+其他</td></tr>
+<tr><td>柱状图</td><td>最大20个柱，超过10个建议横向</td></tr>
+<tr><td>折线图</td><td>最多5条线</td></tr>
+<tr><td>表格</td><td>最大15列，默认每页20行</td></tr>
+</table>
+
+<h4>④ 粒度限制</h4>
+<table>
+<tr><th>粒度</th><th>禁止的图表</th><th>说明</th></tr>
+<tr><td>macro（宏观）</td><td>table（分页明细）</td><td>宏观指标不能出明细表</td></tr>
+<tr><td>aggregate（汇总）</td><td>无限制</td><td>-</td></tr>
+<tr><td>detail（明细）</td><td>无限制</td><td>-</td></tr>
+</table>
+
+<h4>⑤ LLM增强 + Schema自愈</h4>
+<div class="card">
+<p><b>流程：</b>LLM生成JSON → JSON Schema校验 → 失败则回写错误信息重试（最多2次） → 仍失败降级规则引擎</p>
+<pre><code>JSON Schema 校验规则：
+- chart_type 必须是: kpi|line|bar|pie|scatter|table|map|heatmap
+- title 非空，1~100字
+- 字段必须存在于字段列表
+- 宏观粒度禁止分页明细表
+- 图表数量 1~10 个</code></pre>
+</div>
+
+<h4>⑥ 兜底保障</h4>
+<div class="callout">
+<b>断LLM时的保底：</b><code>generate_dashboard_config()</code> 确保始终覆盖5种图表类型 — KPI + 折线 + 柱状 + 饼图 + 表格。缺什么补什么，自动生成默认配置。
+</div>
+</div>
+</div>
+</section>
+
+<!-- S4 -->
+<section id="s4" class="section">
+<div class="pipeline-stage">
+<div class="stage-num s4">S4</div>
+<div class="stage-content">
+<h3>编排优化（Orchestration）</h3>
+<p><b>文件：</b><code>s4_orchestrator.py</code> &nbsp; <b>模块：</b>M2-07</p>
+
+<h4>三层叙事结构</h4>
+<table>
+<tr><th>层级</th><th>角色</th><th>图表类型</th><th>叙事优先级</th></tr>
+<tr><td><b>L1 结论层</b></td><td>总览核心指标</td><td>KPI卡</td><td>1（最高）</td></tr>
+<tr><td><b>L2 佐证层</b></td><td>趋势/对比论证</td><td>折线、柱状、地图</td><td>2</td></tr>
+<tr><td><b>L3 明细层</b></td><td>分布/明细深入</td><td>饼图、散点、表格、热力图</td><td>3</td></tr>
+</table>
+
+<h4>编排三步</h4>
+<table>
+<tr><th>步骤</th><th>操作</th><th>规则</th></tr>
+<tr><td>1. KPI挑选</td><td>选择最有价值的KPI卡</td><td>按金额>笔数>其他排序，最多4个</td></tr>
+<tr><td>2. 去冗余</td><td>相似图表合并/删除</td><td>图表签名相似度 > 0.8 时只保留1个</td></tr>
+<tr><td>3. 叙事排序</td><td>按三层叙事排列</td><td>kpi→line/bar→pie/scatter/table</td></tr>
+</table>
+
+<h4>图表签名相似度计算</h4>
+<pre><code>签名格式: "{chart_type}:{x_field}:{y_field}"
+相似度 = 匹配的部分数 / 3
+> 0.8 时判定为冗余，保留优先级高的</code></pre>
+
+<div class="callout-success">
+<b>输出：</b>编排后的图表列表（≤6个）+ 三层分组 + 叙事流向（结论→佐证→明细）
+</div>
+</div>
+</div>
+</section>
+
+<!-- S5 -->
+<section id="s5" class="section">
+<div class="pipeline-stage">
+<div class="stage-num s5">S5</div>
+<div class="stage-content">
+<h3>评分验证（Score Card）</h3>
+<p><b>文件：</b><code>s4_orchestrator.py</code> (S5ScoreCard类) &nbsp; <b>模块：</b>M2-08</p>
+
+<h4>三维度评分卡</h4>
+<table>
+<tr><th>维度</th><th>权重</th><th>评分逻辑</th><th>满分条件</th></tr>
+<tr><td><b>冗余度</b></td><td>30%</td><td>1 - (相似图表对数/总对数)</td><td>无任何相似图表=100</td></tr>
+<tr><td><b>覆盖度</b></td><td>40%</td><td>覆盖类型数 / 期望类型数</td><td>覆盖kpi+line+bar+pie=100</td></tr>
+<tr><td><b>叙事性</b></td><td>30%</td><td>图表位置 vs 期望叙事层级的匹配度</td><td>所有图表在正确叙事层=100</td></tr>
+</table>
+
+<p><b>总分 = 冗余度×0.3 + 覆盖度×0.4 + 叙事性×0.3</b></p>
+
+<div class="callout">
+<b>通过标准：</b>≥ <b>70分</b> 通过。不通过时最多重排 <b>3次</b>。
+</div>
+
+<h4>重排策略（R2返工修正）</h4>
+<table>
+<tr><th>重排次数</th><th>策略</th><th>操作</th></tr>
+<tr><td>第1次</td><td>按叙事优先级重排</td><td>kpi→line→bar→pie→table</td></tr>
+<tr><td>第2次</td><td>补充缺失类型</td><td>从备选池取，不足时自动生成默认图表</td></tr>
+<tr><td>第3次</td><td>删除冗余相似图</td><td>同类型同字段的图表去重</td></tr>
+</table>
+
+<div class="callout-warn">
+<b>改进建议生成：</b>冗余度<80分提示"合并相似图表"；覆盖度<80分提示"缺少XX类型"；叙事性<70分提示"按KPI→趋势→明细排序"。
+</div>
+</div>
+</div>
+</section>
+
+<!-- ====== M3 对话 ====== -->
+<section id="m3" class="section">
+<h2>M3 自然语言对话修改图表</h2>
+<p><b>核心文件：</b><code>chat.py</code>（API）+ <code>intent_classifier.py</code>（意图分类）+ <code>feasibility_checker.py</code>（可行性检查）+ <code>action_executor.py</code>（动作执行）+ <code>ChatPanel.tsx</code>（前端）</p>
+
+<div class="flow">
+<span class="flow-step">用户输入自然语言</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">意图分类</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">可行性检查</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">动作执行</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step">局部重渲染</span>
+</div>
+</section>
+
+<!-- 意图分类 -->
+<section id="intent" class="section">
+<h3>① 意图分类（Intent Classification）</h3>
+<p><b>文件：</b><code>intent_classifier.py</code> &nbsp; <b>模块：</b>M3-01</p>
+
+<h4>7类意图 + 正则匹配 + LLM兜底</h4>
+<table>
+<tr><th>意图类型</th><th>正则模式示例</th><th>参数提取</th></tr>
+<tr><td><code>change_chart</code> 换图</td><td><code>(换|改|变成).{0,5}(图|饼图|柱图...)</code></td><td>source_type, target_type</td></tr>
+<tr><td><code>add_chart</code> 新增图</td><td><code>(新增|添加|加|插入).{0,5}(图|图表)</code></td><td>chart_type</td></tr>
+<tr><td><code>delete_chart</code> 删图</td><td><code>(删除|移除|去掉|删掉).{0,5}(图|图表)</code></td><td>chart_index / chart_type</td></tr>
+<tr><td><code>reorder_chart</code> 排序</td><td><code>(移动|排序|调整).{0,5}(图|位置|顺序)</code></td><td>direction (up/down/top/bottom)</td></tr>
+<tr><td><code>filter_drill</code> 筛选下钻</td><td><code>(筛选|过滤|只看|显示).{0,10}(的|数据)?</code></td><td>filter_field, filter_value</td></tr>
+<tr><td><code>attribution</code> 归因追问</td><td><code>(为什么|怎么回事|什么原因).{0,10}(异常|波动)?</code></td><td>analysis_type, requires_lineage</td></tr>
+<tr><td><code>edit_title</code> 标题编辑</td><td><code>(改|修改|编辑).{0,5}(标题|名字)</code></td><td>new_title</td></tr>
+</table>
+
+<h4>分类流程</h4>
+<ol>
+<li><b>正则匹配：</b>依次匹配7类意图模式，命中即返回</li>
+<li><b>置信度计算：</b>基础分70 + 关键词密度加分(≤20) + 动作词加分(≤5)，上限95</li>
+<li><b>LLM兜底：</b>规则匹配失败时调用LLM分类（返回JSON）</li>
+<li><b>未知意图：</b>LLM也失败则返回<code>UNKNOWN</code>，引导用户示例</li>
+</ol>
+
+<div class="callout">
+<b>置信度阈值：</b>≥ <b>70分</b> 标记为 <code>is_confident=True</code>，低于70分的意图不会执行动作（仅回复理解结果）。
+</div>
+</section>
+
+<!-- 可行性检查 -->
+<section id="feasibility" class="section">
+<h3>② 可行性检查（Feasibility Check）</h3>
+<p><b>文件：</b><code>feasibility_checker.py</code> &nbsp; <b>模块：</b>M3-03</p>
+
+<h4>三级严重度（Severity）</h4>
+<div class="status-grid">
+<div class="status-item blocking">
+<h4 style="color:var(--error)">Blocking 阻断</h4>
+<p>阻断执行，用户必须修改需求或强制覆盖</p>
+<p><b>检查项：</b>粒度不匹配、字段缺失、图表超限、删除最后一张图</p>
+</div>
+<div class="status-item warning">
+<h4 style="color:var(--warning)">Warning 告警</h4>
+<p>允许执行但提示风险</p>
+<p><b>检查项：</b>预测功能数据不足</p>
+</div>
+<div class="status-item info">
+<h4 style="color:#1677ff">Info 建议</h4>
+<p>优化建议，不阻断</p>
+<p><b>检查项：</b>有日期字段时建议折线图而非饼图</p>
+</div>
+</div>
+
+<h4>检查维度</h4>
+<table>
+<tr><th>检查项</th><th>适用动作</th><th>检查逻辑</th><th>默认严重度</th></tr>
+<tr><td>数据粒度检查</td><td>filter_drill, change_chart, add_chart</td><td>用户要月度但数据只有年度 → 阻断</td><td>Blocking</td></tr>
+<tr><td>字段存在性检查</td><td>filter_drill, attribution, change_chart, add_chart</td><td>用户提到"区域"但数据无此字段 → 阻断</td><td>Blocking</td></tr>
+<tr><td>图表数量检查</td><td>add_chart</td><td>已有≥10个图表 → 阻断</td><td>Blocking</td></tr>
+<tr><td>删除保护检查</td><td>delete_chart</td><td>仅剩1个图表时 → 阻断</td><td>Blocking</td></tr>
+<tr><td>图表类型合理性</td><td>change_chart</td><td>有日期字段时用饼图 → 建议</td><td>Info</td></tr>
+</table>
+</section>
+
+<!-- Override -->
+<section id="override" class="section">
+<h3>③ 用户优先级Override机制（本次实现）</h3>
+
+<div class="card card-accent">
+<h4>核心原则：用户需求最高优先级</h4>
+<p>当用户需求与系统约束冲突时（如AI推荐饼图但用户要折线图），<b>blocking级问题允许用户强制覆盖</b>，降级为warning后执行。</p>
+</div>
+
+<h4>后端实现（<code>feasibility_checker.py</code>）</h4>
+<table>
+<tr><th>参数</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>override_blocking</code></td><td>bool</td><td>当为True时，blocking级问题降级为warning，允许执行</td></tr>
+</table>
+<pre><code># override逻辑
+if override_blocking and blocking_issues:
+    # blocking降级为warning
+    overridden_issues = [
+        {**issue, "original_severity": "blocking", "severity": "warning"}
+        for issue in blocking_issues
+    ]
+    issues = warning_issues + overridden_issues
+    feasible = True  # 覆盖后视为可行</code></pre>
+
+<h4>API层实现（<code>chat.py</code>）</h4>
+<table>
+<tr><th>SSE事件</th><th>字段</th><th>说明</th></tr>
+<tr><td><code>feasibility_check_failed</code></td><td><code>can_override</code></td><td>是否存在可覆盖的blocking问题</td></tr>
+<tr><td>请求模型</td><td><code>override: bool</code></td><td>用户选择强制执行时设为True</td></tr>
+<tr><td>响应增强</td><td><code>overridden_issues</code></td><td>被覆盖的约束列表，在回复中提示用户</td></tr>
+</table>
+
+<h4>前端实现（<code>ChatPanel.tsx</code>）</h4>
+<table>
+<tr><th>组件</th><th>行为</th></tr>
+<tr><td>SSE事件处理</td><td>捕获<code>can_override</code>字段</td></tr>
+<tr><td>消息渲染</td><td>当<code>can_override=true</code>时显示红色"仍然执行"按钮</td></tr>
+<tr><td>按钮点击</td><td>携带<code>override: true</code>重新发送原始消息</td></tr>
+<tr><td>按钮文案</td><td>"仍然执行" + 警告图标 + "强制覆盖约束，按您的要求执行"</td></tr>
+</table>
+
+<div class="callout-warn">
+<b>交互流程示例：</b><br>
+用户："把饼图改成3D图"<br>
+系统：可行性检查失败 → "图库不支持3D图，请使用饼图/柱状图/折线图..." + 显示"仍然执行"按钮<br>
+用户点击"仍然执行" → 系统降级blocking → 执行换图动作 → 回复中提示"已按您的要求强制执行，以下约束被覆盖..."
+</div>
+</section>
+
+<!-- 动作执行 -->
+<section id="action" class="section">
+<h3>④ 动作执行（Action Execution）</h3>
+<p><b>文件：</b><code>action_executor.py</code> &nbsp; <b>模块：</b>M3-02</p>
+
+<h4>7类动作 + 局部重渲染</h4>
+<table>
+<tr><th>动作</th><th>执行逻辑</th><th>渲染更新指令</th></tr>
+<tr><td><code>change_chart</code></td><td>找到目标图表 → 修改chart_type → 调整字段配置</td><td><code>update_chart</code></td></tr>
+<tr><td><code>add_chart</code></td><td>生成新图表配置 → 追加到charts数组</td><td><code>add_chart</code></td></tr>
+<tr><td><code>delete_chart</code></td><td>按序号/类型/最后一个定位 → 从数组移除</td><td><code>delete_chart</code></td></tr>
+<tr><td><code>reorder_chart</code></td><td>up/down/top/bottom方向调整位置</td><td><code>reorder_charts</code></td></tr>
+<tr><td><code>filter_drill</code></td><td>添加/更新筛选条件 → 记录下钻路径</td><td><code>filter_data</code></td></tr>
+<tr><td><code>attribution</code></td><td>走血缘关系追溯 → 返回根因+关键因素+建议</td><td><code>show_attribution</code></td></tr>
+<tr><td><code>edit_title</code></td><td>修改图表标题或看板标题</td><td><code>update_title</code></td></tr>
+</table>
+
+<h4>图表类型标准化映射</h4>
+<pre><code>"饼图" → "pie"     "柱图/柱状图" → "bar"     "线图/折线图" → "line"
+"散点图" → "scatter"  "表格" → "table"          "KPI/KPI卡" → "kpi"</code></pre>
+
+<div class="callout-success">
+<b>设计要点：</b>动作执行后返回 <code>render_updates</code> 指令列表，前端按指令做<b>局部重渲染</b>，不刷新整个看板。
+</div>
+</section>
+
+<!-- ====== 多报表质检隔离 ====== -->
+<section id="quality" class="section">
+<h2>多报表质检隔离</h2>
+<p><b>文件：</b><code>QualityCheckPanel.tsx</code> + <code>UploadPage.tsx</code></p>
+
+<div class="card card-accent">
+<h4>设计目标</h4>
+<p>数据预览 + 数据质检 + 生成看板三块归属于同一个报表。每个报表有独立的质检状态，用户能清晰看到哪个报表未处理完阻断项。</p>
+</div>
+
+<h4>实现机制</h4>
+<table>
+<tr><th>组件</th><th>改造内容</th></tr>
+<tr><td>QualityCheckPanel</td><td>新增<code>onStatusChange</code>回调，质检完成后向父组件报告状态（hasBlocking/totalIssues/passCount/checked）</td></tr>
+<tr><td>UploadPage Tab</td><td>每个报表Tab上显示状态标记：<span class="badge badge-success">通过</span> <span class="badge badge-warning">提示</span> <span class="badge badge-error">阻断</span> <span class="badge badge-primary">质检中</span></td></tr>
+<tr><td>UploadPage 卡片标题</td><td>"报表：{文件名}" + 质检状态标签</td></tr>
+<tr><td>全局状态摘要</td><td>显示：共N个报表，N通过，N有提示，N有阻断，待质检N。有阻断时列出需修复的文件名</td></tr>
+</table>
+
+<h4>状态流转</h4>
+<div class="flow">
+<span class="flow-step">数据处理中</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step active">质检中</span>
+<span class="flow-arrow">→</span>
+<span class="flow-step" style="border-color:var(--success)">通过</span>
+<span style="color:var(--text-secondary)">/</span>
+<span class="flow-step" style="border-color:var(--warning)">有提示</span>
+<span style="color:var(--text-secondary)">/</span>
+<span class="flow-step" style="border-color:var(--error)">有阻断</span>
+</div>
+</section>
+
+<!-- ====== 异常处理 ====== -->
+<section id="exception" class="section">
+<h2>异常处理机制</h2>
+<p><b>文件：</b><code>LoadingPage.tsx</code> + <code>LoadingPage.css</code></p>
+
+<h4>三态标题（Loading / Error / Complete）</h4>
+<table>
+<tr><th>状态</th><th>标题显示</th><th>图标</th><th>进度条</th></tr>
+<tr><td>加载中</td><td>"AI正在生成看板"</td><td>LoadingOutlined (spin)</td><td>active蓝色</td></tr>
+<tr><td>失败</td><td>"看板生成失败"</td><td>CloseCircleOutlined (红色，无spin)</td><td>exception红色</td></tr>
+<tr><td>完成</td><td>"看板生成完成"</td><td>CheckCircleOutlined (绿色)</td><td>success绿色100%</td></tr>
+</table>
+
+<h4>超时检测</h4>
+<div class="card card-warning">
+<p><b>30秒无进度超时：</b>每5秒检查一次<code>lastProgressRef</code>，如果距离上次收到SSE事件超过30秒，自动判定超时。</p>
+<pre><code>if (elapsed > 30000 && !timeoutHit) {
+    setTimeoutHit(true);
+    setError('生成看板超时（30秒无响应），请检查后端服务状态后重试');
+    abortRef.current?.abort();  // 中断SSE连接
+}</code></pre>
+</div>
+
+<h4>错误恢复</h4>
+<table>
+<tr><th>场景</th><th>处理</th></tr>
+<tr><td>SSE网络请求失败</td><td>显示错误 + "取消生成" + "重新尝试"按钮</td></tr>
+<tr><td>后端返回错误状态</td><td>解析<code>errData.detail.message</code>，展示具体错误</td></tr>
+<tr><td>30秒超时</td><td>中断连接 + 错误提示 + 重试按钮</td></tr>
+<tr><td>用户手动取消</td><td><code>abortRef.current.abort()</code> 中断请求</td></tr>
+<tr><td>步骤中断显示</td><td>当前步骤显示错误信息，后续步骤显示"处理中断"</td></tr>
+</table>
+
+<h4>Modal友好样式（本次修复）</h4>
+<ul>
+<li>宽度响应式：<code>max-width: 90vw</code>，不溢出视窗</li>
+<li><code>centered</code> 居中显示</li>
+<li>Body限高滚动：<code>max-height: 70vh; overflow-y: auto</code></li>
+<li>内部无横向滚动条</li>
+</ul>
+</section>
+
+<!-- ====== PRD 4.7 一致性 ====== -->
+<section id="prd" class="section">
+<h2>与PRD 4.7（LIDA skill个性化改造）一致性说明</h2>
+
+<div class="card card-success">
+<h4>PRD 4.7 要求 vs 系统实现对照</h4>
+<table>
+<tr><th>PRD 4.7 要求</th><th>系统实现</th><th>一致性</th></tr>
+<tr><td>基于LIDA skill做个性化改造</td><td>S3图表推荐引擎借鉴LIDA的"字段组合→图表类型映射"思路</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>字段类型推断</td><td>FieldType枚举 + 关键词正则匹配（DATE/NUMBER/CATEGORY/GEO/TEXT）</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>图表推荐规则</td><td>YAML规则文件，字段组合条件→图表类型+配置，按priority降序匹配</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>LLM增强 + 降级保底</td><td>S3 LLM增强器：LLM生成→Schema校验→重试≤2→降级规则引擎</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>粒度限制</td><td>grain_constraints：宏观禁止明细表，粒度兼容性校验</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>图表约束</td><td>饼图≤8切片、柱图≤20、折线≤5线、表格≤15列</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>AI协同参与</td><td>S1主题识别(LLM兜底) + S2目标生成(LLM增强) + S3图表推荐(LLM增强) + M3对话修改(LLM意图分类)</td><td><span class="badge badge-success">一致</span></td></tr>
+<tr><td>个性化改造</td><td>主题词典可热更新、目标Prompt模板可配置、图表规则YAML可编辑、评分权重可调</td><td><span class="badge badge-success">一致</span></td></tr>
+</table>
+</div>
+
+<div class="callout">
+<b>AI协同互动设计：</b>系统采用"规则优先 + LLM增强"的双层策略。规则引擎保证基础看板始终可生成（零LLM依赖），LLM在规则置信度不足时介入增强。SSE流式通信让用户实时看到AI处理进度。M3对话助手通过自然语言意图分类，支持用户在生成后继续微调图表。
+</div>
+</section>
+
+<!-- ====== 本次修复清单 ====== -->
+<section id="fixes" class="section">
+<h2>本次修复与实现清单</h2>
+
+<h3>已修复的UI/交互问题</h3>
+<div class="card">
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>Fix 1：DashboardPage antMessage未定义</b> — 6处<code>antMessage</code>替换为<code>message</code>（Ant Design 5正确用法）</div></div>
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>Fix 2：弹出UI溢出外框右侧</b> — Modal width响应式 + centered + body限高滚动</div></div>
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>Fix 3：报错后顶部仍转圈</b> — 标题三态化（加载/失败/完成），error态无spin图标</div></div>
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>Fix 4：步骤红叉但文字仍"等待中"</b> — description随error同步，当前步骤显示错误，后续步骤显示"处理中断"</div></div>
+</div>
+
+<h3>新实现的功能模块</h3>
+<div class="card">
+<div class="fix-item"><div class="fix-icon new">★</div><div><b>用户优先级Override机制</b> — 后端<code>feasibility_checker.py</code>新增<code>override_blocking</code>参数（blocking降级warning）；API层<code>chat.py</code>新增<code>override</code>请求字段 + SSE <code>can_override</code>事件；前端<code>ChatPanel.tsx</code>新增"仍然执行"按钮 + override样式</div></div>
+<div class="fix-item"><div class="fix-icon new">★</div><div><b>多报表质检隔离UI</b> — <code>QualityCheckPanel.tsx</code>新增<code>onStatusChange</code>回调和<code>QualityCheckStatus</code>接口；<code>UploadPage.tsx</code>新增每文件Tab状态标记 + 全局质检摘要 + 卡片标题状态标签</div></div>
+</div>
+
+<h3>修复的TypeScript编译错误</h3>
+<div class="card">
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>LoadingPage.tsx</b> — <code>abortRef.current?.abort()</code> 类型安全修复 + <code>onCancel?.()</code> optional chaining</div></div>
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>DashboardPage.tsx</b> — 11处implicit any参数类型注解（<code>noImplicitAny</code>严格模式）</div></div>
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>ChatPanel.tsx</b> — <code>onClick={sendMessage}</code> 类型不匹配修复 → <code>onClick={() => sendMessage()}</code></div></div>
+</div>
+
+<h3>LLM网关修复</h3>
+<div class="card">
+<div class="fix-item"><div class="fix-icon done">✓</div><div><b>llm_gateway.py</b> — 请求体缺少<code>business_type</code>字段导致400错误 + HTTP错误处理增强</div></div>
+</div>
+
+<div class="callout-success">
+<b>构建验证：</b><code>npm run build</code> exit code 0，"✓ built in 13.42s"，所有TypeScript编译通过。
+</div>
+</section>
+
+</div>
+
+<script>
+// Sidebar active link tracking
+const links = document.querySelectorAll('.sidebar a');
+const sections = document.querySelectorAll('section.section');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => {
+    const top = s.offsetTop - 80;
+    if (window.scrollY >= top) current = s.id;
+  });
+  links.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+});
+// Smooth scroll
+links.forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
+</script>
+</body>
+</html>
