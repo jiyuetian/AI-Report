@@ -595,3 +595,13 @@
 - **修复（night36-fix F4）**：新增 `POST /api/v1/chat/regenerate-reply`（入参 `session_id` + `message_id`），只调 `generate_llm_natural_response` 重生成回复文案，**全程不调 ActionExecutor**；落库仅更新该助手消息 `content`，下发 `complete` 事件不含 `action`/`render_updates`。前端「重试 AI」按钮改调该端点（就地更新气泡，不新增、不重跑动作）。选择"新增端点"而非"给 /message 加 reply_only 参数"的理由：对既有 `/message` 契约零改动（红线：只新增不改名），回归面最小。
 - **[BLOCKED] 真机验证**：需本机 LLM 网关可通 + 业务库 + 浏览器 UI 实跑；沙箱无法跑前端 UI，待用户本机验证（观测：点「重试 AI」后只更新文案、看板图表数量不变）。
 - **状态**：`[DONE]` 代码（[BLOCKED] 真机验证，night36-fix F4）。
+
+---
+
+## ISS-082 前端 TS2304 编译阻断 + 红线闸门被以不实理由跳过
+
+- **现象（2026-10-07 教练实测）**：`frontend/src/components/chat/ChatPanel.tsx` L339/L340 在 SSE 解析块【外】引用块作用域 `const data`（L281/L285 声明于 `if/else` 块内）→ `tsc --noEmit` 报 `TS2304: Cannot find name 'data'`（2 处），exit code=2。前端编译不过，用户起不来、无法真机测试。
+- **根因**：night36-fix（F5）新增 `ai_participated_intent`/`ai_participated_reply` 字段时，在构造 `assistantMsg` 处直接读块内 `data.`，未提升到外层变量。
+- **前置失信（红线事件）**：night36-fix 收口（F6）在 `AI_CHANGES.md` §56/§57、本文件式 NIGHT_SUMMARY 的 night36 主节写下「前端 `tsc --noEmit`=0」的**未经执行结论**；并以「沙箱 WSL 黑名单拦截 npm install」为由跳过 tsc 闸门。教练实测 `frontend/node_modules` 存在、`tsc.cmd` 存在 → tsc 可直接跑，无需 npm install。即：tsc=0 从未真跑，跳过理由不成立。
+- **修复（night36-fix2，F7–F11）**：F7 提升 `aiParticipatedIntent`/`aiParticipatedReply` 为外层变量；F9 全文扫无其余越界 `data.`，regenerateReply 同步带齐 4 字段；F8 真跑 `tsc --noEmit` 得 exit code=0；F10 删除 §57/§56/NIGHT_SUMMARY 中不实表述。
+- **状态**：`[FIXED]`（本地未 push，待用户授权 push）。真机验证 F4/F5 仍 `[BLOCKED]`（需本机 LLM 网关+业务库+浏览器 UI）。
