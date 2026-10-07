@@ -542,6 +542,21 @@ def _compute_field_profiles(duck, table_name: str, fields: List[str],
         return None
 
 
+def _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason):
+    """night36 Task A2：看板侧把 S3 失败原因归一为与 chat.py 对齐的枚举。"""
+    if not s3_ai_failed:
+        return "rule_only"
+    r = (s3_ai_reason or "")
+    rl = r.lower()
+    if "超时" in r or "timeout" in rl:
+        return "timeout"
+    if "限流" in r or "429" in r or "rate" in rl:
+        return "rate_limited"
+    if "不可达" in r or "未接" in r or "offline" in rl:
+        return "not_wired"
+    return "other"
+
+
 async def brain_run_pipeline(
     run_id: str,
     dataset_id: str,
@@ -1198,6 +1213,8 @@ async def brain_run_pipeline(
                 # 2.3-B：ai_participated 合并 S2(目标) 与 S3(图表)，任一为 LLM 即 True
                 "ai_participated": ai_participated,
                 "generation_mode": "ai" if ai_participated else "rule",
+                # night36 Task A2：与 chat 对齐的失败原因枚举
+                "ai_failed_reason": _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason),
                 "score": {
                     "overall": overall_score,
                     "passed": passed,
@@ -1208,7 +1225,9 @@ async def brain_run_pipeline(
                 "derived_metrics": derived_metrics,
                 # #7 修复：0 可视化字段时把 PRD 引导建议一并落库，前端空看板可展示
                 "no_chartable_fields": s3_result.get("no_chartable_fields", False),
-                "suggestion": s3_result.get("suggestion", "")
+                "suggestion": s3_result.get("suggestion", ""),
+                # night36 Task A2：统一"AI 参与"失败原因枚举（与 chat.py 对齐）
+                "ai_failed_reason": _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason),
             }
             
             # 保存Dashboard记录

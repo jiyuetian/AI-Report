@@ -571,6 +571,20 @@ async def get_chat_history(
 
 
 @router.post("/message", response_class=StreamingResponse)
+def _classify_ai_fail_reason(error: str) -> str:
+    """night36 Task A2：把 LLM 失败错误归一为枚举（ok/timeout/rate_limited/empty_response/not_wired/rule_only/other）。"""
+    e = (error or "").lower()
+    if "timeout" in e or "超时" in e:
+        return "timeout"
+    if "429" in e or "限流" in e or "rate" in e or "ratelimit" in e:
+        return "rate_limited"
+    if "empty" in e or "空" in e or "无内容" in e or "no content" in e:
+        return "empty_response"
+    if "not wired" in e or "未接" in e or "offline" in e or "不可达" in e or "未连接" in e or "not connected" in e:
+        return "not_wired"
+    return "other"
+
+
 async def send_message_stream(
     request: ChatMessageRequest,
     background_tasks: BackgroundTasks,
@@ -896,6 +910,7 @@ async def send_message_stream(
         except ValueError:
             intent_type = IntentType.UNKNOWN
         # UNKNOWN 意图或低置信度时，调用 LLM 生成自然语言回复，避免答非所问
+        llm_reply_used = False
         if plan.get("actions"):
             # 规划器已产出动作列表（单指令=1项，行为不变；复合指令=多项，依次执行）
             acts = plan["actions"]
@@ -919,6 +934,7 @@ async def send_message_stream(
                 )
                 if llm_resp["ok"]:
                     llm_msg = llm_resp["content"]
+                    llm_reply_used = True
                 else:
                     # AI 失败：不再静默降级为规则引导，而是把失败与选择权交还用户
                     ai_error = {
@@ -1286,6 +1302,19 @@ async def send_message_stream(
         # 注意：无论是否有动作、是否高置信（含 unknown 走 LLM 自然回复的分支），
         # 都必须在此统一构造完整响应，否则低置信/unknown 路径会因 full_response 未定义而抛 UnboundLocalError，
         # 被 safe_stream 捕获成“对话生成中断”，表现为 AI 对所有非高置信指令都报错。
+        # night36 Task A2/A4：统一"AI 参与"信号（向后兼容，只新增字段，不改名既有字段）
+        _cb = (intent_result or {}).get("classified_by", "rule")
+        _action_source = "llm" if _cb in ("llm", "llm_add_chart") else "rule"
+        if response_data.get("ai_error"):
+            _ai_participated = False
+            _ai_failed_reason = _classify_ai_fail_reason(response_data["ai_error"].get("error", ""))
+        elif llm_reply_used:
+            _ai_participated = True
+            _ai_failed_reason = "ok"
+            _action_source = "llm"
+        else:
+            _ai_participated = False
+            _ai_failed_reason = "rule_only"
         full_response = {
             "message": response_data["message"],
             "intent": intent_result,
@@ -1296,7 +1325,11 @@ async def send_message_stream(
             "ai_error": response_data.get("ai_error"),
             "render_updates": response_data.get("render_updates", []),
             "suggested_followups": response_data.get("suggested_followups", []),
-            "session_id": session_id
+            "session_id": session_id,
+            # night36 Task A2/A4：统一"AI 参与"信号（向后兼容，只新增字段）
+            "ai_participated": _ai_participated,
+            "ai_failed_reason": _ai_failed_reason,
+            "action_source": _action_source,
         }
 
         yield await sse_event("complete", full_response)

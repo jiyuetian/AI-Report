@@ -32,6 +32,16 @@ interface AiError {
 }
 
 // 消息类型
+const AI_FAIL_REASON_LABEL: Record<string, string> = {
+  ok: 'AI 参与',
+  timeout: '超时',
+  rate_limited: '限流',
+  empty_response: '空响应',
+  not_wired: '未接链',
+  rule_only: '规则兜底',
+  other: '其他',
+};
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -44,6 +54,9 @@ interface ChatMessage {
   can_override?: boolean;  // 是否允许用户强制覆盖blocking约束
   original_message?: string;  // 原始用户消息（用于override重发）
   ai_error?: AiError | null;  // AI 调用失败时携带，前端渲染报错卡+选择
+  ai_participated?: boolean;       // night36 Task A2：本次回复是否由 LLM 真正参与生成
+  action_source?: 'llm' | 'rule' | 'hybrid';  // 动作来源：意图识别/规划用 LLM 即 llm/hybrid
+  ai_failed_reason?: string;       // 枚举 ok/timeout/rate_limited/empty_response/not_wired/rule_only/other
 }
 
 // Token状态
@@ -75,6 +88,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState(initialSessionId);
+  const [dismissedRuleCards, setDismissedRuleCards] = useState<Set<string>>(new Set());
   const [tokenStatus, setTokenStatus] = useState<TokenStatus | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
@@ -240,6 +254,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       let suggestedFollowups: string[] = [];
       let canOverride = false;
       let aiError: AiError | null = null;
+      let aiParticipated = false;
+      let actionSource: 'llm' | 'rule' | 'hybrid' = 'rule';
+      let aiFailedReason: string = 'rule_only';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -267,6 +284,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 assistantContent = data.message;
                 suggestedFollowups = data.suggested_followups || [];
                 aiError = data.ai_error || null;
+                aiParticipated = data.ai_participated === true;
+                actionSource = (data.action_source as 'llm' | 'rule' | 'hybrid') || 'rule';
+                aiFailedReason = data.ai_failed_reason || 'rule_only';
 
                 // 执行动作（包含render_updates）
                 if (data.action && onAction) {
@@ -292,10 +312,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         if (aiError) {
           // AI 未参与：用 ai_error.message 作为兜底文案，决策入口由下方 ai_error 卡提供
           assistantContent = aiError.message || 'AI 调用失败，请重试或改用规则引导。';
-        } else {
-          // 最后防线：后端已尽量保证非空，此处兜底一句话，避免空白气泡
-          assistantContent = '操作已完成，但未能生成回复文案。可重试或改用规则引导。';
+        } else if (!aiParticipated) {
+          // night36 Task A1/A4：严禁冒领"操作已完成"。按后端下发的结构化信号诚实标注：
+          // 本次由规则引擎兜底完成，未调用大模型。
+          const _why = aiFailedReason === 'rule_only' ? '规则引擎' : 'AI 未参与';
+          const _suffix = actionSource === 'llm' ? '（意图由 AI 识别）' : '';
+          assistantContent = `本次由${_why}完成操作${_suffix}，未生成回复文案。如希望由大模型生成，可点「重试 AI」。`;
         }
+        // 若 aiParticipated 为 true 但 message 仍空：保持空白，前端气泡显示「AI 参与 ✅」徽标，不补冒领文案
       }
 
       // 添加助手消息
@@ -307,8 +331,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         intent_type: intentData?.intent_type,
         suggested_followups: suggestedFollowups,
         can_override: canOverride,
-        original_message: canOverride ? content : (aiError ? content : undefined),
-        ai_error: aiError
+        original_message: canOverride ? content : (aiError || !aiParticipated ? content : undefined),
+        ai_error: aiError,
+        ai_participated: aiParticipated,
+        action_source: actionSource,
+        ai_failed_reason: aiFailedReason
       };
       setMessages(prev => [...prev, assistantMsg]);
 
@@ -466,8 +493,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
               <div className="message-role">
                 {msg.role === 'user' ? (
                   <Badge color="blue" text="我" />
+                ) : msg.ai_participated ? (
+                  <Badge color="green" text="AI 参与 ✅" />
                 ) : (
-                  <Badge color="green" text="AI" />
+                  <Badge
+                    color="orange"
+                    text={`规则兜底 ⚠${msg.ai_failed_reason && msg.ai_failed_reason !== 'rule_only' ? '（' + (AI_FAIL_REASON_LABEL[msg.ai_failed_reason] || msg.ai_failed_reason) + '）' : ''}`}
+                  />
                 )}
               </div>
               {/* 消息内容 */}
@@ -499,6 +531,39 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                           disabled={isLoading}
                         >
                           改用规则引导回复
+                        </Button>
+                      </Space>
+                    </div>
+                  }
+                />
+              )}
+              {/* night36 Task A3/A4：AI 未参与（规则兜底）诚实卡 + 双入口（重试 AI / 保留规则结果） */}
+              {!msg.ai_error && msg.ai_participated === false && msg.action_source === 'rule' && !dismissedRuleCards.has(msg.id) && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 8 }}
+                  message="本次 AI 未参与"
+                  description={
+                    <div>
+                      <div style={{ marginBottom: 8 }}>
+                        操作由规则引擎兜底完成{msg.ai_failed_reason && msg.ai_failed_reason !== 'rule_only' ? `（原因：${AI_FAIL_REASON_LABEL[msg.ai_failed_reason] || msg.ai_failed_reason}）` : ''}，未调用大模型生成回复。
+                      </div>
+                      <Space wrap>
+                        <Button
+                          size="small"
+                          type="primary"
+                          onClick={() => sendMessage({ text: msg.original_message || '', forceRuleFallback: false })}
+                          disabled={isLoading}
+                        >
+                          重试 AI
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => setDismissedRuleCards(prev => new Set(prev).add(msg.id))}
+                          disabled={isLoading}
+                        >
+                          保留规则结果
                         </Button>
                       </Space>
                     </div>
