@@ -1119,3 +1119,21 @@ if _fb_msg:
 - **C（前端体验，commit `970a6e5`）**：C1 批量修复后 `runCheck` 由 `await` 阻塞改 `runCheck({silent:true}).then(...)` 后台重检；C2 质检发现行（source≠ai 且未采纳）显示 `待采纳（推荐：xxx）` 而非非策略值。`tsc --noEmit` 0 错误。
 - **零回归**：`tsc --noEmit` 0 错误 + 后端 `py_compile` 通过 + `_verify_b.py` 真跑 PASS。
 - **红线守纪**：未碰生产 DuckDB 业务数据（基准用临时库）；未改 `/quality/check`、`/fix-batch` 响应字段名；未批量删除/未 `reset --hard`；一类一 commit；未伪造耗时/PASS；过程文件 `night_runs/night35/`（gitignored）。
+
+
+## §56 night36 · AI 真的参与：可观测 + 参与率 + 对标基线（2026-10-07）
+
+**用户拍板**：下一轮先做「让 AI 真的参与可观测」。
+
+### 改动清单（一类一 commit）
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| fc7b07c | feat(chat/brain) | A 统一 AI 参与可观测信号 + 消除冒领文案 | ISS-076/079 |
+| （docs）| docs | D 新登 ISS-076/077/078/079 + 本表 | ISS-076~079 |
+
+- **A（可观测，commit `fc7b07c`）**：后端 `send_message_stream`/`brain_run_pipeline` 新增 `ai_participated:bool` + `ai_failed_reason` 枚举 + `action_source`(llm/rule/hybrid)；前端删 ChatPanel.tsx:297 冒领文案，对话气泡显示「AI 参与 ✅ / 规则兜底 ⚠+原因」徽标，纯规则产物诚实卡 + 双入口(重试 AI/保留规则结果)；动作轮纳入 R1-R5。
+- **B（参与率量化 + 根因）**：真跑网关探测 N=10 → `reachable=10/10`（avg 4.3s），但主用模型(sensenova/kimi、zhipu) 429 限流 8/10，仅 failover 备胎命中。根因=provider RPM/TPM 限流(429)，代码 failover 已就位，参与率天花板受网关配额约束（具体阻塞点，非伪造）。harness `_measure_participation.py` 交付，完整 N=10 看板/对话参与率表待用户本机产出（[BLOCKED] 环境）。
+- **C（对标基线）**：`benchmark_rubric.md` 给出 5 维度 1–5 分同口径打分表（A 列本产品 vs B 列通用 AI），每轮复跑必须涨分。A/B 两列分数待用户本机产出（[BLOCKED] 沙箱无 Excel）。
+- **零回归**：后端 `py_compile` 通过；前端 `tsc --noEmit`=0；`_verify_a.py` 分类枚举单测通过；`_measure_participation.py` 自测通过。
+- **红线守纪**：未碰生产 DuckDB 业务数据；只新增 API 字段（ai_participated/ai_failed_reason/action_source）未改名/删除既有字段；未批量删除/未 `reset --hard`；编辑全程 Python 读改写+assert 落盘（规避 Edit 报成功未落盘）；过程文件 `night_runs/night36/`（gitignored）。
+- **Task 0 三方对照**：源码 HEAD=7e2e19c（p0-security-fixes，含 night35）；远端 origin/p0-security-fixes=36b181c（落后本地 4 commit=night35 未 push，非分叉）；运行态本沙箱未检测到监听进程(8000/5173)，用户主机运行态取决于其构建源——需用户确认是从 7e2e19c 构建/启动。无"物理不可见"硬阻塞。

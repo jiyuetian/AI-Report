@@ -544,3 +544,36 @@
 - **根因**：`/quality/check` 路径对同 dataset 旧 issue 记录未做覆盖式重建，仅 `INSERT`。
 - **修复（已落码 + 真跑通过，commit `572f970`）**：A1 改为**覆盖式重建**——重新质检前先按 `dataset_id` 删除旧 `quality_issues` 再批量写入，保证幂等、计数准确。
 - **状态**：`[DONE]`（2026-10-07 night35，commit `572f970`，属 Task A 三项之一）。
+
+
+## ISS-076 AI 参与不可观测（对话/看板均无 ai_participated 信号；ChatPanel.tsx:297 冒领文案）（P1，night36 已闭环）
+
+- **现象（用户实测 2026-10-07）**：对话气泡出现「操作已完成，但未能生成回复文案。可重试或改用规则引导。」——前端**自行编造完成状态**，后端并未真正完成、AI 也未参与；看板与对话均无任何「本次 AI 是否参与」的可读信号。
+- **根因**：① 前端 `frontend/src/components/chat/ChatPanel.tsx:297` 硬编码冒领文案，触发条件为后端 `chat.py` 动作轮 `ai_error` 恒 `None` 且 message 留空；② 对话返回体只有 `ai_error`，缺 `ai_participated`/`ai_failed_reason`/`action_source` 结构化信号；③ 看板虽已发 `ai_participated`，但对话侧不统一、失败原因无枚举。
+- **修复（已落码 + 真跑通过，commit `fc7b07c`，night36 Task A）**：A1 删冒领文案，改由后端信号驱动；A2 后端 `send_message_stream`/`brain_run_pipeline` 返回体新增 `ai_participated:bool` + `ai_failed_reason` 枚举(ok/timeout/rate_limited/empty_response/not_wired/rule_only/other) + `action_source`(llm/rule/hybrid)，只新增不改名；A3 前端对话气泡显示「AI 参与 ✅ / 规则兜底 ⚠+原因」徽标 + 纯规则产物诚实卡 + 双入口(重试 AI/保留规则结果)；A4 动作轮纳入 R1-R5：下发 action_source+ai_participated，纯规则文案明确标注「本次由规则引擎完成，AI 未参与」。
+- **验收**：发「结案周期直方图新增」不再出现冒领文案，改为「AI 参与 ✅（action_source=llm/hybrid）」或「AI 未参与：<原因>」+ 双入口。
+- **状态**：`[DONE]`（2026-10-07 night36，commit `fc7b07c`）。
+
+## ISS-077 AI 参与率低 + 根因（P0，night36 量化 + 定位，参与率天花板受网关配额约束）
+
+- **现象（用户实测 2026-10-07）**：「我把 Excel 发给 AI 生成的仪表盘，效果远超现在它直接生成的，现在生成的都比不上初级分析师」；「这一轮又快 2 周，一点改变都没有」。
+- **量化（night36 真跑，非伪造）**：用 `_probe_llm.py` 直连生产网关 `llm_chat` 探测 N=10——`reachable=10/10`（avg 4.3s），**但主用模型 sensenova/kimi、zhipu 在 10 次中 429 限流 8 次**，仅 failover 备胎（sensenova-ds）命中才成功。看板 S3 真实生成走同一 `llm_chat` failover 链（`s3_llm_enhancer.py:532/645`），故网关层可达率≈100%，但**真实大 prompt 下 429 概率更高 → 易回退规则 → 看板质量≈规则级(初级分析师)**。
+- **根因（具体阻塞点，非「优化了」）**：provider RPM/TPM **限流(429)**（sensenova: `ModelAccountRpmRateLimitExceeded`/`rpm exhausted`；zhipu: `1305 访问量过大`）。代码侧 failover 已就位且能恢复；参与率天花板由**网关配额**决定，非代码缺陷。对话「加图/改图」类动作轮本就规则执行（不调 LLM），AI 参与天然为 False——属设计，非 bug。
+- **可观测（night36 已交付）**：ai_participated/ai_failed_reason 信号让参与率可测、可展示（徽标）。
+- **缓解（运营侧，待用户决策，非本轮代码）**：① 为 S3 生成配更高配额/专用模型，或默认优先 sensenova-ds（探测中唯一稳定命中）；② 控制单看板 LLM 调用频次降 TPM 压力；③ 429 时前端已给「重试 AI」入口（commit `fc7b07c`）。
+- **量化交付物**：`_measure_participation.py`（harness，用户本机跑 N=10 看板+N=10 对话得同口径参与率表）；因沙箱无 `risk_demo_v2_01_贷款明细表.xlsx` 且 brain/run 需业务库+鉴权+上传，**完整 N=10 看板/对话参与率表待用户在自家本机用 harness 产出**（[BLOCKED] 环境，非伪造）。
+- **状态**：`[IN_PROGRESS]`（可观测已闭环；参与率天花板受网关配额，缓解项待用户决策；量化表待本机 harness 产出）。
+
+## ISS-078 缺「对标通用 AI」的验收基线（P1，night36 建标尺，B 列待用户）
+
+- **现象**：没有把「本产品看板」与「通用 AI 工具看板」同口径对比的标尺 → 改善不可证伪、易自嗨。
+- **修复（night36 已交付标尺）**：`docs/project_record/night_runs/night36/benchmark_rubric.md` 给出同口径约束 + 5 维度(图表选型/字段绑定口径/KPI数值正确性/标题文案/布局信息密度) 各 1–5 分打分表 + A比B差 Top3 原因必填。**每轮复跑、必须涨分**。
+- **[BLOCKED]**：A 列真实生成需用户本机 Excel + brain/run（沙箱无文件）；B 列需用户手动提供通用 AI 产物。两轮分数待用户填回标尺。
+- **状态**：`[IN_PROGRESS]`（标尺就绪；A/B 两列分数待用户本机产出）。
+
+## ISS-079 动作轮绕过 R1-R5（chat.py 动作轮无 action_source、ai_error 恒 None → 双入口只覆盖"听不懂"分支）（P1，night36 已闭环）
+
+- **现象**：`chat.py` 动作轮（`if plan.get("actions")` 分支）`message` 留空、`ai_error` 恒 `None` → 完全绕过「UNKNOWN/不置信」分支的失败+双入口契约（L923-932）；前端因此自行编造「操作已完成」冒领文案。
+- **根因**：动作轮未下发任何「动作来源 / 是否 AI 参与」信号，失败处理与"听不懂"分支不统一。
+- **修复（commit `fc7b07c`，night36 Task A4）**：动作轮下发 `action_source`(llm/rule/hybrid) + `ai_participated`；纯规则产物文案明确标注「本次由规则引擎完成，AI 未参与」（不再说"操作已完成"）；若 AI 环节失败同样返回 `ai_error`(options: retry/rule_fallback)，前端渲染可点双入口卡。
+- **状态**：`[DONE]`（2026-10-07 night36，commit `fc7b07c`）。
