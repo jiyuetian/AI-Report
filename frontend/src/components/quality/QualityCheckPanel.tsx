@@ -629,10 +629,10 @@ export default function QualityCheckPanel({
         setApplyResult({ success: data.success, failed: 0 })
         message.success(`已按推荐方案修复 ${data.success} 项，正在重新质检...`)
       }
-      // 重新质检：拿到最新结果，判断是否可以自动进入看板生成
-      const newChecks = await runCheck()
+      // C1：重新质检改为后台重检（不阻塞用户）。先立即展示成果，重检完成后由面板自动刷新状态。
       loadChangeLog()
-      if (newChecks) {
+      runCheck({ silent: true }).then((newChecks) => {
+        if (!newChecks) return
         const remainBlocking = newChecks.some(c => c.blocking && c.status === 'fail')
         const remainWarn = newChecks.reduce((s, c) => s + c.issues.length, 0)
         if (!remainBlocking) {
@@ -645,7 +645,7 @@ export default function QualityCheckPanel({
         } else {
           message.warning('仍有阻断性问题未修复，请在下方表格逐条处理后继续')
         }
-      }
+      })
     } catch (e: any) {
       if (e?.name === 'AbortError') {
         setApplyError('批量修复已取消（超时 60s 未响应或手动取消）')
@@ -906,8 +906,17 @@ export default function QualityCheckPanel({
                   const opts: RepairOption[] = r.repair_options || []
                   const cur = strategyOf(r.checkKey, r)
                   const curOpt = opts.find(o => o.strategy === cur)
+                  // C2：质检发现（规则检测）且尚未采纳的行 → 显示「待采纳（推荐：xxx）」，不展示非策略值
+                  const isDetected = r.source !== 'ai'
+                  const notAdopted = !state.fixedKeys.has(issueKey(r.checkKey, r.column))
+                  const recOpt = opts.find(o => o.recommended)
+                    || opts.find(o => o.strategy !== 'ignore' && o.strategy !== 'drop')
+                  const recLabel = recOpt ? (STRATEGY_LABEL_MAP[recOpt.strategy] || recOpt.label || recOpt.strategy) : ''
                   return (
                     <div>
+                      {isDetected && notAdopted && (
+                        <Tag color="gold" style={{ marginBottom: 2 }}>待采纳（推荐：{recLabel || '—'}）</Tag>
+                      )}
                       <Select
                         size="small"
                         style={{ width: '100%' }}
