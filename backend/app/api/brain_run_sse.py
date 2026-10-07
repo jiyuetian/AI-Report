@@ -1218,8 +1218,6 @@ async def brain_run_pipeline(
                 # #7 修复：0 可视化字段时把 PRD 引导建议一并落库，前端空看板可展示
                 "no_chartable_fields": s3_result.get("no_chartable_fields", False),
                 "suggestion": s3_result.get("suggestion", ""),
-                # night36 Task A2：统一"AI 参与"失败原因枚举（与 chat.py 对齐）
-                "ai_failed_reason": _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason),
             }
             
             # 保存Dashboard记录
