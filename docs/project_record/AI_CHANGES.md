@@ -1080,3 +1080,25 @@ if _fb_msg:
   - **未执行**：未 `git merge`、未 `--allow-unrelated-histories`、未改工作树、未残留 merge 状态，严守「只预演不真合」红线。
 - **Task C（浏览器真机验收 + runbook）**：commit `20fd71a`（2026-10-06）。交付 `docs/project_record/真机验收 runbook.md`（22 UI 用例 + ISS-025 22 网关点 + night27 五处复测矩阵）+ 诚实截图占位 `night_runs/night33/真机验收截图证据.md`（gitignored）。**环境阻塞**：沙箱无可用浏览器工具（agent-browser 包装损坏 + 无 npm + 无 Chromium），无法生成截图；依据红线「禁编造截图」，所有视觉/交互项标 `[需真机浏览器验证]`，结构/静态核验项本会话复跑 PASS（ISS-025 22/22、night27 23/23）。
 - **Task D（ISSUES 翻转 + §53 收口 + NIGHT_SUMMARY）**：本 commit。ISS-067→[RESOLVED]、ISS-068→[WONTFIX-BY-DESIGN]、ISS-069 登记（待处理）、ISS-070 golden 计数器已修、ISS-071 合 main BLOCKER 挂账，均写入 `06-ISS债清单.md`；本 §53 收口；`docs/project_record/NIGHT_SUMMARY_night33.md` 产出。**push 仍跳过**，等用户授权（本地领先 `origin/p0-security-fixes`：含 `a0d1732`+`a828a52`+`20fd71a` 等；合 main 因 unrelated histories 为 BLOCKER，见预演报告）。
+
+
+### §54. night34 交付真相重定（Plan B 执行：main ← p0-security-fixes，2026-10-07）
+
+- **目标**：以 `p0-security-fixes`（206 commits、0 CVE）为交付真相，重定默认分支 `main` 指向该线；保全旧 `main` 独有内容。
+- **Task 0 — push night33 5 commit（HEAD `982ad5a` 领先 5）**：`git push origin p0-security-fixes` 成功，本地 = 远端（`982ad5a`）。
+- **Task A — 保全 main（非破坏）**：
+  - `git fetch origin main:refs/tmp/main` + `git push origin refs/tmp/main:refs/heads/backup/main-pre-truth-20261007` → 备份分支 = `82de1c0463843fc908ccc79a15d7ea6608bae063`（`git ls-remote` 已核实）。
+  - `git diff --name-status refs/tmp/main refs/tmp/p0-security-fixes`：A(仅 p0)=297 / D(仅 main)=14 / M(两边不同)=109；D 类 14 文件 = 验收报告产物(8) + `verify_schema.py` + `WorkbenchPage.tsx/css` + `test_api_verify.py` + `整体逻辑说明.html` + `环境自救.bat`。清单见 `docs/project_record/night_runs/night34/main独有文件清单.md`。
+- **Task B — 重定 main = p0-security-fixes**：
+  - 将 14 个 main 独有文件并入 `p0-security-fixes`（commit `acd5061`，"14 files changed, 1898 insertions(+)"）；`WorkbenchPage` 为 main 独有完整页面，p0 原无 workbench 路径，并入后需后续 build 验证（package.json 等 M 类未动，不引入 main 旧依赖）。
+  - `git push origin p0-security-fixes`（ff）→ `git push origin p0-security-fixes:main --force`（b1 推荐；b2 merge --allow-unrelated-histories 会产生 418 文件差异冲突，风险高，未采用）。
+  - `git ls-remote` 核实 `main == p0-security-fixes == acd50615dcc130ab28227595982604f503aa98d3`。
+- **Task C — 验证**：
+  - `main == p0-security-fixes` ✅。
+  - 新 `main` 的 `frontend/package.json`：`axios 1.20.0` / `echarts ^6.1.0` / `react-router-dom ^7.18.4`（旧漏洞版本 `axios ^1.12.0` / `echarts ^5.4.3` / `react-router-dom ^6.22.0` 已移除）。
+  - Dependabot 原 10 告警（8 high / 2 moderate）来自旧 main 依赖栈；重定后 `main` 应为 0 CVE，但 GitHub 异步重扫，**实际消除状态待用户在 GitHub 页面确认**（未伪造）。
+- **Task D — 收口**：
+  - `ISSUES.md`：ISS-071 状态更新为 `[DONE]`（B 执行结果 + 备份分支名）；新增「历史债清单对齐（ISS-001~022）」节，ISS-003/004 经 `git log -S` 定位标 `[DONE]`，ISS-020 标 `[OPEN]` 并新开 ISS-072 登记残余，其余 12 项按债清单原值落 `[挂账]/[待处理]/[待核查]/[部分已处理]`。
+  - 本 §54。
+  - `docs/project_record/night_runs/night34/NIGHT_SUMMARY.md`（gitignored）。
+- **红线守纪**：无备份不覆盖（备份分支先建）；未批量删除（仅 14 文件并入，main 旧内容由备份保底）；未 `reset --hard`；未伪造 PASS/告警消除（Dependabot 标待确认）；未碰生产 DuckDB/后端进程/ISS-053；main 独有内容并入前已 ask 用户（用户重贴完整提示词授权全执行，零丢失默认并入全部 14）；过程文件不进 commit。
