@@ -577,3 +577,21 @@
 - **根因**：动作轮未下发任何「动作来源 / 是否 AI 参与」信号，失败处理与"听不懂"分支不统一。
 - **修复（commit `fc7b07c`，night36 Task A4）**：动作轮下发 `action_source`(llm/rule/hybrid) + `ai_participated`；纯规则产物文案明确标注「本次由规则引擎完成，AI 未参与」（不再说"操作已完成"）；若 AI 环节失败同样返回 `ai_error`(options: retry/rule_fallback)，前端渲染可点双入口卡。
 - **状态**：`[DONE]`（2026-10-07 night36，commit `fc7b07c`）。
+
+
+## ISS-080 分类器谎报失败原因（chat/brain 共用，裸 "rate" 误命中 gene**rate**）（P0，night36-fix F1 已闭环）
+
+- **现象（教练实测 2026-10-07）**：`chat.py:_classify_ai_fail_reason` 用裸 `"rate" in e` 匹配限流 → 命中 gene**rate**。`'failed to generate response'`（LLM 真实失败原因）被误判为 `rate_limited`（限流），`'upstream generate error'` 同样误判 `rate_limited`。结果：前端把"生成失败"显示成"限流"，误导用户与运维排障。
+- **根因**：限流判定用了裸子串 `"rate"`，而 generate 含 rate 子串；chat.py 与 brain_run_sse.py 各写一份分类逻辑，已分叉（brain 版还缺 empty_response、not_wired 也窄）。
+- **修复（night36-fix F1）**：抽共享实现 `backend/app/core/ai_fail_reason.py:classify_ai_fail_reason`（单一事实来源），chat.py/brain_run_sse.py 两处 import 复用，彻底消除分叉。规则：① 删除裸 `"rate"`；② `rate_limited` 仅认 `429 / rate limit / ratelimit / rate_limit / too many requests / 限流`；③ `not_wired` 补 `connection refused / refused / unreachable / 拒绝连接 / 连接被拒`；④ 判定顺序 `timeout → rate_limited → empty_response → not_wired → other`；⑤ 判定线 `'failed to generate response' → other`、`'connection refused' → not_wired`。
+- **实测证据（_verify_a.py 27 例全绿，night36-fix F2）**：`failed to generate response→other`、`upstream generate error→other`、`connection refused→not_wired`、`429 Too Many Requests→rate_limited`、`模型限流→rate_limited`、`''→other`、`请求超时→timeout`、`返回空内容→empty_response`（另含 19 例回归全过）。
+- **附带关键修复（同次 F1）**：night36 Task A2 插入 `_classify_ai_fail_reason` 时把 `@router.post("/message", response_class=StreamingResponse)` 装饰器误贴到该 helper，导致真实处理器 `send_message_stream` 无路由 → **整个对话 /message 端点失效**（前端 `POST /api/v1/chat/message` 打到 helper 返回裸字符串，每轮对话 422）。F1 一并把装饰器 reattach 到 `send_message_stream`，端点恢复。该回归若不修，真机测试直接卡死。
+- **状态**：`[DONE]`（night36-fix F1，commit 见 AI_CHANGES §57）。
+
+## ISS-081 「重试 AI」重复执行动作（ChatPanel 重试按钮重发原消息→重跑动作）（P1，night36-fix F4 代码已闭环）
+
+- **现象（教练实测 2026-10-07）**：`ChatPanel.tsx`「重试 AI」按钮 `onClick={() => sendMessage({ text: msg.original_message || '', forceRuleFallback: false })}` → 重发原始消息 → 重新走 `/message` 全链路并**重新执行动作**（如重复加图/改图）。不仅慢，且在动作类对话产生副作用（重复图表），与"只重试文案"语义相悖。
+- **根因**：重试入口直接复用 `/message` 发送链路，未与"动作执行"解耦；`/message` 契约无"只重生成回复"开关。
+- **修复（night36-fix F4）**：新增 `POST /api/v1/chat/regenerate-reply`（入参 `session_id` + `message_id`），只调 `generate_llm_natural_response` 重生成回复文案，**全程不调 ActionExecutor**；落库仅更新该助手消息 `content`，下发 `complete` 事件不含 `action`/`render_updates`。前端「重试 AI」按钮改调该端点（就地更新气泡，不新增、不重跑动作）。选择"新增端点"而非"给 /message 加 reply_only 参数"的理由：对既有 `/message` 契约零改动（红线：只新增不改名），回归面最小。
+- **[BLOCKED] 真机验证**：需本机 LLM 网关可通 + 业务库 + 浏览器 UI 实跑；沙箱无法跑前端 UI，待用户本机验证（观测：点「重试 AI」后只更新文案、看板图表数量不变）。
+- **状态**：`[DONE]` 代码（[BLOCKED] 真机验证，night36-fix F4）。

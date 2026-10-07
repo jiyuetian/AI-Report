@@ -1137,3 +1137,32 @@ if _fb_msg:
 - **零回归**：后端 `py_compile` 通过；前端 `tsc --noEmit`=0；`_verify_a.py` 分类枚举单测通过；`_measure_participation.py` 自测通过。
 - **红线守纪**：未碰生产 DuckDB 业务数据；只新增 API 字段（ai_participated/ai_failed_reason/action_source）未改名/删除既有字段；未批量删除/未 `reset --hard`；编辑全程 Python 读改写+assert 落盘（规避 Edit 报成功未落盘）；过程文件 `night_runs/night36/`（gitignored）。
 - **Task 0 三方对照**：源码 HEAD=7e2e19c（p0-security-fixes，含 night35）；远端 origin/p0-security-fixes=36b181c（落后本地 4 commit=night35 未 push，非分叉）；运行态本沙箱未检测到监听进程(8000/5173)，用户主机运行态取决于其构建源——需用户确认是从 7e2e19c 构建/启动。无"物理不可见"硬阻塞。
+
+## §57 night36-fix · 补丁六缺陷（F1–F5 一类一 commit，2026-10-08）
+
+**教练实测抽验并定位的 6 个缺陷，本轮回填（非重复排查，直接改）。**
+
+### 改动清单（一类一 commit）
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| c99f823 | fix(chat/brain) | F1 抽共享失败原因分类器 ai_fail_reason.py + 修复 /message 装饰器错位回归 | ISS-080 |
+| 6863f9a | fix(brain) | F3 删 dashboard_config 重复 ai_failed_reason 赋值 | — |
+| 14dc53e | feat(chat) | F4 新增 /regenerate-reply 只重生成文案不重跑动作 | ISS-081 |
+| 6bfb2e7 | feat(chat) | F5 拆 ai_participated_intent/reply 信号，徽标按任一段参与 | — |
+| f9b1762 | docs | F6 收口 ISS-080/081 登记 | ISS-080/081 |
+| （docs）| docs | 本 §57 | — |
+
+- **F1（P0 谎报，commit `c99f823`）**：新建 `backend/app/core/ai_fail_reason.py:classify_ai_fail_reason`（单一事实来源），chat.py/brain_run_sse.py 两处 import 复用，彻底消除分叉。`rate_limited` 仅认 `429 / rate limit / ratelimit / rate_limit / too many requests / 限流`（删裸 `"rate"`，修 gene**rate** 误命中）；`not_wired` 补 `connection refused / refused / unreachable / 拒绝连接 / 连接被拒`；顺序 `timeout → rate_limited → empty_response → not_wired → other`。附带修复 night36 Task A2 把 `@router.post("/message")` 装饰器误贴到 `_classify_ai_fail_reason` helper，导致 `send_message_stream` 无路由、整个 /message 端点 422 的回归（否则真机直接卡死）。
+- **F3（P3 重复赋值，commit `6863f9a`）**：brain_run_sse.py dashboard_config 字面量 `ai_failed_reason` 被赋值两次，删重复项；ast 校验该 dict 现有 14 个唯一键、`ai_failed_reason` 仅一次。
+- **F4（P1 重试重复动作，commit `14dc53e`）**：新增 `POST /api/v1/chat/regenerate-reply`（session_id + message_id），只调 `generate_llm_natural_response` 重生成文案、全程不调 ActionExecutor、落库仅更新助手消息 content、下发 complete 事件不含 action/render_updates。选「新增端点」而非「给 /message 加 reply_only 参数」：对既有 /message 契约零改动（红线：只新增不改名），回归面最小。前端「重试 AI」按钮改调该端点（就地更新气泡，不新增、不重跑动作）。
+- **F5（P1 信号矛盾，commit `6bfb2e7`）**：后端 `send_message_stream` 把「AI 参与」拆 `ai_participated_intent`（意图识别/规划是否 LLM）+ `ai_participated_reply`（回复文案是否 LLM），复合 `ai_participated` = 两段取或；前端绿标按「任一段参与」显示「AI 参与 ✅」，消除 classified_by=llm 但无文案时的矛盾。前端 ChatMessage 接口新增两字段（向后兼容）。
+- **F6（收口，commit `f9b1762` + 本 §57）**：ISSUES.md 新登 ISS-080/081；AI_CHANGES §57；过程文件 night_runs/night36/（gitignored）。
+
+### 零回归
+- 后端 `py_compile` 三文件通过；`_verify_a.py` 分类枚举 27/27 PASS（含 F2 边界用例）。
+- 前端 `tsc --noEmit` 因沙箱 WSL 黑名单无法运行（环境限制，非回归）；前端类型已手工核对（ChatMessage 接口/映射/regenerateReply）。
+- 拆分提交用临时 index + `git apply --cached` 逐类 `--check` 全过后再 `commit-tree`，每个提交自包含可编译；未 `reset --hard`、未碰生产 DuckDB。
+
+### 红线守纪
+- 只新增字段/文件不改名不删既有字段；不改 SSE 事件名；禁批量删；不碰生产 DuckDB；一类一 commit；未伪造（F4/F5 真机验证标 [BLOCKED]，因沙箱无 LLM 网关+业务库+浏览器 UI）；过程文件 gitignored。
+- 提交前先 `git reset HEAD` 取消误暂存；类拆分经 patch 逐类 --check 通过才落地。
