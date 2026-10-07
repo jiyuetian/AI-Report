@@ -464,3 +464,48 @@
 ### 待办（用户本机）
 - push 分支 `p0-security-fixes`（最新本地 commit 见 `git log`：night30 `62bc1d2`、night31 `329b5b9`(Task A 状态对账)/`7f0aa51`(Task B 补盲)/`b594414`(night31 收口)、night32 `b0701a9`(Task A 测试修复)/`c2b47fa`(Task B 执行层测试)/本轮收口 commit；**均待用户授权后 push** —— 按红线「push 前等用户确认」，未获授权不代 push）。
 - 前端 `npm audit`/`npm update` 重新落锁（axios/Dependabot 侧）。
+
+
+---
+
+## ISS-071 p0-security-fixes 与 origin/main 无共同祖先（交付决策 · Plan B 已执行）
+
+- **现象（延续 night33 §53 Task B）**：`origin/main`（根 `7c3cb7b`，11 commits）与 `p0-security-fixes`（根 `f42dcc6`，206 commits）为两条 unrelated histories，无法直接 merge；合并会回退 vite7/router7/echarts6/eslint8.71 大版本升级并重新引入旧 CVE 面。
+- **决策（用户 2026-10-07 拍板 ⑤-1 走 B）**：以 `p0-security-fixes`（206 commits、0 CVE）为交付真相，`main` 重定到该线；`main` 独有内容先保全、按需并入。
+- **执行（night34）**：
+  1. Task 0：本地 5 commit（`a0d1732`/`a828a52`/`20fd71a`/`b01358f`/`982ad5a`）已 `git push origin p0-security-fixes`，本地 = 远端（`982ad5a`）。
+  2. Task A：远端建备份分支 `backup/main-pre-truth-20261007` = `82de1c0463843fc908ccc79a15d7ea6608bae063`（`git ls-remote` 已核实）；`git diff --name-status` 复核 main 独有 14 文件（D 类），清单见 `docs/project_record/night_runs/night34/main独有文件清单.md`。
+  3. Task B：将 14 个 main 独有文件并入 `p0-security-fixes`（commit `acd5061`），随后 `git push origin p0-security-fixes:main --force` 重定 `main`；`git ls-remote` 核实 `main == p0-security-fixes == acd50615dcc130ab28227595982604f503aa98d3`。
+  4. Task C：`main` 的 `frontend/package.json` 现为 `axios 1.20.0` / `echarts ^6.1.0` / `react-router-dom ^7.18.4`（旧漏洞版本已移除）；Dependabot 10 告警属异步重扫，状态**待用户在 GitHub 页面确认**（未伪造已清除）。
+- **状态**：`[DONE]`（2026-10-07 night34，Plan B 执行完成；备份分支 `backup/main-pre-truth-20261007` 保底旧 main，可随时恢复）。
+
+---
+
+## 历史债清单对齐（ISS-001~022）
+
+> 教练 2026-10-07 发现：`docs/project_record/06-ISS债清单.md`（2026-09-22 生成）的 ISS-001~022 明细从未登记进权威账本 `ISSUES.md`（原账本仅含 ISS-025、ISS-030~069，中间 ISS-001~022/026~029 缺失）。本节逐条补登，状态以债清单原值为准；代码侧已闭环的项经 `git log -S` 定位后标 `[DONE]`，严禁擅自判 DONE。
+
+| ID | 标题 | 严重度 | 位置 | 现状（night34 核验） | 状态 |
+|----|------|--------|------|----------------------|------|
+| ISS-001 | 前端 `authHeaders()` 旁路未统一合入 `request()` | P1 | `frontend/src/utils/request.ts` + 4 调用点 | 历史多处旁路，未统一 | [挂账] |
+| ISS-002 | 9 处非强制鉴权端点待对齐 | P1 | `backend/app/api/*.py` 部分 GET | 未补 `require_admin` | [挂账] |
+| ISS-003 | 横向越权：dataset/dashboard 缺 owner 归属过滤 | P0 | `datasets.py`/`dashboards.py` | **代码侧已修**：`datasets.py:_assert_dataset_access`（commits `2b06b74`/`75c279a`/`9c0faad`）+ `dashboards.py:_OWNERS` 过滤（`2541347`）+ `_assert_dashboard_access`（`52c9677`） | [DONE] |
+| ISS-004 | 看板 owner 取自服务端身份未落实 | P1 | `dashboards.py` 创建逻辑 | **代码侧已修**：`datasets.py` 创建处 `created_by=current_user["user_id"]`（`2b06b74`） | [DONE] |
+| ISS-005 | 上传校验与输入净化不足 | P1 | `upload.py` | 未系统化净化 | [待处理] |
+| ISS-006 | 注册接口开放策略 + 登录锁定 + /health 暴露面 | P2 | `auth.py`/`health.py` | 未定策略 | [待处理] |
+| ISS-007 | 后端出站 HTTP 缺统一超时/重试 | P2 | `llm_gateway.py` 等 | 未封装统一出站客户端 | [挂账] |
+| ISS-010 | 前端守卫仅为 UX 门禁（认知债） | P1 | `App.tsx ProtectedRoute` | 服务端已强制鉴权，仅认知债 | [待处理] |
+| ISS-013 | 调试/诊断脚本三处并存 | P3 | `backend/scripts/_*` 等 | 无统一入口 | [待处理]（部分） |
+| ISS-016 | 局部变量命名 spot-check | P3 | `backend/**/*.py` 等 | 阶段 4 待做 | [待核查] |
+| ISS-017 | 文档散落与多版本重复 | P3 | 根 `PROJECT_STATUS.md` 等 | 部分已迁 `docs/` | [待处理]（部分） |
+| ISS-018 | schema 迁移入口覆盖核查 | P2 | `backend/alembic/` | 未系统核查 | [待核查] |
+| ISS-019 | 生成看板限流静默兜底 + 多字段截断 | P1 | `brain_run_sse.py`/`action_executor` | 限流兜底已加，字段截断待处理 | [部分已处理] |
+| ISS-020 | 导出 PDF/Excel/PNG 假成功 + 跳页 | P0 | `backend/app/api/exports.py` | **仅部分闭环**：`/exports/sync` 已诚实透传 `not_implemented`（不再伪造下载地址）；但 `/exports/status/{task_id}`（硬编码 `status=completed` + 假 `download_url=/downloads/export_{task_id}.pdf` + 假 `file_size`）与 `/exports/my/list`（硬编码假任务）仍返回假数据 | [OPEN] |
+| ISS-021 | GitHub Dependabot：default 分支 1 个 high 级依赖漏洞 | P1 | `main` 分支依赖树 | 原 main 有 1 high CVE；night34 重定 `main = p0-security-fixes`（0 CVE）后该告警**应消除**，但 Dependabot 异步重扫，**待用户在 GitHub 页面确认**（未伪造已清除） | [待核查] |
+
+### ISS-072（新开，登记 ISS-020 残余）
+
+- **现象**：ISS-020「导出假成功」仅部分闭环——`/exports/sync` 已诚实透传 `not_implemented`，但 `/exports/status/{task_id}` 与 `/exports/my/list` 仍返回硬编码假数据（`status=completed` + 假 `download_url` + 假 `file_size` / 假任务列表）。
+- **影响**：用户查询导出状态时仍会看到虚假「已完成」与虚假下载地址，属 ISS-020 未完成部分。
+- **决策（登记，是否本轮修由用户拍板）**：标记 `[OPEN]`；修复方向——`/exports/status/{task_id}` 改为查真实任务表（无则 404/进行中）、`/exports/my/list` 改为查真实导出任务记录（无则空列表），不返回任何假数据。
+- **状态**：`[OPEN]`（2026-10-07 night34 由 ISS-020 残余开出）。
