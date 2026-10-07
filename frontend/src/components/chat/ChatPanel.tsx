@@ -57,6 +57,8 @@ interface ChatMessage {
   ai_participated?: boolean;       // night36 Task A2：本次回复是否由 LLM 真正参与生成
   action_source?: 'llm' | 'rule' | 'hybrid';  // 动作来源：意图识别/规划用 LLM 即 llm/hybrid
   ai_failed_reason?: string;       // 枚举 ok/timeout/rate_limited/empty_response/not_wired/rule_only/other
+  ai_participated_intent?: boolean;   // night36-fix F5：意图识别/规划是否由 LLM 参与
+  ai_participated_reply?: boolean;    // night36-fix F5：回复文案是否由 LLM 生成
 }
 
 // Token状态
@@ -334,6 +336,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         original_message: canOverride ? content : (aiError || !aiParticipated ? content : undefined),
         ai_error: aiError,
         ai_participated: aiParticipated,
+        ai_participated_intent: data.ai_participated_intent === true,
+        ai_participated_reply: data.ai_participated_reply === true,
         action_source: actionSource,
         ai_failed_reason: aiFailedReason
       };
