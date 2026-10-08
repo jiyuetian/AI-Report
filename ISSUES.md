@@ -605,3 +605,14 @@
 - **前置失信（红线事件）**：night36-fix 收口（F6）在 `AI_CHANGES.md` §56/§57、本文件式 NIGHT_SUMMARY 的 night36 主节写下「前端 `tsc --noEmit`=0」的**未经执行结论**；并以「沙箱 WSL 黑名单拦截 npm install」为由跳过 tsc 闸门。教练实测 `frontend/node_modules` 存在、`tsc.cmd` 存在 → tsc 可直接跑，无需 npm install。即：tsc=0 从未真跑，跳过理由不成立。
 - **修复（night36-fix2，F7–F11）**：F7 提升 `aiParticipatedIntent`/`aiParticipatedReply` 为外层变量；F9 全文扫无其余越界 `data.`，regenerateReply 同步带齐 4 字段；F8 真跑 `tsc --noEmit` 得 exit code=0；F10 删除 §57/§56/NIGHT_SUMMARY 中不实表述。
 - **状态**：`[FIXED]`（本地未 push，待用户授权 push）。真机验证 F4/F5 仍 `[BLOCKED]`（需本机 LLM 网关+业务库+浏览器 UI）。
+
+---
+
+## ISS-083 我的看板页「统计卡 >0 但列表为空」自相矛盾展示（删除后统计不重拉）
+
+- **现象（2026-10-08 09:11 用户截图）**：统计卡显示 全部看板=1 / 已发布=1 / 草稿=0 / 今日创建=0，但下方列表为「暂无看板」。DB（backend/data/aibi.db）mtime 09:10:37 与截图时间吻合——用户刚删除了自己的已发布看板：列表走客户端剔除变空，统计卡未重拉、残留旧值。
+- **根因（前端，主）**：`DashboardListPage.tsx` 的 `handleDelete` 成功后只做 `setDashboards(prev => prev.filter(...))`，从未调用 `fetchData()`。而 L66-68 注释声称"2026-09-18 修复：抽成 fetchData 供删除后复用"——**半截修复，注释与实现不符**（fetchData 抽出来了，删除流程没接上）。
+- **根因（后端，次生）**：`/dashboards/stats/overview` 无条件以 `_OWNERS=("anonymous","current",uid)` 计数，而 `/dashboards/my` 经 P0-1 修复后 legacy 数据仅超管可见（`/my` 改了、stats 漏改）。普通用户若库中存在 legacy 看板，会永久出现「统计 >0 但列表为空」的口径矛盾。
+- **修复（2026-10-08）**：① 前端 `handleDelete` 成功后 `await fetchData()` 重拉列表+统计；同步更正失实注释。② 后端 `/stats/overview` 口径与 `/my` 对齐（legacy 仅超管计入）。
+- **零回归（真跑）**：前端 `tsc --noEmit` TSC_EXIT=0；后端 `py_compile` OK；`_verify_a.py` 27/27 PASS。
+- **状态**：`[FIXED]`（本地未 push，待用户授权）。真机复核：删除看板后统计卡应同步归零。

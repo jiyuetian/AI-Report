@@ -1191,3 +1191,22 @@ if _fb_msg:
 ### 红线守纪
 - 只新增外层变量不改名 API；不批量删；不 reset --hard；不碰生产 DuckDB；一类一 commit；过程文件不进 commit。
 - **严禁伪造闸门结果**：tsc 原始输出 + exit code 已实跑留存（见交付回证），未保留任何未经执行的"=0"结论。
+
+## §59 ISS-083 · 我的看板「统计卡 >0 但列表为空」（2026-10-08）
+
+**用户截图实测：统计卡 全部=1/已发布=1，列表「暂无看板」。DB mtime 与截图时间差 24 秒——删除看板后列表客户端剔除、统计不重拉。**
+
+### 改动清单（一类一 commit）
+| commit | 类型 | 说明 |
+|--------|------|------|
+| fix(frontend) | 前端 | `DashboardListPage.tsx` `handleDelete` 成功后 `await fetchData()` 重拉列表+统计；更正 L66-68"半截修复"失实注释（2026-09-18 声称抽 fetchData 供删除复用，实际从未调用） |
+| fix(backend) | 后端 | `/dashboards/stats/overview` 的 `_OWNERS` 口径与 `/my` 对齐：legacy（anonymous/current）仅超管计入（P0-1 漏改端点补齐） |
+| docs | 文档 | ISSUES.md 新登 ISS-083 + 本节 |
+
+### 教训
+- **注释宣称的修复必须与实现同步核验**——"抽成 fetchData 供删除后复用"写进了注释，但调用点从未接上，属于"半截修复 + 注释超前于实现"，与 ISS-082 的"tsc=0 未真跑"同族（宣称≠落实）。
+- P0-1 修复时按端点逐个过口径，`/stats/overview` 这类"读侧统计端点"最易漏改（写侧 /my、DELETE 都改了）。
+
+### 零回归（真跑）
+- 前端 `tsc --noEmit` → **TSC_EXIT=0**；后端 `py_compile` OK；`_verify_a.py` **27/27 PASS**。
+- 红线守纪：未 push（待用户授权）；未碰生产 DuckDB（DB 仅 sqlite3 只读 URI 模式核查现象）。
