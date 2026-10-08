@@ -396,7 +396,13 @@ async def get_dashboard_stats(
     看板统计概览（D2-6 修复：基于服务端登录身份）
     """
     uid = current_user["user_id"]
-    _OWNERS = ("anonymous", "current", uid)
+    # P0-1 口径同步（ISS-083，2026-10-08）：/my 经 P0-1 修复后 legacy 数据仅超管
+    # 可见，stats 原先无条件计入 legacy（anonymous/current），普通用户会出现
+    # 「统计 >0 但列表为空」的口径矛盾。此处与 /my 完全对齐。
+    if current_user.get("is_superuser"):
+        _OWNERS = ("anonymous", "current", uid)
+    else:
+        _OWNERS = (uid,)
     total_result = await db.execute(
         select(func.count(Dashboard.id)).where(
             or_(
