@@ -316,7 +316,7 @@ class S3LLMEnhancer:
                         cfg["y"] = ny
         return charts
     
-    def _build_prompt(
+    async def _build_prompt(
         self,
         theme: str,
         fields: List[str],
@@ -325,9 +325,10 @@ class S3LLMEnhancer:
         previous_error: Optional[str] = None,
         semantics: Optional[Dict[str, Any]] = None,
         derived_metrics: Optional[Dict[str, Any]] = None,
+        table_name: Optional[str] = None,
         field_profiles: Optional[List[Dict[str, Any]]] = None
     ) -> str:
-        """构建LLM Prompt"""
+        """构建LLM Prompt（night37-B1：可选注入真实数据事实包）"""
 
         error_section = ""
         if previous_error:
@@ -487,6 +488,23 @@ class S3LLMEnhancer:
         # 管理员在管理中心编辑这两块即可实时影响图表生成遵守的红线，无需重启
         global_guard = load_prompt("system", "你是一名资深 BI 数据分析师。") \
             + "\n\n" + load_prompt("accuracy", "所有字段必须来自给定字段列表，严禁臆造。")
+
+        # night37-B1：注入「数据事实包」——让 LLM 基于真实分布/趋势/相关性选图与写理由，
+        # 而非仅看字段名。表中无数据/构建失败则静默跳过（回退现状，不阻断生成）。
+        fact_section = ""
+        if table_name:
+            try:
+                from app.core.duckdb_manager import get_duckdb
+                from app.core.data_fact_pack import build_fact_pack, format_fact_section
+                _db_duck = get_duckdb()
+                _pack = await build_fact_pack(_db_duck, table_name, field_profiles=field_profiles)
+                if _pack and _pack.get("meta"):
+                    fact_section = format_fact_section(_pack)
+            except Exception as _e:
+                print(f"[S3-LLM] 数据事实包构建失败，回退无事实: {_e}")
+
+        if fact_section:
+            return global_guard + "\n\n" + main_prompt + "\n\n" + fact_section
         return global_guard + "\n\n" + main_prompt
     
     async def generate_with_self_healing(
@@ -498,6 +516,7 @@ class S3LLMEnhancer:
         grain: str = "detail",
         semantics: Optional[Dict[str, Any]] = None,
         derived_metrics: Optional[Dict[str, Any]] = None,
+        table_name: Optional[str] = None,
         field_profiles: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
@@ -525,8 +544,8 @@ class S3LLMEnhancer:
             print(f"[S3-LLM] 生成尝试 {attempt + 1}/{self.MAX_RETRIES + 1}")
             
             # 构建Prompt（带错误回写 + 语义标注 + 派生指标口径）
-            prompt = self._build_prompt(theme, fields, goals, grain, last_error,
-                                        semantics, self.derived_metrics, field_profiles)
+            prompt = await self._build_prompt(theme, fields, goals, grain, last_error,
+                                        semantics, self.derived_metrics, table_name, field_profiles)
             
             # 调用LLM
             response = await llm_chat(
@@ -706,14 +725,15 @@ async def generate_charts_with_llm(
     grain: str = "detail",
     semantics: Optional[Dict[str, Any]] = None,
     derived_metrics: Optional[Dict[str, Any]] = None,
+    table_name: Optional[str] = None,
     field_profiles: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
-    便捷函数：LLM生成图表（带自愈 + 字段语义增强 + 派生指标反哺）
+    便捷函数：LLM生成图表（带自愈 + 字段语义增强 + 派生指标反哺 + 数据事实包注入）
     """
     enhancer = S3LLMEnhancer()
     return await enhancer.generate_with_self_healing(
-        db, theme, fields, goals, grain, semantics, derived_metrics, field_profiles
+        db, theme, fields, goals, grain, semantics, derived_metrics, table_name, field_profiles
     )
 
 

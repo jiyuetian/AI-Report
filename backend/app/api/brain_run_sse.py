@@ -213,7 +213,8 @@ def _resume_run_choice(run_id: str, choice: str) -> bool:
 
 
 async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
-                            max_rounds: int = 3, derived_metrics=None, field_profiles=None):
+                            max_rounds: int = 3, derived_metrics=None, field_profiles=None,
+                            table_name: str = None):
     """用户选择"等 AI 恢复"后：带退避重试 S3 的 LLM 图表生成。
 
     某一轮成功（generated_by=='llm'）即返回 (result, ai_failed=False)；
@@ -228,7 +229,8 @@ async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
         try:
             res = await generate_charts_with_llm(
                 db=db, theme=theme_tag, fields=fields, goals=goals, grain=grain,
-                derived_metrics=derived_metrics or {}, field_profiles=field_profiles
+                derived_metrics=derived_metrics or {}, field_profiles=field_profiles,
+                table_name=table_name
             )
         except Exception as e:
             res = {"charts": [], "generated_by": "rule_engine", "fallback_reason": _short_err(e)}
@@ -856,6 +858,7 @@ async def brain_run_pipeline(
                                 grain=grain,
                                 derived_metrics=derived_metrics,
                                 field_profiles=field_profiles,
+                                table_name=_s3_table,
                             ),
                             timeout=settings.BRAIN_S3_LLM_TIMEOUT,
                         )
@@ -911,7 +914,8 @@ async def brain_run_pipeline(
                 if choice == "wait_retry":
                     s3_result, s3_ai_failed = await _retry_s3_with_ai(
                         run_id, db, theme_tag, fields, goals, grain, s3_ai_reason,
-                        derived_metrics=derived_metrics, field_profiles=field_profiles
+                        derived_metrics=derived_metrics, field_profiles=field_profiles,
+                        table_name=_s3_table
                     )
 
             charts = s3_result.get("charts", [])

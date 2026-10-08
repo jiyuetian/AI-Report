@@ -249,15 +249,29 @@ class ReportGenerator:
         stats = await self._get_key_stats()
         stats_json = json.dumps(stats, ensure_ascii=False, default=str)
 
-        prompt = load_prompt("executive_summary", "你是资深数据分析报告撰写助手，仅基于提供的统计信息撰写执行摘要，不得编造数字。")
+        # night37-B2：构建「数据事实包」并渲染成精简中文段，让 LLM 基于真实
+        # 分布/趋势/相关性写结论、引用具体数字；构建失败则回退仅 SUM/AVG（不阻断）。
+        fact_text = ""
+        try:
+            from app.core.data_fact_pack import build_fact_pack, format_fact_section
+            _pack = await build_fact_pack(self.db, self.table_name, field_profiles=self.fields)
+            if _pack and _pack.get("meta"):
+                fact_text = format_fact_section(_pack)
+        except Exception as _e:
+            print(f"[Report] 数据事实包构建失败，回退仅 SUM/AVG: {_e}")
+
+        prompt = load_prompt("executive_summary", "你是资深数据分析报告撰写助手，仅基于提供的统计信息与数据事实撰写执行摘要，必须引用具体数字，不得编造。")
 
         try:
             from app.core.config import settings
             if settings.LLM_API_KEY and settings.LLM_BASE_URL:
+                _user_content = f"数据集：{self.theme}\n统计信息：{stats_json}"
+                if fact_text:
+                    _user_content += f"\n{fact_text}\n\n要求：执行摘要必须引用上面『数据事实』中的具体数字（如占比、中位、趋势方向、相关性），不得凭空编造。"
                 result = await llm_chat(
                     messages=[
                         {"role": "system", "content": prompt},
-                        {"role": "user", "content": f"数据集：{self.theme}，统计信息：{stats_json}"},
+                        {"role": "user", "content": _user_content},
                     ],
                     json_mode=False,
                 )
