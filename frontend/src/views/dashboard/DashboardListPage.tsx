@@ -64,8 +64,9 @@ const DashboardListPage: React.FC = () => {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // 加载看板列表与统计（真实后端 API）
-  // 2026-09-18 修复：抽成 fetchData 供删除后复用——此前删除仅客户端剔除列表、
-  // stats 不重拉，导致 KPI 残留旧值（如"全部看板 1"但列表为空）的自相矛盾展示。
+  // 2026-09-18 注释声称"抽成 fetchData 供删除后复用"，但 handleDelete 实际从未
+  // 调用它（半截修复，注释与实现不符）。2026-10-08 ISS-083：handleDelete 成功后
+  // 真正 await fetchData()，消除删除后 KPI 残留旧值（"已发布 1"但列表空）的自相矛盾。
   const fetchData = useCallback(async () => {
     try {
       const [listRes, statsRes] = await Promise.all([
@@ -135,7 +136,9 @@ const DashboardListPage: React.FC = () => {
 
     try {
       await http.delete(`/dashboards/${dashboard.id}`, { confirm_name: confirmName });
-      setDashboards(prev => prev.filter(d => d.id !== deletingId));
+      // ISS-083（2026-10-08）：删除成功后重拉列表+统计。此前仅客户端剔除列表、
+      // 统计卡不重拉，KPI 残留旧值（"已发布 1"但列表"暂无看板"的自相矛盾展示）。
+      await fetchData();
       message.success(`看板 "${dashboard.name}" 已删除`);
     } catch (err: any) {
       message.error(`删除失败: ${err?.message || '网络错误'}`);
