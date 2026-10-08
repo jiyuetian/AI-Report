@@ -1210,3 +1210,32 @@ if _fb_msg:
 ### 零回归（真跑）
 - 前端 `tsc --noEmit` → **TSC_EXIT=0**；后端 `py_compile` OK；`_verify_a.py` **27/27 PASS**。
 - 红线守纪：未 push（待用户授权）；未碰生产 DuckDB（DB 仅 sqlite3 只读 URI 模式核查现象）。
+
+
+## §60 night37 · 数据事实包注入两条 LLM 链路（ISS-084，2026-10-08）
+
+**用户实测反馈（教练定位根因）**：把同一份 Excel 交给通用 AI 生成的看板「远超」本产品直接生成的，本产品「比不上初级分析师」。根因 = 两条 LLM 链路缺「数据事实」——看板选型只喂字段名/画像/维度建议，执行摘要只喂 总记录数+每数值字段 SUM/AVG；LLM 只能选图/复述数字，讲不出数据里的故事。本轮新建「数据事实包」并注入两条链路。
+
+### 改动清单（一类一 commit）
+| commit | 类型 | 说明 | 关联 |
+|--------|------|------|------|
+| ef65d64 | feat(core) | A 新建 `backend/app/core/data_fact_pack.py`：基于真实 DuckDB 只读聚合的事实包（meta/数值量级/分类 top 占比/时间趋势/相关性/质量），含 3.0s 预算+静默降级护栏 | ISS-084 |
+| 6022274 | feat(llm) | B1 看板选型 `_build_prompt` 追加【数据事实】段（table_name 自 brain_run_sse 线程传入）；B2 执行摘要 `_ch2_executive_summary` 注入事实包并要求引用具体数字 | ISS-084 |
+| （本提交）| docs | D 新登 ISS-084 + 本 §60 | ISS-084 |
+
+- **A（数据事实包服务，commit `ef65d64`）**：`build_fact_pack(db, table_name, field_profiles, ...)` 对真实 DuckDB 做只读 SELECT，产出 数值字段 sum/avg/median/p25/p75/min/max/空值率、分类字段 top8+top1占比、按月时间趋势、数值字段两两 |corr| Top5、空值率 Top + 重复行率；大表(>10w)自动 RESERVOIR(100000) 采样；整体 3.0s 墙钟预算，超时/异常静默降级返回已得部分（绝不阻断生成）。`format_fact_section(pack)` 渲染精简中文段。`_verify_factpack.py` 自测 **5/5 PASS**（temp DuckDB，零生产触碰）。
+- **B1（看板选型，commit `6022274`）**：`_build_prompt` 改 `async` + 加 `table_name` 参数；当 `table_name` 给出时 `get_duckdb()` 取 DuckDBManager、`build_fact_pack` 构建并 `format_fact_section` 追加到 prompt 末尾；`generate_with_self_healing`/`generate_charts_with_llm` 签名透传 `table_name`；`brain_run_sse._s3_table=f"ds_{dataset_id}"` 主路径(L851)+重试路径(L912)均传入。构建失败/无表→静默跳过回退现状。
+- **B2（执行摘要，commit `6022274`）**：`_ch2_executive_summary` 在 `stats_json` 之外 `build_fact_pack(self.db, self.table_name, field_profiles=self.fields)` 渲染 `fact_text` 并拼入 user 消息，system 提示词改为「必须引用具体数字」；构建失败→回退仅 SUM/AVG。
+
+### 零回归（真跑原始输出）
+- 后端 `py_compile` 四文件通过：`data_fact_pack.py` / `s3_llm_enhancer.py` / `report_generator.py` / `brain_run_sse.py`。
+- `_verify_factpack.py`：**5 passed / 0 failed**（PASS test_meta_and_numeric / test_category_distribution / test_time_trend / test_correlation / test_quality_and_degradation）。
+- 导入冒烟：`app.core.report_generator` / `app.core.brain_modules.s3_llm_enhancer` / `app.api.brain_run_sse` 导入成功；`_build_prompt`/`generate_with_self_healing`/`generate_charts_with_llm`/`_ch2_executive_summary` 均为 coroutine（async 签名符合预期）。
+- 前端 **未改动** → `tsc --noEmit` 不适用（本轮零前端改动）。
+- 实测就绪度（替代真实表 `qa_n33/uploads/07e02b03…xlsx`，50×9 贷款数据）：D1–D5 数据事实就绪度 **4.2/5**（D3 KPI 正确性、D5 信息密度满分）；事实包耗时 0.029s，远在 3.0s 预算内。
+
+### 红线守纪
+- 不碰生产 DuckDB 业务数据（`aibi.db` 只读）；事实包全程只读 SELECT，不写/不删/不建表；本地跑分载 qa_n33/uploads Excel 到**独立 temp DuckDB**。
+- 编辑全程 Python 读改写 + assert 落盘（规避 Edit 报成功未落盘）；CRLF 已归一为 LF（与仓库一致）后 `git diff` 仅显示真实 10 处插入。
+- 一类一 commit，commit 信息含 ISS-084；未批量删除/未 `reset --hard`；过程文件 `night_runs/night37/`（gitignored，不进 commit）。
+- **诚实披露**：A 列（本产品）vs B 列（通用 AI）端到端 D1–D5 真跑对比 **[BLOCKED]**——沙箱 LLM 网关持续 429/超时、且无 B 列产物，无法稳定生成真实看板供打分（与 night36 ISS-078 同源阻塞，非伪造）。代码层根因已修复 + 就绪度代理分验证。

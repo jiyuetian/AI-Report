@@ -616,3 +616,15 @@
 - **修复（2026-10-08）**：① 前端 `handleDelete` 成功后 `await fetchData()` 重拉列表+统计；同步更正失实注释。② 后端 `/stats/overview` 口径与 `/my` 对齐（legacy 仅超管计入）。
 - **零回归（真跑）**：前端 `tsc --noEmit` TSC_EXIT=0；后端 `py_compile` OK；`_verify_a.py` 27/27 PASS。
 - **状态**：`[FIXED]`（本地未 push，待用户授权）。真机复核：删除看板后统计卡应同步归零。
+
+---
+
+---
+
+## ISS-084 缺「数据事实包」导致 LLM 选图/写摘要讲不出故事（P0，night37 已闭环）
+
+- **现象（用户实测反馈）**：「把同份 Excel 交给通用 AI 生成的看板，效果远超本产品直接生成的，本产品比不上初级分析师。」看板选型与报表执行摘要质量明显低于通用 AI 工具。
+- **根因**：两条 LLM 链路缺「数据事实」：① 看板选型 `s3_llm_enhancer._build_prompt` 只喂【主题+字段列表/类型/画像(distinct/空值率/取值样例)+维度建议+粒度+目标】，无分布/占比/趋势/相关性/异常；② 报表执行摘要 `report_generator._ch2_executive_summary`+`_get_key_stats` 只喂【总记录数+每数值字段 SUM/AVG】，同样无事实。→ LLM 只能选图/复述数字，讲不出数据里的故事。
+- **修复（已落码 + 真跑通过，commit `ef65d64`+`6022274`）**：新建 `backend/app/core/data_fact_pack.py`，对真实 DuckDB 做只读聚合，产出 规模/数值字段量级(median/p25/p75/空值率)/分类 top 占比/按月时间趋势/数值字段两两相关性 Top5/空值率 Top+重复行率，含 3.0s 预算+静默降级护栏。B1 看板选型 `_build_prompt` 末段追加【数据事实】段（`table_name` 自 `brain_run_sse._s3_table` 线程传入）；B2 执行摘要 `_ch2_executive_summary` 注入事实包并要求引用具体数字。两处均 try/except 静默降级，事实包不可用/异常/超时都回退现状（不阻断生成）。
+- **验证**：`_verify_factpack.py` **5/5 PASS**（temp DuckDB 确定性数据，准确性/相关性/时间趋势/质量均通过）；后端 `py_compile` 四文件通过；导入冒烟通过；B 列就绪度代理分实测 **4.2/5**（替代真实表 50×9 贷款数据）。
+- **状态**：`[DONE]`（night37，本地未 push，等用户授权）。A 列 vs B 列端到端 D1–D5 真跑对比标 **[BLOCKED]**（沙箱无 LLM 网关稳定可达 + 无 B 列产物，与 ISS-078 同源阻塞）。
