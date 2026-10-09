@@ -500,7 +500,7 @@
 | ISS-017 | 文档散落与多版本重复 | P3 | 根 `PROJECT_STATUS.md` 等 | 部分已迁 `docs/` | [待处理]（部分） |
 | ISS-018 | schema 迁移入口覆盖核查 | P2 | `backend/alembic/` | 未系统核查 | [待核查] |
 | ISS-019 | 生成看板限流静默兜底 + 多字段截断 | P1 | `brain_run_sse.py`/`action_executor` | 限流兜底已加，字段截断待处理 | [部分已处理] |
-| ISS-020 | 导出 PDF/Excel/PNG 假成功 + 跳页 | P0 | `backend/app/api/exports.py` | **仅部分闭环**：`/exports/sync` 已诚实透传 `not_implemented`（不再伪造下载地址）；但 `/exports/status/{task_id}`（硬编码 `status=completed` + 假 `download_url=/downloads/export_{task_id}.pdf` + 假 `file_size`）与 `/exports/my/list`（硬编码假任务）仍返回假数据 | [OPEN] |
+| ISS-020 | 导出 PDF/Excel/PNG 假成功 + 跳页 | P0 | `backend/app/api/exports.py` | **已闭环（night41）**：`/exports/sync` 诚实透传 `not_implemented`；`/exports/status/{task_id}` 与 `/exports/my/list` 改查真实 `export_tasks` 表（查不到→404 / 空列表），删除全部硬编码假值（`task_001`/`exp_001`/`export_001`/`2026-08-27`），详见 §67 | [DONE] |
 | ISS-021 | GitHub Dependabot：default 分支 1 个 high 级依赖漏洞 | P1 | `main` 分支依赖树 | 原 main 有 1 high CVE；night34 重定 `main = p0-security-fixes`（0 CVE）后该告警**应消除**，但 Dependabot 异步重扫，**待用户在 GitHub 页面确认**（未伪造已清除） | [待核查] |
 
 ### ISS-072（新开，登记 ISS-020 残余）
@@ -508,7 +508,7 @@
 - **现象**：ISS-020「导出假成功」仅部分闭环——`/exports/sync` 已诚实透传 `not_implemented`，但 `/exports/status/{task_id}` 与 `/exports/my/list` 仍返回硬编码假数据（`status=completed` + 假 `download_url` + 假 `file_size` / 假任务列表）。
 - **影响**：用户查询导出状态时仍会看到虚假「已完成」与虚假下载地址，属 ISS-020 未完成部分。
 - **决策（登记，是否本轮修由用户拍板）**：标记 `[OPEN]`；修复方向——`/exports/status/{task_id}` 改为查真实任务表（无则 404/进行中）、`/exports/my/list` 改为查真实导出任务记录（无则空列表），不返回任何假数据。
-- **状态**：`[OPEN]`（2026-10-07 night34 由 ISS-020 残余开出）。
+- **状态**：`[DONE]`（night41 Task A 已随 ISS-020 闭环：`/exports/status` 与 `/exports/my/list` 接真表，详见 AI_CHANGES §67）。
 
 
 ---
@@ -706,3 +706,12 @@
   1. 三接口 `Depends(get_current_user)` → `Depends(require_admin)`（升级前复核无普通用户页面/后端内部依赖）。
   2. ChatPanel 三处 AI 信息渲染加 `isAdmin` 门禁；普通用户仅见中性「助手」黛标，AI 失败/未参与卡不渲染；新增 `currentUserIsAdmin()` 与全局同口径。
 - **状态**：`[DONE]`（night40，见 `docs/project_record/AI_CHANGES.md` §66；过程文件 `night_runs/night40/`）。
+
+## ISS-091 night41 总调度：导出去假 + 真机验收 runbook 补 §7 + 报表质量一键脚本（2026-10-09）
+
+- **现象**：ISS-020 残余（ISS-072）`/exports/status` 与 `/exports/my/list` 返回硬编码假数据；night35–night40 新增项（管理后台可见性/AI 信息收口/报表质量/AI 参与可观测）runbook 未覆盖，缺本机真机验收矩阵；报表质量缺一键可跑标尺。
+- **修复（night41 三件收口）**：
+  1. 导出端点去假（ISS-020/072）：`backend/app/api/exports.py` 的 `/async` 真实落 `export_tasks` 表，`/status` 查真表（404 兜底），`/my/list` 查真表（空列表兜底），删除全部硬编码假值。验证 `_verify_exports_honest.py` 7/7 ALL_PASS。
+  2. 真机验收 runbook §7：覆盖 5 项缺口，逐项操作步骤/预期/失败判据，统计需本机真机 15 项。
+  3. 报表质量一键脚本：night37 跑分器整理为 `night_runs/night41/measure_report_quality.py` + `REPORT_QUALITY_HOWTO.md`，实跑就绪度 4.4/5；端到端 A/B LLM 对比 `[BLOCKED]`（不伪造）。
+- **状态**：`[DONE]`（night41，见 `docs/project_record/AI_CHANGES.md` §67；过程文件 `night_runs/night41/`）。

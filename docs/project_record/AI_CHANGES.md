@@ -1311,3 +1311,31 @@ if _fb_msg:
   - 零回归：普通用户直调两接口确认 403；对话消息正文不空。
 - **约束遵守**：不碰生产 DuckDB（只读审计 + 内存伪会话验证）；一类一 commit（后端 / 前端 / 文档各一，均含 ISS-090）；过程文件 `night_runs/night40/`（gitignored L99）。
 - **commit**：后端 `require_admin` 升级（ISS-090）；前端 ChatPanel 门禁（ISS-090）；文档（ISS-090）。本地提交，未 push（push 需用户本机 7897 代理授权）。
+
+## §67 · 导出端点去假 + 真机验收 runbook 补 §7 + 报表质量一键脚本（night41 / ISS-020·072·091）
+
+- **背景**：night34 由 ISS-020 残余开出 ISS-072，`/exports/status` 与 `/exports/my/list` 仍返回硬编码假数据；night35–night40 新增管理后台可见性、AI 信息收口、报表质量、AI 参与可观测等项，runbook §2–§6 未覆盖，缺本机真机验收矩阵；报表质量缺一键可跑标尺。
+- **Task A（ISS-020/072 导出去假，`backend/app/api/exports.py`）**：
+  - `/async`：真实创建 `ExportTask` 行（`dashboard_id`/`fmt`/`status=processing`/`created_by`/`expire_at`），`db.flush()` 拿真实 `task.id`，调 `ExportService.export_dashboard` 后按 `mode` 落 `completed`+`file_path`+`file_size` 或 `failed`+`error_msg`，`commit` 返回真实 `task.id` 与 `check_status_url`。去掉 `task_001` 假兜底。
+  - `/status/{task_id}`：查 `export_tasks` 真表；无则 404「导出任务不存在」；归属校验（admin 或 `created_by==当前用户`，否则 404，**出于隐私不返回 created_by**）；返回真实 `status`/`download_url`/`file_size`/`expires_at`/`error_msg`。
+  - `/my/list`：查 `export_tasks` 真表（当前用户），无则 `total=0` 空列表；无 `exp_001` 假记录。
+  - 删除全部硬编码（`task_001`/`exp_001`/`export_001`/`2026-08-27`）；`/sync` 不动（已诚实）。
+- **验证（真跑闸门，隔离 sqlite+aiosqlite 临时库）**：`night_runs/night41/_verify_exports_honest.py` 7 项断言 ALL_PASS（`VERIFY_RC=0`）：①源无硬编码假值 ②/status 缺失→404 ③/my/list 无数据→空 ④/status 真任务→真实字段 ④b/my/list 真任务→1 条 ⑤普通用户查他人→404 ⑤b管理员查他人→200。
+- **Task B（runbook §7）**：既有 `docs/project_record/真机验收 runbook.md` 追加 §7「night35–night41 待真机验证矩阵」，覆盖 5 项缺口（管理后台可见性/AI 信息收口/报表质量/导出/AI 参与可观测），每项给操作步骤/预期现象/失败判据 + §7.0 一键前置；统计需本机真机 15 项（含 1 `[BLOCKED]`）。
+- **Task C（报表质量一键脚本）**：night37 跑分器字节级复制为 `night_runs/night41/measure_report_quality.py`，产出 `REPORT_QUALITY_HOWTO.md`；实跑真实 Excel（1020 行×21 字段）验证：D1–D5 就绪度 4.4/5，真实【数据事实】段注入成功。端到端 A/B LLM 对比标 `[BLOCKED]`（无网关+无报告链路），不伪造。
+- **约束遵守**：不碰生产 DuckDB（只读审计 + 隔离临时库验证 + 独立 temp DuckDB）；保持 CRLF；一类一 commit（后端/文档各一，含 ISS）；过程文件 `night_runs/night41/`（gitignored L99）。
+- **commit**：后端 `exports.py` 去假（ISS-020·072）；文档（§67 + ISS-020/072→`[DONE]` + ISS-091 + runbook §7 + NIGHT_SUMMARY）。本地提交，未 push（push 需用户本机 7897 代理授权）。
+
+## §67 · 导出端点去假 + 真机验收 runbook 补 §7 + 报表质量一键脚本（night41 / ISS-020·072·091）
+
+- **背景**：night34 由 ISS-020 残余开出 ISS-072，`/exports/status` 与 `/exports/my/list` 仍返回硬编码假数据；night35–night40 新增管理后台可见性、AI 信息收口、报表质量、AI 参与可观测等项，runbook §2–§6 未覆盖，缺本机真机验收矩阵；报表质量缺一键可跑标尺。
+- **Task A（ISS-020/072 导出去假，`backend/app/api/exports.py`）**：
+  - `/async`：真实创建 `ExportTask` 行（`dashboard_id`/`fmt`/`status=processing`/`created_by`/`expire_at`），`db.flush()` 拿真实 `task.id`，调 `ExportService.export_dashboard` 后按 `mode` 落 `completed`+`file_path`+`file_size` 或 `failed`+`error_msg`，`commit` 返回真实 `task.id` 与 `check_status_url`。去掉 `task_001` 假兜底。
+  - `/status/{task_id}`：查 `export_tasks` 真表；无则 404「导出任务不存在」；归属校验（admin 或 `created_by==当前用户`，否则 404，**出于隐私不返回 created_by**）；返回真实 `status`/`download_url`/`file_size`/`expires_at`/`error_msg`。
+  - `/my/list`：查 `export_tasks` 真表（当前用户），无则 `total=0` 空列表；无 `exp_001` 假记录。
+  - 删除全部硬编码（`task_001`/`exp_001`/`export_001`/`2026-08-27`）；`/sync` 不动（已诚实）。
+- **验证（真跑闸门，隔离 sqlite+aiosqlite 临时库）**：`night_runs/night41/_verify_exports_honest.py` 7 项断言 ALL_PASS（`VERIFY_RC=0`）：①源无硬编码假值 ②/status 缺失→404 ③/my/list 无数据→空 ④/status 真任务→真实字段 ④b/my/list 真任务→1 条 ⑤普通用户查他人→404 ⑤b管理员查他人→200。
+- **Task B（runbook §7）**：既有 `docs/project_record/真机验收 runbook.md` 追加 §7「night35–night41 待真机验证矩阵」，覆盖 5 项缺口（管理后台可见性/AI 信息收口/报表质量/导出/AI 参与可观测），每项给操作步骤/预期现象/失败判据 + §7.0 一键前置；统计需本机真机 15 项（含 1 `[BLOCKED]`）。
+- **Task C（报表质量一键脚本）**：night37 跑分器字节级复制为 `night_runs/night41/measure_report_quality.py`，产出 `REPORT_QUALITY_HOWTO.md`；实跑真实 Excel（1020 行×21 字段）验证：D1–D5 就绪度 4.4/5，真实【数据事实】段注入成功。端到端 A/B LLM 对比标 `[BLOCKED]`（无网关+无报告链路），不伪造。
+- **约束遵守**：不碰生产 DuckDB（只读审计 + 隔离临时库验证 + 独立 temp DuckDB）；保持 CRLF；一类一 commit（后端/文档各一，含 ISS）；过程文件 `night_runs/night41/`（gitignored L99）。
+- **commit**：后端 `exports.py` 去假（ISS-020·072）；文档（§67 + ISS-020/072→`[DONE]` + ISS-091 + runbook §7 + NIGHT_SUMMARY）。本地提交，未 push（push 需用户本机 7897 代理授权）。
