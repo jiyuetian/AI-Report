@@ -641,3 +641,18 @@
 - **闸门**：`tsc --noEmit` 前端类型检查 EXIT=0；行为自检 管理员见 `/admin`、普通用户/未登录均不可见。
 - **关联**：ISS-086（运维页 `/usage-stats` `/recalc` `/e2e` 同样升级管理员专属）。
 - **commit**：`eccccd2`（night38, ISS-085）
+
+## ISS-086 · 运维页 /usage-stats /recalc /e2e 升级管理员专属
+
+- **状态**：DONE（night38 Task B 收口；代码 `1149631`，文档同 ISS）
+- **类型**：前端可见性 + 后端鉴权（管理员专属）
+- **背景**：night37 已完成 `/admin` 导航隐藏；抽验发现 `/usage-stats`、`/recalc`、`/e2e` 三运维页此前任何登录用户均可进（前端无守卫、导航无隐藏、后端仅登录）。硬结论：这三页应升级管理员专属。
+- **改动（三件套逐页）**：
+  - 前端路由：`App.tsx` 三个路由包 `<ProtectedRoute requireAdmin>`；
+  - 导航：`MainLayout.tsx` 三个菜单项加 `adminOnly: true`（与 `/admin` 同口径）；
+  - 后端：`usage_stats.py` 全部端点 `get_current_user`→`require_admin`；`recalc_queue.py` `internal_endpoint_guard`→`require_admin`（`/history` 同步）；`integration.py` `run`/`report` `get_current_user`→`require_admin`。
+- **⚠️ dev 行为变化**：`/recalc` 原 `internal_endpoint_guard` 在 dev（`ENABLE_INTERNAL_ENDPOINTS=on`）放行匿名，现需管理员 token 才能访问（prod 默认 `False` 本就要求鉴权，无影响）。
+- **未改动（按硬结论）**：`/ai-log`（普通用户查自己日志，`ai_action_log.py` L116-121 权限隔离，锁 admin 会破坏）、`/metrics`（疑似用户功能，默认可见，无明确运维证据不动）。
+- **调用方核对**：3 页端点均仅各自管理页（`UsageStatsPage`/`RecalcPage`/`E2ETestPage`）前端调用；`/usage-stats/record` 与 `recalc` 内部写入为进程内直接函数调用（`USAGE_STATS.record_event` / `RECLAC_ENGINE.*`），非 HTTP 自调，升级鉴权不影响内部链路。
+- **闸门**：`tsc --noEmit` EXIT=0；`py -3.12 -m py_compile` 全过；三角色行为自检（管理员见四项、普通/未登录均不见）通过。
+- **commit**：`1149631`（night38, ISS-086）

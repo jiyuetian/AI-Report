@@ -1251,3 +1251,19 @@ if _fb_msg:
 - **判定口径一致性**：前端守卫 `user.roles?.includes('admin')` 与后端 `require_admin`（`security.py` L287，接受 `is_superuser` 或 `roles` 含 `admin`）等价；后端说你是管理员，前端导航才显示。
 - **闸门**：前端 `tsc --noEmit` EXIT=0；三角色行为自检（管理员见 `/admin`、普通用户/未登录均不可见）通过。
 - **commit**：`eccccd2`（night38, ISS-085）
+
+## §62 · 运维页 /usage-stats /recalc /e2e 升级管理员专属（night38 / ISS-086）
+
+- **文件**：
+  - `frontend/src/App.tsx`（3 个路由包 `<ProtectedRoute requireAdmin>`）
+  - `frontend/src/components/layout/MainLayout.tsx`（3 个菜单项加 `adminOnly: true`）
+  - `backend/app/api/usage_stats.py`（5 端点 `get_current_user` → `require_admin`）
+  - `backend/app/api/recalc_queue.py`（`internal_endpoint_guard` → `require_admin`；`/history` `get_current_user` → `require_admin`）
+  - `backend/app/api/integration.py`（2 端点 `get_current_user` → `require_admin`）
+- **三件套（逐页）**：前端路由守卫 + 导航隐藏 + 后端鉴权，三层一致锁定管理员专属。
+- **判定口径**：前端 `user.roles?.includes('admin')` 与后端 `require_admin`（`security.py` L277，接受 `is_superuser` 或 `roles` 含 `admin`）等价。
+- **⚠️ /recalc dev 行为变化**：原 `internal_endpoint_guard` 在 `ENABLE_INTERNAL_ENDPOINTS=on`（dev）时放行匿名；改为 `require_admin` 后，**dev 环境也需管理员 bearer token** 才能访问 /recalc 及其端点。prod 默认（`ENABLE_INTERNAL_ENDPOINTS=False`）本就要求鉴权，无影响。
+- **未改动（按硬结论）**：`/ai-log`（普通用户查自己日志，设计隔离在 `ai_action_log.py` L116-121，锁 admin 会破坏）、`/metrics`（疑似用户功能，默认可见，无明确运维证据不动）。
+- **调用方核对**：3 页端点均仅各自管理页（UsageStatsPage/RecalcPage/E2ETestPage）前端调用；`/usage-stats/record` 与 `recalc` 内部写入均为进程内直接函数调用（`USAGE_STATS.record_event`、`RECLAC_ENGINE.*`），非 HTTP 自调，升级鉴权不影响内部链路。
+- **闸门**：前端 `tsc --noEmit` EXIT=0；后端 `py -3.12 -m py_compile` 全过；三角色行为自检通过。
+- **commit**：`1149631`（night38, ISS-086）
