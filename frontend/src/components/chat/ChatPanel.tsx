@@ -32,6 +32,17 @@ interface AiError {
 }
 
 // 消息类型
+function currentUserIsAdmin(): boolean {
+  try {
+    const raw = localStorage.getItem("user");
+    if (!raw) return false;
+    const u = JSON.parse(raw);
+    return Array.isArray(u?.roles) && u.roles.includes("admin");
+  } catch {
+    return false;
+  }
+}
+
 const AI_FAIL_REASON_LABEL: Record<string, string> = {
   ok: 'AI 参与',
   timeout: '超时',
@@ -91,6 +102,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState(initialSessionId);
   const [dismissedRuleCards, setDismissedRuleCards] = useState<Set<string>>(new Set());
+  const isAdmin = currentUserIsAdmin();
   const [tokenStatus, setTokenStatus] = useState<TokenStatus | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [uploadedImages, setUploadedImages] = useState<string[]>([]);
@@ -563,19 +575,23 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
               <div className="message-role">
                 {msg.role === 'user' ? (
                   <Badge color="blue" text="我" />
-                ) : msg.ai_participated ? (
-                  <Badge color="green" text="AI 参与 ✅" />
+                                ) : isAdmin ? (
+                  msg.ai_participated ? (
+                    <Badge color="green" text="AI 参与 ✅" />
+                  ) : (
+                    <Badge
+                      color="orange"
+                      text={`规则兜底 ⚠${msg.ai_failed_reason && msg.ai_failed_reason !== 'rule_only' ? '（' + (AI_FAIL_REASON_LABEL[msg.ai_failed_reason] || msg.ai_failed_reason) + '）' : ''}`}
+                    />
+                  )
                 ) : (
-                  <Badge
-                    color="orange"
-                    text={`规则兜底 ⚠${msg.ai_failed_reason && msg.ai_failed_reason !== 'rule_only' ? '（' + (AI_FAIL_REASON_LABEL[msg.ai_failed_reason] || msg.ai_failed_reason) + '）' : ''}`}
-                  />
+                  <Badge color="default" text="助手" />
                 )}
               </div>
               {/* 消息内容 */}
               <div className="message-content">{msg.content}</div>
               {/* AI 调用失败报错卡：清晰提示 + 把选择权交还用户 */}
-              {msg.ai_error && (
+              {isAdmin && msg.ai_error && (
                 <Alert
                   type="error"
                   showIcon
@@ -608,7 +624,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 />
               )}
               {/* night36 Task A3/A4：AI 未参与（规则兜底）诚实卡 + 双入口（重试 AI / 保留规则结果） */}
-              {!msg.ai_error && msg.ai_participated === false && msg.action_source === 'rule' && !dismissedRuleCards.has(msg.id) && (
+              {isAdmin && !msg.ai_error && msg.ai_participated === false && msg.action_source === 'rule' && !dismissedRuleCards.has(msg.id) && (
                 <Alert
                   type="warning"
                   showIcon
