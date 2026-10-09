@@ -19,7 +19,7 @@ from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import require_admin
 from app.models.ai_action_log import AiActionLog
 
 router = APIRouter(prefix="/ai-action-log", tags=["AiActionLog"])
@@ -107,7 +107,7 @@ async def list_ai_action_logs(
     page: int = Query(1, ge=1, description="页码(从1开始)"),
     page_size: int = Query(20, ge=1, le=200, description="每页条数"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """分页 + 多维过滤查询 AI 行为日志。权限隔离见模块说明。"""
     is_super = bool(current_user.get("is_superuser"))

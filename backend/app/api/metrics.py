@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Body
 from pydantic import BaseModel, Field
 
-from app.core.security import get_current_user
+from app.core.security import require_admin
 from app.core.metric_registry import METRIC_REGISTRY
 
 router = APIRouter(prefix="/metrics", tags=["Metrics"])
@@ -27,7 +27,7 @@ class MetricCalculateReq(BaseModel):
 
 
 @router.get("/registry")
-async def registry(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def registry(current_user: Dict[str, Any] = Depends(require_admin)):
     """列出全部派生指标元信息。"""
     return {
         "success": True,
@@ -39,7 +39,7 @@ async def registry(current_user: Dict[str, Any] = Depends(get_current_user)):
 @router.post("/calculate")
 async def calculate(
     req: MetricCalculateReq,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_admin),
 ):
     """计算指定指标（query/explain/compare/trend）。"""
     res = METRIC_REGISTRY.calculate(
