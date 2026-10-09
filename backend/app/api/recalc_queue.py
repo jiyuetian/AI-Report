@@ -6,7 +6,7 @@
 
 全部为只读计算 + 内存队列，不碰生产 DuckDB（红线④）。
 """
-from app.core.security import internal_endpoint_guard
+from app.core.security import require_admin
 
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Request
@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from app.core.recalc_engine import RECLAC_ENGINE
 from fastapi import HTTPException
-from app.core.security import get_current_user
 
 
 class RecalcQueue:
@@ -53,34 +52,34 @@ class RecoverBody(BaseModel):
     recalc_id: str
 
 
-@router.post("/trigger", dependencies=[Depends(internal_endpoint_guard)])
+@router.post("/trigger", dependencies=[Depends(require_admin)])
 async def trigger(body: TriggerBody, request: Request):
     change = {"scope": body.scope, "metric_names": body.metric_names,
               "trigger_source": "api"}
     return _queue.trigger(change, data=body.data, dry_run=body.dry_run)
 
 
-@router.get("/status", dependencies=[Depends(internal_endpoint_guard)])
+@router.get("/status", dependencies=[Depends(require_admin)])
 async def status(recalc_id: Optional[str] = None):
     return _queue.get_status() if not recalc_id else RECLAC_ENGINE.get_status(recalc_id)
 
 
 @router.get("/history")
-async def history(current_user: Dict = Depends(get_current_user)):
+async def history(current_user: Dict = Depends(require_admin)):
     return RECLAC_ENGINE.list_history()
 
 
-@router.get("/dependency-graph", dependencies=[Depends(internal_endpoint_guard)])
+@router.get("/dependency-graph", dependencies=[Depends(require_admin)])
 async def dependency_graph():
     from app.core.dependency_graph import DependencyGraph
     return {"success": True, **DependencyGraph().to_graph_view()}
 
 
-@router.get("/stats", dependencies=[Depends(internal_endpoint_guard)])
+@router.get("/stats", dependencies=[Depends(require_admin)])
 async def stats():
     return RECLAC_ENGINE.get_stats()
 
 
-@router.post("/recover", dependencies=[Depends(internal_endpoint_guard)])
+@router.post("/recover", dependencies=[Depends(require_admin)])
 async def recover(body: RecoverBody):
     return RECLAC_ENGINE.recover(body.recalc_id)

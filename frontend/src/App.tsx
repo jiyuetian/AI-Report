@@ -134,9 +134,21 @@ function App() {
                   <Route path="/report" element={<ReportPage />} />
                   <Route path="/ai-log" element={<AiLogPage />} />
                   <Route path="/metrics" element={<MetricPage />} />
-                  <Route path="/recalc" element={<RecaclPage />} />
-                  <Route path="/usage-stats" element={<UsageStatsPage />} />
-                  <Route path="/e2e" element={<E2ETestPage />} />
+                  <Route path="/recalc" element={
+                    <ProtectedRoute requireAdmin>
+                      <RecaclPage />
+                    </ProtectedRoute>
+                  } />
+                  <Route path="/usage-stats" element={
+                    <ProtectedRoute requireAdmin>
+                      <UsageStatsPage />
+                    </ProtectedRoute>
+                  } />
+                  <Route path="/e2e" element={
+                    <ProtectedRoute requireAdmin>
+                      <E2ETestPage />
+                    </ProtectedRoute>
+                  } />
                   {/* 原型演示占位屏 */}
                   <Route path="/demo/:key" element={<DemoPage />} />
                   <Route path="/admin" element={

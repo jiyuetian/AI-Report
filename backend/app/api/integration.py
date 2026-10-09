@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.integration.test_runner import RUNNER
 from app.integration.performance import run_performance_benchmark
 
@@ -18,14 +18,14 @@ router = APIRouter(prefix="/integration", tags=["Integration"])
 
 
 @router.post("/run")
-async def run(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+async def run(current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     report = RUNNER.run_tests()
     report["performance"] = run_performance_benchmark()
     return report
 
 
 @router.get("/report")
-async def report(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+async def report(current_user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     last = RUNNER.get_report()
     if not last:
         return {"note": "尚未运行，请先 POST /api/v1/integration/run"}
