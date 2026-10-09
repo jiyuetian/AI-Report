@@ -132,7 +132,7 @@ class ReportGenerator:
                 chapters.append(await self._doc_ch2_executive_summary())
                 chapters.append(self._doc_ch3_data_methodology())
                 chapters.append(self._doc_ch4_overview())
-                chapters.append(self._doc_ch5_analysis())
+                chapters.append(await self._doc_ch5_analysis())
                 chapters.append(self._ch6_risks_anomalies())
                 chapters.append(self._doc_ch7_appendix())
             else:
@@ -390,7 +390,8 @@ class ReportGenerator:
         # 过滤掉 kpi/table，保留分析图表（兼容 chart_type 和 type）
         analysis_charts = [c for c in charts_cfg if c.get("chart_type") not in ("kpi", "table") and c.get("type") not in ("kpi", "table")]
 
-        contents = []
+        # 先收集有真实数据的图表（无数据则跳过，不进批量、不生成空壳图）
+        render_items = []  # 元素: {ctype,title,chart_data,val_field,agg,html}
         for chart in analysis_charts[:6]:  # 最多 6 个图表
             ctype = chart.get("chart_type") or chart.get("type", "bar")
             title = chart.get("title", "分析图表")
@@ -410,22 +411,52 @@ class ReportGenerator:
             if not chart_data:
                 continue
 
-            # 生成交互式图表HTML（ECharts）
             chart_html = self._render_echarts(ctype, title, chart_data)
+            render_items.append({
+                "ctype": ctype, "title": title, "chart_data": chart_data,
+                "val_field": val_field, "agg": agg, "html": chart_html,
+            })
 
-            # 生成解读文字
-            interpretation = self._generate_interpretation(ctype, title, chart_data, val_field)
+        # night39：批量 LLM 洞察（单调用，性能护栏），失败/缺项逐图回退确定性模板
+        insights: List[str] = []
+        if render_items:
+            batch_items = [
+                {"ctype": r["ctype"], "title": r["title"], "chart_data": r["chart_data"],
+                 "val_field": r["val_field"], "agg": r["agg"]}
+                for r in render_items
+            ]
+            fact_pack = None
+            try:
+                from app.core.config import settings
+                if getattr(settings, "LLM_API_KEY", None) and getattr(settings, "LLM_BASE_URL", None):
+                    from app.core.data_fact_pack import build_fact_pack
+                    fact_pack = await build_fact_pack(self.db, self.table_name, field_profiles=self.fields)
+            except Exception as _e:
+                print(f"[Report] 数据事实包构建失败，忽略（洞察不依赖它）: {_e}")
+            try:
+                insights = await self._generate_insights_batch(batch_items, fact_pack=fact_pack)
+            except Exception as _e:
+                print(f"[Report] 批量洞察生成失败，逐图回退模板: {_e}")
+                insights = []
 
+        contents = []
+        for i, r in enumerate(render_items):
+            insight = ""
+            if insights and i < len(insights):
+                insight = insights[i]
+            if not insight:
+                insight = self._generate_interpretation(r["ctype"], r["title"], r["chart_data"], r["val_field"])
             contents.append(f"""
 <div class="chart-section">
-  <h3>{title}</h3>
-  {chart_html}
-  <p class="interpretation">{interpretation}</p>
+  <h3>{r['title']}</h3>
+  {r['html']}
+  <p class="interpretation">{insight}</p>
 </div>
 """)
 
-        content = "\n".join(contents) if contents else "<p>暂无维度分析图表。</p>"
+        content = chr(10).join(contents) if contents else "<p>暂无维度分析图表。</p>"
         return ReportChapter(5, "维度分析", content, charts=analysis_charts[:6])
+
 
     # ── Ch6 风险与异常 ────────────────────────────────────────────
     def _ch6_risks_anomalies(self) -> ReportChapter:
@@ -677,6 +708,131 @@ class ReportGenerator:
         return f"{title}：共 {len(data)} 条记录。"
 
     # ── 文档型章节（P1：文本数据集，全部确定性统计） ───────────────
+    async def _generate_insights_batch(
+        self, items: List[Dict[str, Any]], fact_pack: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """批量生成图表洞察（单 LLM 调用，返回与 items 等长的洞察列表）。
+
+        设计要点（night39）：
+        - 性能护栏：全部图表合并为一次 llm_chat(json_mode=True) 调用，严禁一图一次。
+        - 事实底座：每条图都附真实数据点(Top10) + 可选全局数据事实包(fact_pack)，
+          让 LLM 引用具体数字/占比，而非复述最大值/最小值/合计。
+        - 零回归：任何失败（无 LLM 配置 / 调用异常 / JSON 解析失败 / 长度不符）
+          一律返回空列表 []，由调用方逐图回退到确定性模板 _generate_interpretation。
+
+        Args:
+            items: [{ctype, title, chart_data, val_field, agg}, ...]
+                   chart_data 真实数据点（bar/line: {dim,val}; pie: {cat,val}; kpi: {value}）
+            fact_pack: 可选，data_fact_pack.build_fact_pack 的产出，作为全局事实底座。
+
+        Returns:
+            List[str]，长度 == len(items)；返回 [] 表示批量失败（需逐图回退）。
+        """
+        if not items:
+            return []
+
+        # 1) LLM 可用性前置检查（无 key/url 直接回退，不浪费调用）
+        try:
+            from app.core.config import settings
+            if not (getattr(settings, "LLM_API_KEY", None) and getattr(settings, "LLM_BASE_URL", None)):
+                return []
+        except Exception:
+            return []
+
+        # 2) 构造「每图真实数据」文本段（Top10 截断，避免超长）
+        def _points_text(it: Dict[str, Any]) -> str:
+            rows = it.get("chart_data") or []
+            lines = []
+            for r in rows[:10]:
+                label = r.get("dim") or r.get("cat") or r.get("name") or "—"
+                val = r.get("val")
+                if val is None:
+                    val = r.get("cnt") if r.get("cnt") is not None else r.get("value")
+                lines.append(f"    · {label}: {val}")
+            return "\n".join(lines) if lines else "    · （无数据点）"
+
+        blocks = []
+        for i, it in enumerate(items):
+            blocks.append(
+                f"图{i+1} [类型={it.get('ctype')}｜标题={it.get('title')}｜"
+                f"聚合={it.get('agg', 'SUM')}｜数值字段={it.get('val_field') or '—'}]\n"
+                f"真实数据点(Top10):\n{_points_text(it)}"
+            )
+        charts_text = "\n\n".join(blocks)
+
+        # 3) 可选全局事实包（night37 复用，不重造）
+        fact_text = ""
+        if fact_pack and fact_pack.get("meta"):
+            try:
+                from app.core.data_fact_pack import format_fact_section
+                fact_text = format_fact_section(fact_pack)
+            except Exception:
+                fact_text = ""
+
+        system_prompt = (
+            "你是资深业务数据分析师，擅长从真实数据里读出业务含义。\n"
+            "请基于每张图表的『真实数据点』写一段洞察文字，硬性要求：\n"
+            "1) 必须引用具体数字或占比（如『华东 1,234 占 47.4%』『A 类比 B 类高 2.3 倍』），不得空泛。\n"
+            "2) 必须给出业务含义或异常提示（即『所以呢』）：说明这个分布意味着什么，"
+            "是否存在集中度过高 / 长尾 / 异常类别 / 趋势拐点等风险或机会。\n"
+            "3) 严禁只复述『最高值 / 最低值 / 合计』这类机械描述（那是最低水平，必须超越）。\n"
+            "4) 每条洞察 80~160 字，口语化、可直接放进报告，不要 Markdown 标题。\n"
+            "5) 若数据不足以判断，诚实说明，禁止编造数字。"
+        )
+        user_content = (
+            f"以下是 {len(items)} 张图表及其真实数据，请逐图给出洞察，\n"
+            f"返回严格 JSON：{{\"insights\": [图1洞察, 图2洞察, ...]}}，\n"
+            f"数组长度必须等于 {len(items)}，顺序与 图1..图{len(items)} 一一对应。\n\n"
+            f"{charts_text}"
+        )
+        if fact_text:
+            user_content += f"\n\n全局数据事实（可引用，严禁编造）：\n{fact_text}"
+
+        # 4) 单次批量调用（有界超时 30s）
+        try:
+            result = await llm_chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                json_mode=True,
+                timeout=30.0,
+            )
+        except Exception:
+            return []
+
+        if not (result and getattr(result, "success", False)):
+            return []
+
+        # 5) 解析（优先用网关已解析的 response_json，回退手动 json.loads）
+        parsed: Any = None
+        try:
+            if isinstance(getattr(result, "response_json", None), dict):
+                parsed = result.response_json
+            elif getattr(result, "content", None):
+                parsed = json.loads(result.content)
+        except Exception:
+            return []
+
+        if not isinstance(parsed, dict):
+            return []
+        insights = parsed.get("insights")
+        if not isinstance(insights, list):
+            return []
+        # 长度必须严格等于 items 数，否则视为不可信 → 全回退（零回归）
+        if len(insights) != len(items):
+            return []
+        # 过滤非字符串 / 空串（调用方会对空串逐图回退）
+        out: List[str] = []
+        for x in insights:
+            out.append(x.strip() if isinstance(x, str) else "")
+        # 若全部为空，视为无有效洞察 → 回退
+        if all(not s for s in out):
+            return []
+        return out
+
+
+
     async def _doc_ch2_executive_summary(self) -> ReportChapter:
         """文档型执行摘要：统计 + 文本摘录（无LLM时也保证真实，禁止编造）"""
         ts = self._text_stats
@@ -790,7 +946,7 @@ class ReportGenerator:
 """
         return ReportChapter(4, "业务概览", content)
 
-    def _doc_ch5_analysis(self) -> ReportChapter:
+    async def _doc_ch5_analysis(self) -> ReportChapter:
         ts = self._text_stats
         # 长度分布：按段落长度分桶（确定性直方图）
         lengths = []
@@ -809,10 +965,25 @@ class ReportGenerator:
         chart_html = self._render_echarts("bar", "段落长度分布", data)
         top = max(data, key=lambda d: d["val"]) if data else {"cat": "-", "val": 0}
         total = sum(vals)
-        interpretation = (
+        # 确定性兜底解读（无 LLM 时保留）
+        fallback_interp = (
             f"共统计 {total} 个段落，其中「{top['cat']}」的段落最多（{top['val']} 个）。"
             if total else "无有效段落。"
         )
+        # night39：尝试 LLM 洞察（单图批量，失败回退兜底）
+        interp = fallback_interp
+        try:
+            from app.core.config import settings
+            if getattr(settings, "LLM_API_KEY", None) and getattr(settings, "LLM_BASE_URL", None):
+                _ins = await self._generate_insights_batch(
+                    [{"ctype": "bar", "title": "段落长度分布", "chart_data": data,
+                      "val_field": "段落数", "agg": "COUNT"}]
+                )
+                if _ins and _ins[0]:
+                    interp = _ins[0]
+        except Exception as _e:
+            print(f"[Report] 文档型图表洞察失败，回退: {_e}")
+
         # 字符占比：中文 vs 英文
         cjk = ts["cjk_count"]
         word = ts["word_count"]
@@ -823,7 +994,7 @@ class ReportGenerator:
 <div class="chart-section">
   <h3>段落长度分布</h3>
   {chart_html}
-  <p class="interpretation">{interpretation}</p>
+  <p class="interpretation">{interp}</p>
 </div>
 
 <div class="chart-section">

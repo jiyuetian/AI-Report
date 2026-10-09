@@ -656,3 +656,19 @@
 - **调用方核对**：3 页端点均仅各自管理页（`UsageStatsPage`/`RecalcPage`/`E2ETestPage`）前端调用；`/usage-stats/record` 与 `recalc` 内部写入为进程内直接函数调用（`USAGE_STATS.record_event` / `RECLAC_ENGINE.*`），非 HTTP 自调，升级鉴权不影响内部链路。
 - **闸门**：`tsc --noEmit` EXIT=0；`py -3.12 -m py_compile` 全过；三角色行为自检（管理员见四项、普通/未登录均不见）通过。
 - **commit**：`1149631`（night38, ISS-086）
+## ISS-087 · 图表解读从「机械复读模板」升级为「LLM 批量事实型洞察」（P1，night39）
+
+- **状态**：DONE（night39；改动文件 `backend/app/core/report_generator.py`）
+- **类型**：后端报告生成（维度分析 Ch5 + 文档型 Ch5 解读）
+- **背景**：`_generate_interpretation`（L680）是硬编码死模板（「最高值 X、最低值 Y、合计 Z」），被 coach 判为「复读机、比不上初级分析师」。同文件 `_doc_ch5_analysis`（L949）有第二处同类死模板（段落长度分布），二者均不调 LLM。
+- **改动**：
+  - 新增 `async _generate_insights_batch(items, fact_pack)`（L711）：单次 `llm_chat(json_mode=True, timeout=30s)` 批量产出全部图表洞察（JSON 数组，长度严格校验），附每图真实数据点(Top10) + 可选全局数据事实包（night37 `build_fact_pack`）作事实底座；system prompt 强制引用具体数字/占比 + 给出业务含义/异常提示，禁止只复述极值/合计。
+  - `_ch5_dimension_analysis`（L379）：先收集有真实数据的图表 → 批量调 `_generate_insights_batch` → 逐图取洞察；任一图缺洞察则回退 `_generate_interpretation`（旧模板）。
+  - `_doc_ch5_analysis`（L949）：段落长度分布图同样先走 `_generate_insights_batch`，失败回退旧内联模板；方法改 `async`，调用处 L135 `await`。
+- **护栏（零回归 / 性能）**：
+  - 零回归：`_generate_insights_batch` 在「无 LLM 配置 / 调用异常 / JSON 解析失败 / 数组长度不符 / 全空」任一情况下一律返回 `[]`，调用方逐图回退确定性模板，报告照常生成带真实数字解读。
+  - 性能：全部图表合并为「单次」LLM 调用，严禁一图一次。
+  - 事实底座：复用 night37 `build_fact_pack`，不重造；仅在有 LLM key 时构建。
+- **真表验证（night39 Task C）**：用 `backend/data/qa_n33/uploads/07e02b03-*.xlsx`（50 行风控数据）在隔离内存 DuckDB 跑 `_ch5_dimension_analysis`：沙箱 LLM 网关可用时，三图解读升级为引用真实数字+占比+业务风险的分析师级文本（例：发现「结清金额=华南金额、逾期金额=华北金额」跨图关联）；强制 LLM 不可用时回退模板、与 before 逐字一致（零回归）。
+- **闸门**：`py -3.12 -m py_compile` EXIT=0；`_verify_insights.py` 三分支（正常对齐/LLM异常/长度不符）ALL PASS(3/3)；`_taskD_gates.py` 强制 LLM 不可用 → 报告仍生成且逐图回退模板（FALLBACK_OK）。
+- **commit**：night39（ISS-087，见 git log 本提交）

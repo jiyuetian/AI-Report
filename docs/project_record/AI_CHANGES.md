@@ -1267,3 +1267,15 @@ if _fb_msg:
 - **调用方核对**：3 页端点均仅各自管理页（UsageStatsPage/RecalcPage/E2ETestPage）前端调用；`/usage-stats/record` 与 `recalc` 内部写入均为进程内直接函数调用（`USAGE_STATS.record_event`、`RECLAC_ENGINE.*`），非 HTTP 自调，升级鉴权不影响内部链路。
 - **闸门**：前端 `tsc --noEmit` EXIT=0；后端 `py -3.12 -m py_compile` 全过；三角色行为自检通过。
 - **commit**：`1149631`（night38, ISS-086）
+## §63 · 图表解读升级为 LLM 批量事实型洞察（night39 / ISS-087）
+
+- **文件**：`backend/app/core/report_generator.py`
+  - 新增 `async _generate_insights_batch(items, fact_pack)`（L711）
+  - 改写 `_ch5_dimension_analysis`（L379，批量洞察 + 逐图回退）
+  - 改写 `_doc_ch5_analysis`（L949，段落长度分布图走批量洞察，async + 调用处 `await`）
+  - 调用处 L135 / L149 加 `await`（文档型 / 表格型分支）
+- **改动**：把 Ch5 维度分析 + 文档型 Ch5 的「机械复读死模板」替换为「单次批量 LLM 事实型洞察」，附真实数据点 + 数据事实包作底座；失败/缺项逐图回退原模板。
+- **护栏**：零回归（5 类失败均返回 []→回退）；性能（单次批量调用）；事实底座复用 night37 `build_fact_pack`。
+- **真表验证**：`qa_n33/uploads/07e02b03-*.xlsx`（50 行）→ 沙箱 LLM 可用时三图升级为分析师级洞察；强制不可用时回退=before（零回归）。交付物见 `docs/project_record/night_runs/night39/`；`report_after.html` 为改动后真跑产出。
+- **闸门**：`py -3.12 -m py_compile` OK；`_verify_insights.py` 3/3；`_taskD_gates.py` FALLBACK_OK。
+- **commit**：night39（ISS-087，见 git log 本提交）
