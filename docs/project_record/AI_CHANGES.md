@@ -1295,3 +1295,19 @@ if _fb_msg:
 | `frontend/dist/` | 构建产物 | `vite build` 重建，替换 10-06 旧包 |
 
 - 原则落地：普通用户看不到 AI 调用情况（菜单隐藏 + 路由守卫双保险），AI 参与与否是管理员关注视角。
+
+## §66 · AI 调用信息全面收口到管理员（night40 / ISS-090）
+
+- **最高原则（用户拍板）**：AI 调用 / 参与情况是管理员视角（用于排查问题），普通用户感知不到，只看报表效果。“AI 是否参与 / 失败原因 / 调用日志”只对管理员可见；普通用户界面保持干净，只陈现业务结果。
+- **缺口1（后端假安全，ISS-090）**：`backend/app/api/ai_action_log.py` `/list`、`backend/app/api/metrics.py` `/registry` + `/calculate` 原 `Depends(get_current_user)` → `Depends(require_admin)`（引自 `app.core.security`）。升级前已复核调用方：仅 `AiLogPage.tsx` / `MetricPage.tsx` 调用，二者路由与导航均 `adminOnly`（ISS-088/089），**无普通用户页面、无后端内部自调**，故升权安全。原“普通用户只看自己”隔离分支（ai_action_log.py L116-121）成为死代码，按要求保留并在本报告说明。
+- **缺口2（对话面板泄露，ISS-090）**：`frontend/src/components/chat/ChatPanel.tsx` 三处对所有用户可见的 AI 技术信息改为仅管理员渲染：
+  - 角色黛标：管理员见「AI 参与 ✅ / 规则兑底 ⚠（原因）」，普通用户见中性「助手」黛标（`color="default"`）。
+  - AI 调用失败报错卡（含「重试 AI」「改用规则引导回复」）：`isAdmin &&` 门禁。
+  - AI 未参与诚实卡（含「重试 AI」「保留规则结果」）：`isAdmin &&` 门禁。
+  - 新增 `currentUserIsAdmin()`（读 `localStorage.user.roles?.includes('admin')`，try/catch + Array.isArray 防御），与 App.tsx `ProtectedRoute` / MainLayout `isAdmin` 同口径。后端字段 / SSE 不动，普通用户消息正文（规则兑底文案）仍非空、仍渲染。
+- **验证（真跑闸门）**：
+  - 后端：FastAPI TestClient + 覆盖 `get_optional_user`，三接口 × 三视角 = 9 例全 `ALL_PASS`：`未认证→401` / `普通用户→403` / `管理员→200`（管理员 `/metrics/registry` 实测返回 `count:14`）。
+  - 前端：`tsc --noEmit` **exit 0**；两视角自检脚本全 `ALL_PASS`（管理员全显 / 普通用户中性 + 非空）。
+  - 零回归：普通用户直调两接口确认 403；对话消息正文不空。
+- **约束遵守**：不碰生产 DuckDB（只读审计 + 内存伪会话验证）；一类一 commit（后端 / 前端 / 文档各一，均含 ISS-090）；过程文件 `night_runs/night40/`（gitignored L99）。
+- **commit**：后端 `require_admin` 升级（ISS-090）；前端 ChatPanel 门禁（ISS-090）；文档（ISS-090）。本地提交，未 push（push 需用户本机 7897 代理授权）。

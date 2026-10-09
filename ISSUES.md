@@ -695,3 +695,14 @@
 - **验证**：`tsc --noEmit` EXIT=0；`vite build` EXIT=0；`dist` 已重建。
 - **范围说明**：本次仅锁前端可见性；后端 `/ai-log` 既有用户隔离保留。
   看板详情页绿色「AI 生成」徽标当前对所有人可见，是否仅管理员可见待用户拍板（不属本 ISS）。
+
+## ISS-090 AI 调用信息全面收口到管理员（对话面板 + 后端 API 双补）（P1，night40）
+
+- **现象**：night38-39 已完成 AI 监控/运维页的菜单合并（ISS-088）与路由级管理员守卫（ISS-089），但仍有两处残留：
+  1. 后端 `ai_action_log.py /list`、`metrics.py /registry`、`metrics.py /calculate` 仅 `Depends(get_current_user)` —— 普通用户前端进不去，但 curl/Postman 直调 API 仍能拿 AI 调用/参与数据（假安全）。
+  2. `ChatPanel.tsx` 角色黛标「AI 参与 ✅ / 规则兑底 ⚠」、AI 调用失败报错卡、AI 未参与诚实卡对**所有登录用户**可见，泄露 AI 技术信息。
+- **决策（用户最高优先级原则）**：AI 调用/参与是管理员视角，普通用户只看业务结果、不感知 AI 是否参与/失败。
+- **修复**：
+  1. 三接口 `Depends(get_current_user)` → `Depends(require_admin)`（升级前复核无普通用户页面/后端内部依赖）。
+  2. ChatPanel 三处 AI 信息渲染加 `isAdmin` 门禁；普通用户仅见中性「助手」黛标，AI 失败/未参与卡不渲染；新增 `currentUserIsAdmin()` 与全局同口径。
+- **状态**：`[DONE]`（night40，见 `docs/project_record/AI_CHANGES.md` §66；过程文件 `night_runs/night40/`）。
