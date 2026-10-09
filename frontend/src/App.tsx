@@ -132,8 +132,16 @@ function App() {
                   <Route path="/lineage" element={<LineagePage />} />
                   <Route path="/share" element={<SharePage />} />
                   <Route path="/report" element={<ReportPage />} />
-                  <Route path="/ai-log" element={<AiLogPage />} />
-                  <Route path="/metrics" element={<MetricPage />} />
+                  <Route path="/ai-log" element={
+                    <ProtectedRoute requireAdmin>
+                      <AiLogPage />
+                    </ProtectedRoute>
+                  } />
+                  <Route path="/metrics" element={
+                    <ProtectedRoute requireAdmin>
+                      <MetricPage />
+                    </ProtectedRoute>
+                  } />
                   <Route path="/recalc" element={
                     <ProtectedRoute requireAdmin>
                       <RecaclPage />

@@ -1286,3 +1286,12 @@ if _fb_msg:
 - 类型：UI / 导航
 - 说明：AI 操作日志、派生指标、下游重算、AI 使用统计、全链路联调 并入「管理后台」下拉子菜单，整组仅管理员可见；`tsc --noEmit` 与 `vite build` 均通过。
 - 关联 ISS：ISS-088
+
+## §65 · AI 监控/派生指标页补路由级管理员守卫（2026-10-09 / ISS-089）
+
+| 文件 | 类型 | 说明 |
+| --- | --- | --- |
+| `frontend/src/App.tsx` | 修改 | `/ai-log`、`/metrics` 路由加 `<ProtectedRoute requireAdmin>`，非管理员跳 `/403` |
+| `frontend/dist/` | 构建产物 | `vite build` 重建，替换 10-06 旧包 |
+
+- 原则落地：普通用户看不到 AI 调用情况（菜单隐藏 + 路由守卫双保险），AI 参与与否是管理员关注视角。

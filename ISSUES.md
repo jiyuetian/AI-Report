@@ -682,3 +682,16 @@
 - 闸门：`tsc --noEmit` TSC_EXIT=0；`vite build` BUILD_EXIT=0（dist 重建，替换 2026-10-06 旧产物）。
 - 已知缺口（未动，待确认）：/ai-log、/metrics 路由（App.tsx）仍无 requireAdmin 守卫，普通用户直接输 URL 仍可访问；菜单隐藏≠路由鉴权。是否补齐路由级管理员守卫待用户拍板（涉及普通用户能否看自己 AI 日志的既有设计）。
 - commit：本提交（分支 p0-security-fixes），未 push。
+
+## ISS-089 · AI 监控/派生指标页补路由级管理员守卫（P2，2026-10-09）
+
+- **背景**：ISS-088 仅把 AI 监控/运维入口在**菜单层**收进「管理后台」并对普通用户隐藏，
+  但 `frontend/src/App.tsx` 中 `/ai-log`、`/metrics` 路由仍只受外层登录保护，
+  普通用户**直接输 URL 仍可直达**——与「普通用户不能看到 AI 调用情况」原则冲突。
+- **改动**：在 `App.tsx` 给 `/ai-log`、`/metrics` 路由包 `<ProtectedRoute requireAdmin>`，
+  与 `/admin`、`/recalc`、`/usage-stats`、`/e2e` 同口径；非管理员访问跳 `/403`。
+- **判定口径**：沿用 `ProtectedRoute` 既有逻辑——`localStorage.user.roles` 含 `'admin'` 才放行，
+  与 `MainLayout` 菜单隐藏口径一致。
+- **验证**：`tsc --noEmit` EXIT=0；`vite build` EXIT=0；`dist` 已重建。
+- **范围说明**：本次仅锁前端可见性；后端 `/ai-log` 既有用户隔离保留。
+  看板详情页绿色「AI 生成」徽标当前对所有人可见，是否仅管理员可见待用户拍板（不属本 ISS）。
