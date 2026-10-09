@@ -29,7 +29,7 @@ import './MainLayout.css'
 const { Header, Content } = Layout
 
 // 导航项（按 PRD 功能层级：一级页面入导航；异常弹窗/看板操作/分享导出/版本/对话历史均为页面内弹窗，不入导航）
-interface NavChild { key: string; icon: React.ReactNode; label: string; path: string }
+interface NavChild { key: string; icon: React.ReactNode; label: string; path: string; adminOnly?: boolean }
 interface NavGroup { group: string; children: NavChild[] }
 
 const navGroups: NavGroup[] = [
@@ -48,7 +48,7 @@ const navGroups: NavGroup[] = [
   {
     group: '管理',
     children: [
-      { key: '/admin', icon: <SettingOutlined />, label: '管理后台', path: '/admin' },
+      { key: '/admin', icon: <SettingOutlined />, label: '管理后台', path: '/admin', adminOnly: true },
     ],
   },
   {
@@ -82,6 +82,21 @@ export default function MainLayout({ tokenCount = 0, tokenLimit = 5000 }: MainLa
   const navigate = useNavigate()
   const location = useLocation()
   const appThemeCtx = useContext(AppThemeContext)
+
+  // 当前登录用户是否管理员：与路由守卫 ProtectedRoute 口径一致（localStorage.user.roles 含 'admin'）
+  const isAdmin = (() => {
+    try {
+      const u = JSON.parse(localStorage.getItem('user') || '{}')
+      return Array.isArray(u.roles) && u.roles.includes('admin')
+    } catch {
+      return false
+    }
+  })()
+
+  // 导航按角色过滤：管理后台整模块仅管理员可见，普通用户连入口都看不到
+  const visibleNavGroups = navGroups
+    .map(g => ({ ...g, children: isAdmin ? g.children : g.children.filter(c => !c.adminOnly) }))
+    .filter(g => g.children.length > 0)
 
   // 计算Token使用率
   const tokenPercent = Math.min(100, (tokenCount / tokenLimit) * 100)
@@ -120,7 +135,7 @@ export default function MainLayout({ tokenCount = 0, tokenLimit = 5000 }: MainLa
   }
   
   const handleNavClick = (key: string) => {
-    const all = navGroups.flatMap(g => g.children)
+    const all = visibleNavGroups.flatMap(g => g.children)
     const item = all.find(n => n.key === key)
     if (item) navigate(item.path)
   }
@@ -131,12 +146,12 @@ export default function MainLayout({ tokenCount = 0, tokenLimit = 5000 }: MainLa
       ? '/dashboards'
       : location.pathname.startsWith('/upload')
         ? '/'
-        : navGroups.flatMap(g => g.children).some(n => n.key === location.pathname)
+        : visibleNavGroups.flatMap(g => g.children).some(n => n.key === location.pathname)
           ? location.pathname
           : '/'
 
   // 顶部水平菜单：把分组拍平成单层 items（横向菜单不展示分组标题）
-  const menuItems = navGroups.flatMap(g => g.children).map(c => ({
+  const menuItems = visibleNavGroups.flatMap(g => g.children).map(c => ({
     key: c.key,
     icon: c.icon,
     label: c.label,
