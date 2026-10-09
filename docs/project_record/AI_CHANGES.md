@@ -1239,3 +1239,15 @@ if _fb_msg:
 - 编辑全程 Python 读改写 + assert 落盘（规避 Edit 报成功未落盘）；CRLF 已归一为 LF（与仓库一致）后 `git diff` 仅显示真实 10 处插入。
 - 一类一 commit，commit 信息含 ISS-084；未批量删除/未 `reset --hard`；过程文件 `night_runs/night37/`（gitignored，不进 commit）。
 - **诚实披露**：A 列（本产品）vs B 列（通用 AI）端到端 D1–D5 真跑对比 **[BLOCKED]**——沙箱 LLM 网关持续 429/超时、且无 B 列产物，无法稳定生成真实看板供打分（与 night36 ISS-078 同源阻塞，非伪造）。代码层根因已修复 + 就绪度代理分验证。
+
+## §61 · 管理后台导航按角色隐藏（night38 / ISS-085）
+
+- **文件**：`frontend/src/components/layout/MainLayout.tsx`
+- **改动**：
+  - `NavChild` 接口新增可选字段 `adminOnly?: boolean`；
+  - `/admin` 菜单项标记 `adminOnly: true`；
+  - 组件内读取 `localStorage.user.roles`（与 `App.tsx` 路由守卫 `ProtectedRoute requireAdmin` L34-37 同一口径）算出 `isAdmin`，用 `visibleNavGroups` 把非管理员视角下的 `adminOnly` 项过滤掉再渲染菜单（`handleNavClick` / `activeKey` / `menuItems` 三处引用同步切换）。
+- **设计意图**：管理后台整模块管理员专属——普通用户连导航入口都看不到；点进去也会因路由守卫跳 `/403`。
+- **判定口径一致性**：前端守卫 `user.roles?.includes('admin')` 与后端 `require_admin`（`security.py` L287，接受 `is_superuser` 或 `roles` 含 `admin`）等价；后端说你是管理员，前端导航才显示。
+- **闸门**：前端 `tsc --noEmit` EXIT=0；三角色行为自检（管理员见 `/admin`、普通用户/未登录均不可见）通过。
+- **commit**：`eccccd2`（night38, ISS-085）

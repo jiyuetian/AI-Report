@@ -628,3 +628,16 @@
 - **修复（已落码 + 真跑通过，commit `ef65d64`+`6022274`）**：新建 `backend/app/core/data_fact_pack.py`，对真实 DuckDB 做只读聚合，产出 规模/数值字段量级(median/p25/p75/空值率)/分类 top 占比/按月时间趋势/数值字段两两相关性 Top5/空值率 Top+重复行率，含 3.0s 预算+静默降级护栏。B1 看板选型 `_build_prompt` 末段追加【数据事实】段（`table_name` 自 `brain_run_sse._s3_table` 线程传入）；B2 执行摘要 `_ch2_executive_summary` 注入事实包并要求引用具体数字。两处均 try/except 静默降级，事实包不可用/异常/超时都回退现状（不阻断生成）。
 - **验证**：`_verify_factpack.py` **5/5 PASS**（temp DuckDB 确定性数据，准确性/相关性/时间趋势/质量均通过）；后端 `py_compile` 四文件通过；导入冒烟通过；B 列就绪度代理分实测 **4.2/5**（替代真实表 50×9 贷款数据）。
 - **状态**：`[DONE]`（night37，本地未 push，等用户授权）。A 列 vs B 列端到端 D1–D5 真跑对比标 **[BLOCKED]**（沙箱无 LLM 网关稳定可达 + 无 B 列产物，与 ISS-078 同源阻塞）。
+
+## ISS-085 · 管理后台(/admin)导航对非管理员隐藏
+
+- **状态**：DONE（代码由 night37 前序轮落地；night38 Task A 收口提交 `eccccd2`）
+- **类型**：前端可见性（导航层）
+- **诉求**：`/admin` 路由已有前端守卫（`App.tsx` L34-37 `requireAdmin`→跳 `/403`），但顶部导航「管理后台」入口此前对所有人可见。要求整模块仅管理员可见。
+- **改动**：`frontend/src/components/layout/MainLayout.tsx`
+  - `NavChild` 接口加 `adminOnly?: boolean`；
+  - `/admin` 菜单项标 `adminOnly: true`；
+  - 组件内按 `localStorage.user.roles.includes('admin')` 算 `isAdmin`（与 `App.tsx` 路由守卫同一口径），`visibleNavGroups` 过滤掉非管理员视角的 `adminOnly` 项后渲染菜单（`handleNavClick` / `activeKey` / `menuItems` 三处引用同步切换）。
+- **闸门**：`tsc --noEmit` 前端类型检查 EXIT=0；行为自检 管理员见 `/admin`、普通用户/未登录均不可见。
+- **关联**：ISS-086（运维页 `/usage-stats` `/recalc` `/e2e` 同样升级管理员专属）。
+- **commit**：`eccccd2`（night38, ISS-085）
