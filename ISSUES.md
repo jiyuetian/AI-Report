@@ -672,3 +672,13 @@
 - **真表验证（night39 Task C）**：用 `backend/data/qa_n33/uploads/07e02b03-*.xlsx`（50 行风控数据）在隔离内存 DuckDB 跑 `_ch5_dimension_analysis`：沙箱 LLM 网关可用时，三图解读升级为引用真实数字+占比+业务风险的分析师级文本（例：发现「结清金额=华南金额、逾期金额=华北金额」跨图关联）；强制 LLM 不可用时回退模板、与 before 逐字一致（零回归）。
 - **闸门**：`py -3.12 -m py_compile` EXIT=0；`_verify_insights.py` 三分支（正常对齐/LLM异常/长度不符）ALL PASS(3/3)；`_taskD_gates.py` 强制 LLM 不可用 → 报告仍生成且逐图回退模板（FALLBACK_OK）。
 - **commit**：night39（ISS-087，见 git log 本提交）
+
+
+## ISS-088 · 顶部导航：AI 监控/运维类入口并入「管理后台」下拉子菜单（P2，2026-10-09）
+- 现象：用户预期「ai监控」已并进管理后台，但菜单仍把 AI 操作日志、派生指标等作为独立顶级分组（审计/分析/测试联调）展示，看起来还是老样子。
+- 根因：night38 仅做权限收口（/admin 对非管理员隐藏、/recalc//usage-stats//e2e 管理员专属），并未合并导航结构；/ai-log、/metrics 当时明确判为「不动」。
+- 修复：`frontend/src/components/layout/MainLayout.tsx` 将 审计/分析/测试联调 三组并入「管理后台」分组，整组 `adminOnly:true`；多子项分组渲染为 antd 水平菜单下拉子菜单（单子项分组仍拍平为叶子）。
+- 行为：管理员顶部见「数据上传 | 我的看板 | 管理后台▾」，下拉含 总览/AI 操作日志/派生指标/下游重算/AI 使用统计/全链路联调；普通用户菜单仅剩 数据上传/我的看板。
+- 闸门：`tsc --noEmit` TSC_EXIT=0；`vite build` BUILD_EXIT=0（dist 重建，替换 2026-10-06 旧产物）。
+- 已知缺口（未动，待确认）：/ai-log、/metrics 路由（App.tsx）仍无 requireAdmin 守卫，普通用户直接输 URL 仍可访问；菜单隐藏≠路由鉴权。是否补齐路由级管理员守卫待用户拍板（涉及普通用户能否看自己 AI 日志的既有设计）。
+- commit：本提交（分支 p0-security-fixes），未 push。

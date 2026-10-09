@@ -46,28 +46,14 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    group: '管理',
+    // 管理后台：聚合原「审计/分析/测试联调」+ 自身概览，整组仅管理员可见
+    group: '管理后台',
     children: [
-      { key: '/admin', icon: <SettingOutlined />, label: '管理后台', path: '/admin', adminOnly: true },
-    ],
-  },
-  {
-    group: '审计',
-    children: [
-      { key: '/ai-log', icon: <FileSearchOutlined />, label: 'AI 操作日志', path: '/ai-log' },
-    ],
-  },
-  {
-    group: '分析',
-    children: [
-      { key: '/metrics', icon: <BarChartOutlined />, label: '派生指标', path: '/metrics' },
+      { key: '/admin', icon: <SettingOutlined />, label: '总览', path: '/admin', adminOnly: true },
+      { key: '/ai-log', icon: <FileSearchOutlined />, label: 'AI 操作日志', path: '/ai-log', adminOnly: true },
+      { key: '/metrics', icon: <BarChartOutlined />, label: '派生指标', path: '/metrics', adminOnly: true },
       { key: '/recalc', icon: <BarChartOutlined />, label: '下游重算', path: '/recalc', adminOnly: true },
       { key: '/usage-stats', icon: <BarChartOutlined />, label: 'AI 使用统计', path: '/usage-stats', adminOnly: true },
-    ],
-  },
-  {
-    group: '测试联调',
-    children: [
       { key: '/e2e', icon: <ExperimentOutlined />, label: '全链路联调', path: '/e2e', adminOnly: true },
     ],
   },
@@ -150,12 +136,19 @@ export default function MainLayout({ tokenCount = 0, tokenLimit = 5000 }: MainLa
           ? location.pathname
           : '/'
 
-  // 顶部水平菜单：把分组拍平成单层 items（横向菜单不展示分组标题）
-  const menuItems = visibleNavGroups.flatMap(g => g.children).map(c => ({
-    key: c.key,
-    icon: c.icon,
-    label: c.label,
-  }))
+  // 顶部水平菜单：单子项分组拍平为叶子；多子项分组（管理后台）渲染为带下拉的子菜单
+  const menuItems = visibleNavGroups.map(g => {
+    if (g.children.length === 1) {
+      const c = g.children[0]
+      return { key: c.key, icon: c.icon, label: c.label }
+    }
+    return {
+      key: 'group:' + g.group,
+      icon: <SettingOutlined />,
+      label: g.group,
+      children: g.children.map(c => ({ key: c.key, icon: c.icon, label: c.label })),
+    }
+  })
   
   return (
     <Layout className="main-layout">

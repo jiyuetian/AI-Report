@@ -1279,3 +1279,10 @@ if _fb_msg:
 - **真表验证**：`qa_n33/uploads/07e02b03-*.xlsx`（50 行）→ 沙箱 LLM 可用时三图升级为分析师级洞察；强制不可用时回退=before（零回归）。交付物见 `docs/project_record/night_runs/night39/`；`report_after.html` 为改动后真跑产出。
 - **闸门**：`py -3.12 -m py_compile` OK；`_verify_insights.py` 3/3；`_taskD_gates.py` FALLBACK_OK。
 - **commit**：night39（ISS-087，见 git log 本提交）
+
+
+## §64 · 顶部导航合并「管理后台」下拉子菜单（2026-10-09 / ISS-088）
+- 文件：`frontend/src/components/layout/MainLayout.tsx`
+- 类型：UI / 导航
+- 说明：AI 操作日志、派生指标、下游重算、AI 使用统计、全链路联调 并入「管理后台」下拉子菜单，整组仅管理员可见；`tsc --noEmit` 与 `vite build` 均通过。
+- 关联 ISS：ISS-088
