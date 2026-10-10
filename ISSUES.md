@@ -720,8 +720,8 @@
 
 - **现象**：pytest 后端单测套件 `tests/test_frontend_static.py::test_acceptance_charts_js_has_contain_label` 1 failed——断言生成产物 `ai-report-acceptance-report/assets/charts.js` 含 `containLabel`，但当前该文件多个 `grid:` 块（`chart-by-group` L17、`chart-golden` L64 等）均未含 `containLabel:true`，轴标签易被裁切/重叠。
 - **根因**：验收报告静态资源 `ai-report-acceptance-report/assets/charts.js` 的 `grid` 未注入 `containLabel:true`；实时应用 `DashboardPage.tsx`/`ChartRenderer.tsx`/`report_generator.py` 均已含，仅该静态产物缺失。属预存环境/产物缺陷，**非 night42 代码回归**。
-- **修复**：`[OPEN]/[BLOCKED]` 不伪造 PASS。需在 `ai-report-acceptance-report/assets/charts.js` 各 `grid:` 块补 `containLabel: true`（与 `_archive` 副本一致）。测试已用 `pytest.skip` 守卫，产物缺失时不判 FAIL；留待构建/报告生成步骤补，或纳入后续 night。
-- **状态**：`[BLOCKED]` 真机/构建产物缺失（注册待修，非代码回归）。
+- **修复**：`[DONE]`（night43）在 `ai-report-acceptance-report/assets/charts.js` 各 `grid:` 块补 `containLabel: true`（L17 `chart-by-group`、L64 `chart-golden`），与实时应用 `DashboardPage.tsx`/`ChartRenderer.tsx`/`report_generator.py` 及 `_archive` 副本一致；pytest `test_acceptance_charts_js_has_contain_label` 由 fail→pass（静态验收文件 3 passed）。
+- **状态**：`[DONE]`（night43：containLabel 补齐 + pytest 转绿；非代码回归，属静态产物缺陷修复）。
 
 ## ISS-093 night42 缺陷狩猎：auth_scan 发现 /health/llm 未登记白名单（2026-10-09）
 
@@ -729,3 +729,9 @@
 - **根因**：night19 任务 A1 新增 `GET /api/v1/health/llm`（只读 LLM 连通性探针，见 `backend/app/api/health.py:195`）后，未同步把该路径加入 `scripts/auth_whitelist.json` 的 `intentional_public`（其兄弟 `/api/v1/health` 已在列）。
 - **修复**：已将 `/api/v1/health/llm` 加入 `scripts/auth_whitelist.json` 的 `intentional_public`（与 `/api/v1/health` 同口径：只读健康探针，不暴露 PII、不写）。重跑 `auth_scan.py` → 未登记(新增越权)=0，AUTHSCAN_RC=0，门禁转绿。
 - **状态**：`[DONE]`（night42 Task D：白名单登记 + 门禁重跑验证）。
+## ISS-094 night43：PowerShell 脚本缺 UTF-8 BOM 致 PowerShell 5 解析报错（2026-10-10）
+
+- **现象**：`scripts/dev_up.ps1` 与根目录 `start_dev.ps1` 为 UTF-8 无 BOM，PowerShell 5.1 默认以系统 ANSI 编码（本机 gb2312/GBK）读取 → 中文被误解码为乱码，触发语法错误。`[System.Management.Automation.Language.Parser]::ParseFile` 实测：dev_up.ps1 = 5 处错误（Try 缺 Catch、字符串未闭合、大括号不匹配），start_dev.ps1 = 1 处错误（字符串未闭合）。
+- **根因**：night42 用 Edit 工具写入这两个脚本时未带 UTF-8 BOM，PowerShell 5 无法识别 UTF-8，按 ANSI(gb2312) 解码中文 → 语法错误。
+- **修复**：仅添加 UTF-8 BOM（EF BB BF）于两文件头部，**不改任何内容**（字节比对 content 与 HEAD 完全一致）。修复后 `ParseFile`：两文件均 0 错误。
+- **状态**：`[DONE]`（night43：BOM 补齐 + `ParseFile` 0 错误验证；提供改前/改后/复现命令/动文件四样证据）。

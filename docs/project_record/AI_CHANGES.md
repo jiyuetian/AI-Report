@@ -1345,4 +1345,12 @@ if _fb_msg:
 - **验证（零回归）**：pytest **72 passed / 1 known BLOCKED**（ISS-092，非 night42 回归）；`py_compile` 4 后端文件 + `tsc --noEmit` 均通过；auth_scan 门禁转绿。
 - **约束遵守**：不碰生产 DuckDB（只读审计 + 隔离验证）；保持 CRLF；B3/B4/B5 仅编译把关、待用户本机网关真机复测（见 `night_runs/night42/LOCAL_ACCEPTANCE_RUNBOOK.md`）。
 - **commit**：后端（brain_run_sse.py B3/B4、data_fact_pack.py B2、intent_classifier.py B5、exports.py、init_admin.py）+ 前端（ChatPanel.tsx B5）+ 3 新单测 + auth_whitelist.json（ISS-093）+ ISSUES.md（ISS-092/093）+ AI_CHANGES §68 + night_runs/night42/。本地提交，未 push（push 需用户本机 7897 代理授权）。
+## §69 · night43：PowerShell 脚本编码修复 + ISS-092 修复（2026-10-10 / ISS-094·092）
 
+- **背景**：night42 收尾后，唯一阻塞项为 PowerShell 脚本编码（无 BOM → PowerShell 5 解析报错）与静态验收产物 charts.js 缺 containLabel（ISS-092，[BLOCKED]）。本夜修复两项阻塞 + 尝试推送 + 真机验收 B3/B4/B5 就绪包。
+- **Task 1（ISS-094，PowerShell BOM）**：`scripts/dev_up.ps1`、`start_dev.ps1` 头部加 UTF-8 BOM（仅编码标记，内容字节不变）。验证四样证据：①改前 `ParseFile` dev_up=5 错 / start_dev=1 错（gb2312 误解码）；②改后两文件均 0 错；③复现命令 `[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$t,[ref]$e); $e.Count`；④动文件 2 个，content 与 HEAD 字节一致（git diff 仅 BOM）。
+- **Task 4（ISS-092，charts.js containLabel）**：`ai-report-acceptance-report/assets/charts.js` 各 `grid:` 块（L17 `chart-by-group`、L64 `chart-golden`）补 `containLabel: true`；pytest `test_acceptance_charts_js_has_contain_label` 由 fail→pass（静态验收文件 3 passed）；与实时应用口径一致。
+- **Task 2（推送）**：`git push origin p0-security-fixes`（带 7897 代理）。沙箱无 7897 代理 → `Failed to connect to github.com:443 over proxy 127.0.0.1`；推送须用户本机执行（与 night42 一致）。本机命令：`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin p0-security-fixes`。
+- **Task 3（真机验收 B3/B4/B5）**：沙箱无浏览器/display 且 `brain/run` 仅 emit started、产不出看板，交互式浏览器验收须用户本机执行。代码就绪已验证：后端 `py_compile` brain_run_sse.py/intent_classifier.py OK；前端 `tsc --noEmit` OK；标记齐全（B3 `_request_user_choice` brain_run_sse.py:175/240/635/662、B4 `user_accepted_rule_fallback` :628/647/662/833/894/895、B5 `CLARIFY="clarify"` intent_classifier.py:74 + ChatPanel.tsx:627）。验收步骤见 `night_runs/night42/LOCAL_ACCEPTANCE_RUNBOOK.md` §4（4a B5 澄清卡 / 4b B4 S3 规则兜底跳过 LLM / 4c B3 S4b 追问弹窗），需用户本机回填截图/日志。
+- **约束遵守**：不碰其他 night42 已提交代码；不修 ISS-093（已 DONE）；B3/B4/B5 仅做验收、不改功能代码；保持 CRLF；过程文件 `night_runs/night43/`（gitignored L99）。
+- **commit**：ISS-094（两 ps1 BOM）+ ISS-092（charts.js containLabel）+ ISSUES.md（ISS-092→DONE / ISS-094）+ AI_CHANGES §69。本地提交，未 push（push 需用户本机 7897 代理授权）。
