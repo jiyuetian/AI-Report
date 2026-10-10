@@ -183,6 +183,8 @@ async def export_async(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"创建导出任务失败: {str(e)}")
+
+
 @router.get("/status/{task_id}")
 async def get_export_status(
     task_id: str,
@@ -210,8 +212,9 @@ async def get_export_status(
         "file_size": row.file_size or 0,
         "expires_at": row.expire_at.isoformat() if row.expire_at else None,
         "error_msg": row.error_msg,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+
+
 @router.get("/my/list")
 async def list_my_exports(
     db: AsyncSession = Depends(get_db),

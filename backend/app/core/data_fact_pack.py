@@ -215,6 +215,11 @@ async def build_fact_pack(
                 pack["_budget_exceeded"] = True
                 break
             nm = c["name"]
+            # B2: 高基数字段（distinct_count > max_cardinality）不计入分类事实，
+            #     避免高基数噪声进入事实包并节省 SQL 探查开销
+            _distinct = prof_idx.get(nm, {}).get("distinct_count")
+            if _distinct is not None and _distinct > max_cardinality:
+                continue
             q = quote_ident(nm)
             try:
                 tot = db.conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] or 0
@@ -232,9 +237,8 @@ async def build_fact_pack(
                     top.append({"value": _truncate(str(row[0])), "count": cnt, "share": share})
                     if not top1:
                         top1 = share
-                distinct = prof_idx.get(nm, {}).get("distinct_count")
                 pack["category_facts"][nm] = {
-                    "distinct": distinct,
+                    "distinct": _distinct,
                     "top": top,
                     "top1_share": top1,
                 }

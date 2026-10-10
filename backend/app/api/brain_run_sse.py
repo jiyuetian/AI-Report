@@ -830,11 +830,11 @@ async def brain_run_pipeline(
                 s3_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S3", {
                     "theme": theme_tag, "fields": fields, "goals": goals
                 }), "S3")
-                if llm_offline:
-                    # LLM 不可达：跳过 LLM 调用，直接走规则引擎兜底（省去 180s 超时等待）。
-                    # 问题1修复：仍标记 s3_ai_failed，让用户在看板完成前被明确告知「AI 未参与」并可选择等待重试，
-                    # 不再静默兜底（原设计因担心 600s 用户询问挂起而吞掉提示，导致生成看板时无限流告警）。
-                    print("[Brain] LLM 不可达：S3 直接走规则引擎兜底，标记 s3_ai_failed 交还用户选择")
+                if llm_offline or user_accepted_rule_fallback:
+                    # LLM 不可达，或用户已在探针阶段明确选择「规则兜底」：跳过 LLM 调用，
+                    # 直接走规则引擎兜底（省去 ~125s 超时等待）。B4（night42）：原仅判 llm_offline，
+                    # 用户选过 rule_fallback 但 llm_offline 仍为 False 时会白白尝试 LLM。
+                    print("[Brain] LLM 不可达或用户已选规则兜底：S3 直接走规则引擎兜底，标记 s3_ai_failed 交还用户选择")
                     from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
                     engine = S3ChartEngine(derived_metrics=derived_metrics)
                     engine_cfg = engine.generate_dashboard_config(
@@ -1116,11 +1116,44 @@ async def brain_run_pipeline(
                                 f"对异常占比与连续下行指标安排后续复核与跟进。"
                             )
                 except Exception as e:
-                    print(f"[Brain] 分析文本生成失败（不影响看板生成）: {e}")
-                    analysis_text = (
-                        f"基于「{theme_tag}」主题，系统已自动生成 {len(final_charts)} 个分析图表。"
-                        f"如需更详细的业务解读，可在右侧对话中向 AI 追问。"
+                    print(f"[Brain] 分析文本生成失败: {e}")
+                    # B3（night42）：与 S1/S2/S3 同口径——不再静默规则，改为询问用户（超时自动规则兜底）。
+                    _fb = (
+                        f"基于「{theme_tag}」主题，系统已自动生成 {len(final_charts)} 个分析图表，"
+                        f"覆盖核心业务维度与关键指标。建议结合各图表交叉解读重点趋势，"
+                        f"对异常占比与连续下行指标安排后续复核与跟进。"
                     )
+                    try:
+                        choice = await _request_user_choice(run_id, {
+                            "stage": "analysis_text",
+                            "options": ["rule_fallback", "wait_retry"],
+                            "reason": _short_err(e),
+                            "message": (
+                                "分析说明 AI 生成失败（模型限流或超时）。\n"
+                                "您可以：\n"
+                                "· 用系统规则摘要立即继续\n"
+                                "· 或等待 AI 恢复后重试一次"
+                            ),
+                        })
+                    except Exception:
+                        choice = "rule_fallback"
+                    if choice == "wait_retry" and "system_prompt" in dir() and "prompt_text" in dir():
+                        try:
+                            _re = await llm_chat(
+                                prompt=system_prompt + "\n\n" + prompt_text,
+                                json_mode=False, user_id="analysis_text", timeout=60,
+                            )
+                            if _re.success and _re.content:
+                                analysis_text = _re.content.strip()
+                                budget.add(analysis_text)
+                                print("[Brain] 分析文本 wait_retry 重生成成功")
+                            else:
+                                analysis_text = _fb
+                        except Exception as _e2:
+                            print(f"[Brain] 分析文本 wait_retry 仍失败: {_e2}")
+                            analysis_text = _fb
+                    else:
+                        analysis_text = _fb
 
             progress.stage_status = "completed"
             yield progress.to_event()

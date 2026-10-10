@@ -1326,16 +1326,23 @@ if _fb_msg:
 - **约束遵守**：不碰生产 DuckDB（只读审计 + 隔离临时库验证 + 独立 temp DuckDB）；保持 CRLF；一类一 commit（后端/文档各一，含 ISS）；过程文件 `night_runs/night41/`（gitignored L99）。
 - **commit**：后端 `exports.py` 去假（ISS-020·072）；文档（§67 + ISS-020/072→`[DONE]` + ISS-091 + runbook §7 + NIGHT_SUMMARY）。本地提交，未 push（push 需用户本机 7897 代理授权）。
 
-## §67 · 导出端点去假 + 真机验收 runbook 补 §7 + 报表质量一键脚本（night41 / ISS-020·072·091）
+## §68 · night42 全量体检 + 清账 + 代码缺陷批次 + 缺陷狩猎 + 真机验收就绪（2026-10-09）
 
-- **背景**：night34 由 ISS-020 残余开出 ISS-072，`/exports/status` 与 `/exports/my/list` 仍返回硬编码假数据；night35–night40 新增管理后台可见性、AI 信息收口、报表质量、AI 参与可观测等项，runbook §2–§6 未覆盖，缺本机真机验收矩阵；报表质量缺一键可跑标尺。
-- **Task A（ISS-020/072 导出去假，`backend/app/api/exports.py`）**：
-  - `/async`：真实创建 `ExportTask` 行（`dashboard_id`/`fmt`/`status=processing`/`created_by`/`expire_at`），`db.flush()` 拿真实 `task.id`，调 `ExportService.export_dashboard` 后按 `mode` 落 `completed`+`file_path`+`file_size` 或 `failed`+`error_msg`，`commit` 返回真实 `task.id` 与 `check_status_url`。去掉 `task_001` 假兜底。
-  - `/status/{task_id}`：查 `export_tasks` 真表；无则 404「导出任务不存在」；归属校验（admin 或 `created_by==当前用户`，否则 404，**出于隐私不返回 created_by**）；返回真实 `status`/`download_url`/`file_size`/`expires_at`/`error_msg`。
-  - `/my/list`：查 `export_tasks` 真表（当前用户），无则 `total=0` 空列表；无 `exp_001` 假记录。
-  - 删除全部硬编码（`task_001`/`exp_001`/`export_001`/`2026-08-27`）；`/sync` 不动（已诚实）。
-- **验证（真跑闸门，隔离 sqlite+aiosqlite 临时库）**：`night_runs/night41/_verify_exports_honest.py` 7 项断言 ALL_PASS（`VERIFY_RC=0`）：①源无硬编码假值 ②/status 缺失→404 ③/my/list 无数据→空 ④/status 真任务→真实字段 ④b/my/list 真任务→1 条 ⑤普通用户查他人→404 ⑤b管理员查他人→200。
-- **Task B（runbook §7）**：既有 `docs/project_record/真机验收 runbook.md` 追加 §7「night35–night41 待真机验证矩阵」，覆盖 5 项缺口（管理后台可见性/AI 信息收口/报表质量/导出/AI 参与可观测），每项给操作步骤/预期现象/失败判据 + §7.0 一键前置；统计需本机真机 15 项（含 1 `[BLOCKED]`）。
-- **Task C（报表质量一键脚本）**：night37 跑分器字节级复制为 `night_runs/night41/measure_report_quality.py`，产出 `REPORT_QUALITY_HOWTO.md`；实跑真实 Excel（1020 行×21 字段）验证：D1–D5 就绪度 4.4/5，真实【数据事实】段注入成功。端到端 A/B LLM 对比标 `[BLOCKED]`（无网关+无报告链路），不伪造。
-- **约束遵守**：不碰生产 DuckDB（只读审计 + 隔离临时库验证 + 独立 temp DuckDB）；保持 CRLF；一类一 commit（后端/文档各一，含 ISS）；过程文件 `night_runs/night41/`（gitignored L99）。
-- **commit**：后端 `exports.py` 去假（ISS-020·072）；文档（§67 + ISS-020/072→`[DONE]` + ISS-091 + runbook §7 + NIGHT_SUMMARY）。本地提交，未 push（push 需用户本机 7897 代理授权）。
+- **背景**：night41 收口后做一轮全量体检（Task 0，只读），按「可沙箱做 / 需真机 / 需拍板」三类分流，逐项清账与修缺陷。核心生成管线 B3/B4/B5/B6 因沙箱 `brain/run` 仅 emit `started`、产不出看板，无法 E2E 验证；按用户决策「谨慎实现 + 编译把关」（`py_compile` / `tsc --noEmit` 门禁，待本机网关复测）。
+- **Task A（清账）**：对齐 ISS-020/072 导出去假口径；去重 AI_CHANGES §67（删除重复 §67 块）；`exports.py` 三端点接真实 `export_tasks` 表（night41 已闭环，本轮仅文档口径对齐）。
+- **Task B1/B2（低风险代码缺陷）**：
+  - B1：`analytics.compare_two_periods` 容缺 `e["data"]` 字段（`e.get("data") or {}`），不 500；附回归 `tests/test_analytics_b1.py` 1 passed。
+  - B2：`data_fact_pack.build_fact_pack` 死参数 `max_cardinality` 落地为过滤（distinct_count > max_cardinality 的高基数字段不计入分类事实，省 SQL 探查开销）；附 `tests/test_data_fact_pack_b2.py` 2 passed。
+- **Task B3/B4/B5/B6（核心生成管线，编译把关）**：
+  - B3（Q6）：`brain_run_sse.py` S4b（看板顶部分析摘要）`except Exception` 静默回退 → 接 `_request_user_choice`（与 S1/S2/S3 同口径，弹 `rule_fallback` / `wait_retry`）。
+  - B4（Q8）：S3 识别用户已选 `rule_fallback`（`user_accepted_rule_fallback=True`）→ 跳过 ~125s LLM 尝试，直接规则兜底。
+  - B5（Q9）：`IntentType` 加 `CLARIFY="clarify"` 成员（避免 chat SSE 构造 `IntentType("clarify")` 抛 `ValueError` 打断流）；前端 `ChatPanel.tsx` 新增面向**所有用户**的「需要您补充信息」澄清卡。
+  - B6（Q16①）：多轮历史 `_build_history(max_rounds=5)` 已闭环，仅回归验证。
+- **Task C（一键启动 + 全链路冒烟）**：`scripts/smoke_full.py` 跑通，`SMOKE_EXIT=0`：6 OK（health / upload / dataset / quality / brain-run-started / chat）+ 4 BLOCKED（看板ID / report / export PDF / export status）——BLOCKED 因沙箱 `brain/run` 仅 emit `started`、产不出看板（AI/环境限制，非代码缺陷）。
+- **Task D（缺陷狩猎）**：
+  - D1 鉴权门禁重跑：离线 dump 当前 app OpenAPI（219 操作）跑 `scripts/auth_scan.py` → 发现 `GET /api/v1/health/llm` 未登记白名单（ISS-093）→ 补入 `intentional_public` → 重跑 `未登记(新增越权)=0`，AUTHSCAN_RC=0，门禁转绿。
+  - D2 登记 ISS-092：`ai-report-acceptance-report/assets/charts.js` 多 `grid:` 缺 `containLabel:true`（轴标签裁切）→ `[BLOCKED]` 诚实登记，不伪造 PASS（测试已 `pytest.skip` 守卫）。
+- **验证（零回归）**：pytest **72 passed / 1 known BLOCKED**（ISS-092，非 night42 回归）；`py_compile` 4 后端文件 + `tsc --noEmit` 均通过；auth_scan 门禁转绿。
+- **约束遵守**：不碰生产 DuckDB（只读审计 + 隔离验证）；保持 CRLF；B3/B4/B5 仅编译把关、待用户本机网关真机复测（见 `night_runs/night42/LOCAL_ACCEPTANCE_RUNBOOK.md`）。
+- **commit**：后端（brain_run_sse.py B3/B4、data_fact_pack.py B2、intent_classifier.py B5、exports.py、init_admin.py）+ 前端（ChatPanel.tsx B5）+ 3 新单测 + auth_whitelist.json（ISS-093）+ ISSUES.md（ISS-092/093）+ AI_CHANGES §68 + night_runs/night42/。本地提交，未 push（push 需用户本机 7897 代理授权）。
+

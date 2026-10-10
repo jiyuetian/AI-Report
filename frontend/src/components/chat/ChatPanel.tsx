@@ -623,6 +623,16 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                   }
                 />
               )}
+              {/* B5（night42）：澄清意图卡——意图为 clarify 时明确提示用户补充信息（面向所有用户） */}
+              {msg.intent_type === 'clarify' && !msg.ai_error && (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginTop: 8 }}
+                  message="需要您补充信息"
+                  description="以上为澄清/追问：请补充更具体的指令（例如要改哪张图、用哪种维度、什么阈值），AI 才能继续操作。"
+                />
+              )}
               {/* night36 Task A3/A4：AI 未参与（规则兜底）诚实卡 + 双入口（重试 AI / 保留规则结果） */}
               {isAdmin && !msg.ai_error && msg.ai_participated === false && msg.action_source === 'rule' && !dismissedRuleCards.has(msg.id) && (
                 <Alert

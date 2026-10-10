@@ -71,6 +71,7 @@ class IntentType(str, Enum):
     QUERY_METRIC = "query_metric"             # 指标查询/对比/趋势/解释（中文名/英文键/别名）
     RECALC_METRIC = "recalc_metric"           # 下游重算一致性（C-16）：触发/状态/恢复/性能
     UNKNOWN = "unknown"
+    CLARIFY = "clarify"                  # 澄清/追问：意图不明时请用户补充信息（B5：避免 ValueError 打断 SSE 流）
 
 
 # 中文/英文引号集合：标题抽取必须同时支持，老实现只认弯引号 ""''，

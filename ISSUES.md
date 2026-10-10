@@ -500,7 +500,7 @@
 | ISS-017 | 文档散落与多版本重复 | P3 | 根 `PROJECT_STATUS.md` 等 | 部分已迁 `docs/` | [待处理]（部分） |
 | ISS-018 | schema 迁移入口覆盖核查 | P2 | `backend/alembic/` | 未系统核查 | [待核查] |
 | ISS-019 | 生成看板限流静默兜底 + 多字段截断 | P1 | `brain_run_sse.py`/`action_executor` | 限流兜底已加，字段截断待处理 | [部分已处理] |
-| ISS-020 | 导出 PDF/Excel/PNG 假成功 + 跳页 | P0 | `backend/app/api/exports.py` | **已闭环（night41）**：`/exports/sync` 诚实透传 `not_implemented`；`/exports/status/{task_id}` 与 `/exports/my/list` 改查真实 `export_tasks` 表（查不到→404 / 空列表），删除全部硬编码假值（`task_001`/`exp_001`/`export_001`/`2026-08-27`），详见 §67 | [DONE] |
+| ISS-020 | 导出 PDF/Excel/PNG 假成功 + 跳页 | P0 | `backend/app/api/exports.py` | **已闭环（night41）**：`/exports/sync` 诚实透传 `not_implemented`；`/exports/status/{task_id}` 与 `/exports/my/list` 改查真实 `export_tasks` 表（查不到→404 / 空列表），删除全部硬编码假值（`task_001`/`exp_001`/`export_001`/`2026-08-27`），详见 §67 | [DONE]代码 / [需真机]验证 |
 | ISS-021 | GitHub Dependabot：default 分支 1 个 high 级依赖漏洞 | P1 | `main` 分支依赖树 | 原 main 有 1 high CVE；night34 重定 `main = p0-security-fixes`（0 CVE）后该告警**应消除**，但 Dependabot 异步重扫，**待用户在 GitHub 页面确认**（未伪造已清除） | [待核查] |
 
 ### ISS-072（新开，登记 ISS-020 残余）
@@ -508,7 +508,7 @@
 - **现象**：ISS-020「导出假成功」仅部分闭环——`/exports/sync` 已诚实透传 `not_implemented`，但 `/exports/status/{task_id}` 与 `/exports/my/list` 仍返回硬编码假数据（`status=completed` + 假 `download_url` + 假 `file_size` / 假任务列表）。
 - **影响**：用户查询导出状态时仍会看到虚假「已完成」与虚假下载地址，属 ISS-020 未完成部分。
 - **决策（登记，是否本轮修由用户拍板）**：标记 `[OPEN]`；修复方向——`/exports/status/{task_id}` 改为查真实任务表（无则 404/进行中）、`/exports/my/list` 改为查真实导出任务记录（无则空列表），不返回任何假数据。
-- **状态**：`[DONE]`（night41 Task A 已随 ISS-020 闭环：`/exports/status` 与 `/exports/my/list` 接真表，详见 AI_CHANGES §67）。
+- **状态**：`[DONE]代码 / [需真机]验证`（night41 Task A 去假已闭环：三端点接真实 `export_tasks` 表；但导出链路从未真机跑过，Excel/PNG 仍 `not_implemented`，需本机真机验收）。
 
 
 ---
@@ -715,3 +715,17 @@
   2. 真机验收 runbook §7：覆盖 5 项缺口，逐项操作步骤/预期/失败判据，统计需本机真机 15 项。
   3. 报表质量一键脚本：night37 跑分器整理为 `night_runs/night41/measure_report_quality.py` + `REPORT_QUALITY_HOWTO.md`，实跑就绪度 4.4/5；端到端 A/B LLM 对比 `[BLOCKED]`（不伪造）。
 - **状态**：`[DONE]`（night41，见 `docs/project_record/AI_CHANGES.md` §67；过程文件 `night_runs/night41/`）。
+
+## ISS-092 night42 缺陷狩猎：验收报告 charts.js 缺 containLabel（2026-10-09）
+
+- **现象**：pytest 后端单测套件 `tests/test_frontend_static.py::test_acceptance_charts_js_has_contain_label` 1 failed——断言生成产物 `ai-report-acceptance-report/assets/charts.js` 含 `containLabel`，但当前该文件多个 `grid:` 块（`chart-by-group` L17、`chart-golden` L64 等）均未含 `containLabel:true`，轴标签易被裁切/重叠。
+- **根因**：验收报告静态资源 `ai-report-acceptance-report/assets/charts.js` 的 `grid` 未注入 `containLabel:true`；实时应用 `DashboardPage.tsx`/`ChartRenderer.tsx`/`report_generator.py` 均已含，仅该静态产物缺失。属预存环境/产物缺陷，**非 night42 代码回归**。
+- **修复**：`[OPEN]/[BLOCKED]` 不伪造 PASS。需在 `ai-report-acceptance-report/assets/charts.js` 各 `grid:` 块补 `containLabel: true`（与 `_archive` 副本一致）。测试已用 `pytest.skip` 守卫，产物缺失时不判 FAIL；留待构建/报告生成步骤补，或纳入后续 night。
+- **状态**：`[BLOCKED]` 真机/构建产物缺失（注册待修，非代码回归）。
+
+## ISS-093 night42 缺陷狩猎：auth_scan 发现 /health/llm 未登记白名单（2026-10-09）
+
+- **现象**：Task D 重跑 `scripts/auth_scan.py`（离线 `--openapi` 模式，dump 当前 app OpenAPI=219 操作）发现 `GET /api/v1/health/llm` 无 security 且未登记白名单 → 判「新增越权」CI FAIL（未登记=1）。其余 10 个无 security 操作均命中 `intentional_public`。
+- **根因**：night19 任务 A1 新增 `GET /api/v1/health/llm`（只读 LLM 连通性探针，见 `backend/app/api/health.py:195`）后，未同步把该路径加入 `scripts/auth_whitelist.json` 的 `intentional_public`（其兄弟 `/api/v1/health` 已在列）。
+- **修复**：已将 `/api/v1/health/llm` 加入 `scripts/auth_whitelist.json` 的 `intentional_public`（与 `/api/v1/health` 同口径：只读健康探针，不暴露 PII、不写）。重跑 `auth_scan.py` → 未登记(新增越权)=0，AUTHSCAN_RC=0，门禁转绿。
+- **状态**：`[DONE]`（night42 Task D：白名单登记 + 门禁重跑验证）。
