@@ -1354,3 +1354,13 @@ if _fb_msg:
 - **Task 3（真机验收 B3/B4/B5）**：沙箱无浏览器/display 且 `brain/run` 仅 emit started、产不出看板，交互式浏览器验收须用户本机执行。代码就绪已验证：后端 `py_compile` brain_run_sse.py/intent_classifier.py OK；前端 `tsc --noEmit` OK；标记齐全（B3 `_request_user_choice` brain_run_sse.py:175/240/635/662、B4 `user_accepted_rule_fallback` :628/647/662/833/894/895、B5 `CLARIFY="clarify"` intent_classifier.py:74 + ChatPanel.tsx:627）。验收步骤见 `night_runs/night42/LOCAL_ACCEPTANCE_RUNBOOK.md` §4（4a B5 澄清卡 / 4b B4 S3 规则兜底跳过 LLM / 4c B3 S4b 追问弹窗），需用户本机回填截图/日志。
 - **约束遵守**：不碰其他 night42 已提交代码；不修 ISS-093（已 DONE）；B3/B4/B5 仅做验收、不改功能代码；保持 CRLF；过程文件 `night_runs/night43/`（gitignored L99）。
 - **commit**：ISS-094（两 ps1 BOM）+ ISS-092（charts.js containLabel）+ ISSUES.md（ISS-092→DONE / ISS-094）+ AI_CHANGES §69。本地提交，未 push（push 需用户本机 7897 代理授权）。
+
+
+## §70 · night44 Task A：对话 P0 修复落库 + 运行时回归测试（2026-10-12 / ISS-095·096）
+
+- **背景**：night43 爬虫真机自测发现 3 个对话 P0（P0-A/B 闭包 UnboundLocalError、P0-C current_user 类型回归），工作区已修复，本轮将其**落库**并补关键的运行时回归测试（此前 `test_chat_safe_stream_wrapper_present` 仅是 grep 静态守卫，正是漏掉闭包 bug 的原因）。
+- **修复点（chat.py）**：`current_user = _auth["user_id"]`（:592）；`_fresh_config = dashboard.config or {}`（:1093）；`_exec_ctx = dict(context)`（:1100）；`_exec_ctx["is_superuser"] = bool(_auth.get("is_superuser", False))`（:1104）；`execute_action(..., _fresh_config, _exec_ctx)`（:1124-1125）；`dashboard.config = last_new_config; dashboard.updated_by = current_user`（:1167-1169）。
+- **运行时回归测试（新增 backend/tests/test_chat_action_p0.py）**：真跑 `send_message_stream → safe_stream → generate_stream → execute_action`，mock `plan_actions`/`check_moderation`/`check_feasibility`/`log_user_action`/`log_ai_action`，隔离临时 SQLite（重定向 `app.core.database` 引擎/会话工厂）。两个用例：① `test_chat_action_p0_add_change_delete` 驱动 add/change/delete 三分支，断言流无 error 事件、complete 事件动作 success、config 真实落库变更、`updated_by == "test-user"`（str 不崩）；② `test_chat_p0_closure_fix_present` 静态守卫修复标记仍在。pytest **2 passed**。
+- **关键设计**：`safe_stream` 会吞掉 `UnboundLocalError`/`AttributeError` 并转为 error 事件，故测试通过「收集 SSE 事件 + 断言无 error 事件」来捕获回归（而非依赖异常抛出），确保即便闭包 bug 重现也能被断言发现。
+- **约束遵守**：不碰 B3/B4/B5 功能代码；chat.py 规范化为 CRLF（与仓库既有提交/文件约定一致；无 .gitattributes，`core.autocrlf=true` 仅影响 checkout）。
+- **commit**：chat.py（ISS-095/096 三处修复）+ 新回归测试 + ISSUES.md（ISS-095/096）+ AI_CHANGES §70。单独提交（Task A 一类一 commit），未 push（push 需用户本机 7897 代理授权）。

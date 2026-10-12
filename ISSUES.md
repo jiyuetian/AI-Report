@@ -735,3 +735,18 @@
 - **根因**：night42 用 Edit 工具写入这两个脚本时未带 UTF-8 BOM，PowerShell 5 无法识别 UTF-8，按 ANSI(gb2312) 解码中文 → 语法错误。
 - **修复**：仅添加 UTF-8 BOM（EF BB BF）于两文件头部，**不改任何内容**（字节比对 content 与 HEAD 完全一致）。修复后 `ParseFile`：两文件均 0 错误。
 - **状态**：`[DONE]`（night43：BOM 补齐 + `ParseFile` 0 错误验证；提供改前/改后/复现命令/动文件四样证据）。
+
+
+## ISS-095 night44：对话动作轮 current_user 被按 dict 调 .get 致 100% 崩溃（P0-C 回归，2026-10-12）
+
+- **现象**：对话任意动作指令（加图/改图/删图/撤销等）均 ~515ms 即返回 stream_error，动作从未执行；`safe_stream` 兜底捕获异常并产出 error 事件，前端表现为「对话生成中断」。
+- **根因**：ISS-025 把 `send_message_stream` 的 `current_user` 从登录身份 dict 改为 `user_id` 字符串（`_auth["user_id"]`，chat.py:592）；但动作执行闭包内 1101/1192 两处仍按**原 dict** 调 `current_user.get(...)`，字符串无 `.get` → `'str' object has no attribute 'get'`。属 ISS-025 的**回归**（改动只改了声明处，未同步消费处）。
+- **修复**：`[DONE]`（night44）动作闭包统一改用 `_auth` 字典（`_exec_ctx["is_superuser"] = bool(_auth.get("is_superuser", False))`，chat.py:1104），`current_user` 恒为 str 且只用于 `dashboard.updated_by = current_user`（:1169）与埋点，不再对 str 调 `.get`。新增运行时回归测试 `backend/tests/test_chat_action_p0.py`（真跑 `generate_stream` 的 add/change/delete 分支，mock LLM/审核/可行性），断言：无 error 事件、动作 success、config 落库、`updated_by == "test-user"`。
+- **状态**：`[DONE]`（night44：chat.py L592/L1104 + 回归测试 2 passed）。
+
+## ISS-096 night44：generate_stream 闭包对 context/current_config 赋值致 UnboundLocalError（P0-A/B 潜在缺陷，2026-10-12）
+
+- **现象**：对话请求在 `plan_actions(request.message, context, ...)` 调用点即抛 `UnboundLocalError: cannot access local variable 'context' before assignment`（或 `current_config`），所有对话请求 ~515ms 即 stream_error。
+- **根因**：动作执行闭包内曾对闭包变量 `context` / `current_config` 赋值（`context = dict(context)` / `current_config = dashboard.config or {}`），使 `context`/`current_config` 在 `generate_stream` 作用域内变为**局部变量**，其前方引用（:795 `plan_actions(..., context, ...)`、:667 之后的读取）触发 `UnboundLocalError`。属**潜在缺陷**（仅在特定代码路径触发，既有 `test_chat_safe_stream_wrapper_present` grep 静态守卫无法发现）。
+- **修复**：`[DONE]`（night44）闭包内改用只读副本：`_fresh_config = dashboard.config or {}`（:1093）、`_exec_ctx = dict(context)`（:1100），并 `execute_action(act.get("type"), act.get("params", {}), _fresh_config, _exec_ctx)`（:1124-1125）传入副本，绝不再对 `context`/`current_config` 赋值。运行时回归测试 `test_chat_action_p0.py` 真跑三动作分支，断言无 error 事件。
+- **状态**：`[DONE]`（night44：chat.py L1093/L1100/L1124-1125 + 回归测试 2 passed）。

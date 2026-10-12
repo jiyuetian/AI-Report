@@ -1087,14 +1087,23 @@ async def send_message_stream(
                             if not dashboard:
                                 one["error"] = "看板不存在，未执行"
                             else:
-                                current_config = dashboard.config or {}
+                                # FIX(current-config-unbound)：不得对闭包变量 current_config 赋值，
+                                # 否则 generate_stream 内前方 (current_config or {}).get(...) 触发
+                                # UnboundLocalError（2026-10-12 爬虫实测 delete_last_ai 路径复现）
+                                _fresh_config = dashboard.config or {}
                                 # night15-16 Task G：注入超管身份，供 MANAGE_PERMISSIONS 硬护栏判定
-                                if not isinstance(context, dict):
-                                    context = {}
-                                context = dict(context)
-                                context["is_superuser"] = current_user.get("is_superuser", False)
+                                # FIX(chat-context-unbound)：此处不得对闭包变量 context 赋值——
+                                # 一旦赋值，context 变为 generate_stream 的局部变量，
+                                # 前方 plan_actions(request.message, context, ...) 会触发
+                                # "cannot access local variable 'context'" UnboundLocalError，
+                                # 导致所有对话请求 ~515ms 即 stream_error（2026-10-12 爬虫实测复现）。
+                                _exec_ctx = dict(context) if isinstance(context, dict) else {}
+                                # FIX(current-user-str)：send_message_stream 里 current_user 已是
+                                # user_id 字符串（L592），dict 是闭包变量 _auth —— 此前对 str 调 .get
+                                # 导致所有动作轮 100% 崩（'str' object has no attribute 'get'）。
+                                _exec_ctx["is_superuser"] = bool(_auth.get("is_superuser", False))
                                 # 锁内基于最新config兜底：新增图表不超上限(与feasibility保持一致的50)
-                                if act.get("type") == "add_chart" and len(current_config.get("charts", [])) >= 50:
+                                if act.get("type") == "add_chart" and len(_fresh_config.get("charts", [])) >= 50:
                                     one["error"] = "看板已有50个图表，已达上限，无法继续新增"
                                 else:
                                     from app.core.action_executor import execute_action
@@ -1112,8 +1121,8 @@ async def send_message_stream(
                                     r = execute_action(
                                         act.get("type"),
                                         act.get("params", {}),
-                                        current_config,
-                                        context
+                                        _fresh_config,
+                                        _exec_ctx
                                     )
                                     one["success"] = bool(r.get("success"))
                                     one["message"] = r.get("message")
@@ -1155,7 +1164,7 @@ async def send_message_stream(
                                             one["message"] = (one.get("message") or "") + f"\n下游重算触发异常：{str(_re)[:160]}"
                                     # night15-16 Task H：read_only 动作（如指标计算）不落库、不刷新 updated_at
                                     if one["success"] and not r.get("read_only"):
-                                        last_new_config = r.get("new_config") or current_config
+                                        last_new_config = r.get("new_config") or _fresh_config
                                         dashboard.config = last_new_config
                                         dashboard.updated_by = current_user
                                         dashboard.updated_at = datetime.utcnow()
@@ -1173,6 +1182,9 @@ async def send_message_stream(
                                             })
                     except Exception as e:
                         # 单动作异常不影响后续动作
+                        import traceback as _tb
+                        print(f"[Chat] 动作执行异常 act={act.get('type')} params_type={type(act.get('params')).__name__}")
+                        _tb.print_exc()
                         one["error"] = f"动作执行异常：{str(e)[:160]}"
                     # night17 Task J（J-8）：AI 动作使用统计（脱敏、零 DB；写入失败不阻断对话）
                     try:
@@ -1180,7 +1192,7 @@ async def send_message_stream(
                         _lat = int((time.time() - _act_t0) * 1000) if "_act_t0" in locals() else None
                         USAGE_STATS.record_event(
                             "ai_action",
-                            current_user.get("sub") or current_user.get("user_id") or "unknown",
+                            _auth.get("user_id") or _auth.get("sub") or "unknown",
                             {"action_type": act.get("type"), "clause": act.get("clause")},
                             success=one.get("success"),
                             latency_ms=_lat,
