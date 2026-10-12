@@ -99,3 +99,9 @@ docs/project_record/07-完整复盘.md
 docs/project_record/night_runs/
 _archive/
 _coach_input/
+
+# 运行时 DuckDB 数据文件（活跃库，勿入库；data/ 下仅保留 .gitkeep）
+data/*.db
+
+# 浏览器自测/QA 截图与脚本产物（根级 night_runs，勿入库）
+night_runs/
