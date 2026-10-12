@@ -757,3 +757,14 @@
 - **根因**：`_execute_change_chart`（action_executor.py:204）与 `_execute_delete_chart`（:838）直接用原始 `title_keyword` 做 `in title` 子串匹配，未剥离口语指代词（这张/那张/这个/那个…）与图型词（柱状图/折线图/饼图…）。
 - **修复**：`[DONE]`（night44 Task C1）新增 `ActionExecutor._clean_title_keyword(raw)`（剥离句首命令动词 把/将/请/帮我把… + 指代词 + 图型词 + 孤立尾字「图」）与 `ActionExecutor._match_chart_by_title(charts, raw_keyword)`（先试原始关键词，未命中再试去修饰候选；都不命中回退 None 交由上层澄清，保留「答非所问绝不猜」语义）。`_execute_change_chart` 先走 `_match_chart_by_title` 再回退 `_locate_chart`（保留字段模糊匹配）；`_execute_delete_chart` 对去修饰候选做包含匹配。新增回归测试 `backend/tests/test_title_keyword_clean.py`（5 passed）：覆盖清洗单元 + 换图/删图经去修饰命中、且不误伤真实标题、不错配。
 - **状态**：`[DONE]`（night44 Task C1：action_executor.py + 回归测试 5 passed）。
+
+## ISS-098 night44：多数据集看板仅主数据集落 quality_issues（C2 定性：设计如此，非缺陷，2026-10-12）
+
+- **观察（自测3 遗留）**：多数据集看板（如 5 个 dataset）中，仅 primary_dataset_id 在 quality_issues 表有行，其余 4 张表 0 条。
+- **定性结论：设计如此，非缺陷**。证据链：
+  1. 质检落库是显式的「单数据集」用户操作：`POST /quality/check`（quality.py:154）与前端 `QualityCheckPanel`（仅对单个 dsId 调 `/quality/check`）均为 per-dataset 设计，无任何对 `dataset_ids` 的扇出；某数据集只有在用户打开其质检面板后才写库，否则 0 行——这是预期行为。
+  2. `brain_run_pipeline`（brain_run_sse.py:554）只把质检结果算进内存 `_RUN_STATUS[run_id]["quality_summary"]`（:601），**从不**把 `QualityIssue` 行持久化落库；故「主数据集有行」只能来自用户对其打开了质检面板，并非生成时自动写入。
+  3. 报告生成 `reports.py:147` 显式只查 `QualityIssue WHERE dataset_id == primary_dataset_id`（仅主数据集）；`appendix_service.py:116 _clean_log` 虽按 `dataset_ids` 列表查，但那只是「查得到多少算多少」，不反向要求每张表都必须有行。
+- **影响/边界**：当前设计以主数据集为质量中心，次要数据集不参与质检/报告质量章节，属有意收敛（避免对每张表都跑八类探查的算力与噪声）。次要数据集若需质量覆盖，须用户逐张打开质检面板。
+- **改进机会（本期未做，非缺陷）**：若产品要求多数据集全量质量覆盖，需 (a) 前端/后端对 `dataset_ids` 扇出质检，(b) `reports.py:147` 改为按 `dataset_ids` 列表聚合。属功能增强，非回归/缺陷修复，故不在 night44 修复范围；留作后续排期。
+- **状态**：`[DONE-定性]`（night44 Task C2：登记为设计行为 + 改进机会，无代码改动）。

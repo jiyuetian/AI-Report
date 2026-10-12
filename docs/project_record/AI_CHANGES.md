@@ -1373,3 +1373,9 @@ if _fb_msg:
 - **修复（action_executor.py）**：新增 `_clean_title_keyword` / `_match_chart_by_title` 两个静态方法；换图/`_execute_change_chart` 与删图/`_execute_delete_chart` 在标题匹配时先试原始关键词、未命中再试去修饰候选，保留既有「点名未命中即澄清」语义（不静默误改）。
 - **回归测试（新增 backend/tests/test_title_keyword_clean.py）**：5 passed（清洗单元 + 换图/删图去修饰命中 + 不误伤真实标题 + 不错配）。
 - **commit（Task C1）**：action_executor.py（ISS-097 两方法 + 两调用点）+ 新测试 + ISSUES.md（ISS-097）+ AI_CHANGES §71。单独提交，未 push。
+
+## §72 · night44 Task C2：多数据集质检落库定性（2026-10-12 / ISS-098）
+
+- **定性结论**：设计如此，非缺陷。质检是显式 per-dataset 用户操作（`POST /quality/check` + `QualityCheckPanel`），无 `dataset_ids` 扇出；`brain_run_pipeline` 仅把质检算进内存 summary 不落库；`reports.py:147` 报告质量章节只查 primary_dataset_id。故「仅主数据集有 quality_issues 行、其余 0 条」是预期行为。
+- **改进机会（未做）**：多数据集全量质量覆盖需后端/前端扇出 + `reports.py:147` 改按 `dataset_ids` 聚合，属功能增强，不在本期。
+- **commit（Task C2）**：仅文档（ISSUES.md ISS-098 + AI_CHANGES §72），无代码改动。单独提交，未 push。
