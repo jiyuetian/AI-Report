@@ -194,6 +194,8 @@ export default function QualityCheckPanel({
   const [applyError, setApplyError] = useState<string | null>(null)
   const [applyResult, setApplyResult] = useState<{ success: number; failed: number; note?: string } | null>(null)
   const [applyElapsed, setApplyElapsed] = useState(0)
+  // 问题3：修复完成后自动进入看板生成的过渡态（内联"正在生成看板…"反馈，避免只有 toast 无下文）
+  const [generating, setGenerating] = useState(false)
   const planAbortRef = useRef<AbortController | null>(null)
 
   // 每条问题当前选中的处理方案：默认=后端标记的推荐方案，用户可在表格里下拉切换
@@ -572,7 +574,8 @@ export default function QualityCheckPanel({
   // 一键采纳推荐方案 — 对齐 B 的"推荐清洗计划"交互：后端已为每类问题标记 recommended 策略，
   // 这里汇总所有规则类问题生成推荐计划，批量调 /quality/fix-batch，完成后自动重跑质检刷新结果。
   // 2026-09-18：支持 onlyBlocking —— 对齐原型底部"仅处理必拦项，继续"，只批量修复阻断类问题。
-  const applyRecommendedPlan = useCallback(async (onlyBlocking: boolean = false) => {
+  // 问题3：proceedAfter=true 时，修复成功后自动进入看板生成（一站式：修复+生成），并给出"正在生成"中间反馈
+  const applyRecommendedPlan = useCallback(async (onlyBlocking: boolean = false, proceedAfter: boolean = false) => {
     if (!datasetId || checking) return
     const seen = new Set<string>()
     const plan: { issue_type: string; column: string; fix_strategy: string }[] = []
@@ -624,28 +627,41 @@ export default function QualityCheckPanel({
       // 内联展示成功 / 部分失败结果
       if (data.failed > 0) {
         setApplyResult({ success: data.success, failed: data.failed })
+        // 问题3：部分失败时仍要给明确反馈，不再用"请点生成看板"误导（因为不会自动生成）
         message.warning(`已修复 ${data.success} 项，${data.failed} 项失败（可逐条处理）`)
       } else {
         setApplyResult({ success: data.success, failed: 0 })
-        message.success(`已按推荐方案修复 ${data.success} 项，正在重新质检...`)
+        message.success(`已按推荐方案修复 ${data.success} 项`)
       }
       // C1：重新质检改为后台重检（不阻塞用户）。先立即展示成果，重检完成后由面板自动刷新状态。
       loadChangeLog()
-      runCheck({ silent: true }).then((newChecks) => {
-        if (!newChecks) return
-        const remainBlocking = newChecks.some(c => c.blocking && c.status === 'fail')
-        const remainWarn = newChecks.reduce((s, c) => s + c.issues.length, 0)
+      const newChecks = await runCheck({ silent: true })
+      const remainBlocking = newChecks ? newChecks.some(c => c.blocking && c.status === 'fail') : false
+      const remainWarn = newChecks ? newChecks.reduce((s, c) => s + c.issues.length, 0) : 0
+      // 问题3：一键修复生成看板场景——修复成功后直接进看板生成，给出"正在生成"中间反馈；
+      // 仅当无阻断项才自动进（有阻断残留时交给用户逐条处理，绝不静默跳过阻断）。
+      if (proceedAfter) {
         if (!remainBlocking) {
-          // 无阻断项 → 提示用户手动点「生成看板」（ISS-065：删除自动弹窗，避免打断用户操作流）
-          message.success(
-            remainWarn > 0
-              ? `质检通过（无阻断项），剩余 ${remainWarn} 个非阻断提示已自动保留，请点「生成看板」继续`
-              : '质检全部通过，请点「生成看板」继续'
-          )
+          setGenerating(true)
+          setApplyResult({ success: data.success, failed: 0 })
+          message.success(`已修复 ${data.success} 项，正在生成看板…`)
+          // 给内联"正在生成看板…"一帧渲染时间，再打开 LoadingPage（真实生成进度由 LoadingPage 呈现）
+          setTimeout(() => { onProceed?.(); setGenerating(false) }, 350)
         } else {
-          message.warning('仍有阻断性问题未修复，请在下方表格逐条处理后继续')
+          message.warning('仍有阻断性问题未修复，已停止自动生成，请在下方表格逐条处理后继续')
         }
-      })
+        return
+      }
+      if (!remainBlocking) {
+        // 无阻断项 → 提示用户手动点「生成看板」（ISS-065：删除自动弹窗，避免打断用户操作流）
+        message.success(
+          remainWarn > 0
+            ? `质检通过（无阻断项），剩余 ${remainWarn} 个非阻断提示已自动保留，请点「生成看板」继续`
+            : '质检全部通过，请点「生成看板」继续'
+        )
+      } else {
+        message.warning('仍有阻断性问题未修复，请在下方表格逐条处理后继续')
+      }
     } catch (e: any) {
       if (e?.name === 'AbortError') {
         setApplyError('批量修复已取消（超时 60s 未响应或手动取消）')
@@ -658,7 +674,7 @@ export default function QualityCheckPanel({
       planAbortRef.current = null
       setApplyingPlan(false)
     }
-  }, [datasetId, checking, runCheck, strategyMap, onProceed])
+  }, [datasetId, checking, runCheck, strategyMap, onProceed, generating])
 
   // 重置 — 撤销清洗层，回滚到原始数据（ISS-064）
   // 仅清空前端状态不足以回滚，必须调用后端 /quality/{dataset_id}/reset 真正删除清洗层物理表 +
@@ -1047,6 +1063,15 @@ export default function QualityCheckPanel({
 
 
       <Divider />
+      {/* 问题3：修复完成→看板生成的过渡态，内联"进行中"反馈 */}
+      {generating && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="已修复完成，正在生成看板…"
+        />
+      )}
       {/* ISS-063：批量修复内联状态条（超时/取消/重试/成功与部分失败均内联可见，不再只靠 message.loading） */}
       {(applyingPlan || applyError || applyResult) && (
         <div style={{ marginBottom: 12 }}>
@@ -1087,7 +1112,7 @@ export default function QualityCheckPanel({
           )}
         </div>
       )}
-      {/* 底部按钮区（2026-09-18 对齐原型）：左"仅处理必拦项，继续"，右"一键 AI 修复全部问题（N项）→" */}
+      {/* 问题3 底部按钮区：左"忽略质检生成看板"（无阻断才亮），右"一键修复生成看板"（修复完自动进生成） */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ color: '#8c8c8c', fontSize: 13 }}>
           质检进度：{passCount}/{state.checks.length} 通过
@@ -1096,29 +1121,22 @@ export default function QualityCheckPanel({
         <Space size={12}>
           <Button
             size="large"
-            loading={applyingPlan && planMode === 'blocking'}
-            disabled={checking || (applyingPlan && planMode !== 'blocking')}
-            onClick={() => {
-              if (hasBlockingErrors) {
-                setPlanMode('blocking')
-                applyRecommendedPlan(true)
-              } else {
-                onProceed?.()
-              }
-            }}
+            loading={generating}
+            disabled={hasBlockingErrors || checking || applyingPlan || generating}
+            onClick={() => { onProceed?.() }}
           >
-            {hasBlockingErrors ? '仅处理必拦项，继续' : '生成看板'}
+            忽略质检生成看板
           </Button>
           {totalIssues > 0 && (
             <Button
               type="primary"
               size="large"
               icon={<ThunderboltOutlined />}
-              loading={applyingPlan && planMode === 'all'}
-              disabled={checking || (applyingPlan && planMode !== 'all')}
-              onClick={() => { setPlanMode('all'); applyRecommendedPlan(false) }}
+              loading={(applyingPlan && planMode === 'all') || generating}
+              disabled={checking || (applyingPlan && planMode !== 'all') || generating}
+              onClick={() => { setPlanMode('all'); applyRecommendedPlan(false, true) }}
             >
-              一键修复全部问题（{totalIssues}项） →
+              一键修复生成看板（{totalIssues}项）
             </Button>
           )}
         </Space>

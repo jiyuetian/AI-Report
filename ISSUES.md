@@ -780,3 +780,18 @@
 - **结论**：详情页（DashboardOps 标题栏）本就会渲染绿色「智能参与生成」徽标，正是「AI 生成」绿标——用户已在标题栏看到它。链无断裂。
 - **唯一不一致（非缺陷，可选优化）**：各处文案口径不同——LoadingPage 完成态用「已生成」(`LoadingPage.tsx:423`)，DashboardOps 用「智能参与生成」；可后续统一为「AI 生成」以对齐用户心智，但属文案优化，不影响功能。
 - **状态**：`[DONE-复核]`（night44 Task C3：链 intact，绿标已在详情页渲染；记录文案不一致供后续统一，无代码改动）。
+
+## ISS-100 · 质检面板底部按钮交互无反馈（问题3）
+- 现象：点「一键修复全部问题」只做修复，成功后弹 `message.success('已修复…请点生成看板继续')` 就结束，
+  不自动进入看板生成；用户看到的是「两个 toast 然后没下文」，无进行中/生成中/失败反馈。
+- 根因：右按钮 `applyRecommendedPlan(false)` 修复后仅提示手动点「生成看板」，未触发 `onProceed`
+  （= `setLoadingModalOpen(true)` 打开 LoadingPage 真生成）；左按钮「生成看板」缺中间态。
+- 修复（frontend/src/components/quality/QualityCheckPanel.tsx）：
+  1. 左按钮改为「忽略质检生成看板」，`disabled={hasBlockingErrors||checking||applyingPlan||generating}`
+     —— 仅当无阻断问题才亮；点击直接 `onProceed` 跳过质检生成看板。
+  2. 右按钮改为「一键修复生成看板（N项）」，点击 `applyRecommendedPlan(false, true)`：
+     修复成功且无阻断残留 → 内联「已修复完成，正在生成看板…」→ 自动 `onProceed` 打开 LoadingPage；
+     仍有阻断残留 → `message.warning` 停止自动生成，交用户逐条处理（绝不静默跳过阻断）。
+  3. 新增 `generating` 过渡态 + 内联 Alert「已修复完成，正在生成看板…」覆盖「修复→生成」空窗，
+     彻底消除「只有 toast 无下文」。
+- 验收：tsc --noEmit 0 错误。

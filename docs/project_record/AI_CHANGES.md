@@ -1385,3 +1385,8 @@ if _fb_msg:
 - **复核结论**：透传链完整、绿标已在详情页渲染，非缺陷。写入端 brain_run_sse.py:1230-1244/1313-1318 把 generated_by/ai_participated/generation_mode 写入 config；读取端 DashboardPage:692 推导 genMode；:1436 透传给 DashboardOps；渲染端 DashboardOps:369-370 当 generationMode==='ai' 渲染绿色「智能参与生成」Tag。用户已在标题栏看到该绿标。
 - **唯一不一致（非缺陷，可选优化）**：LoadingPage 完成态用「已生成」、DashboardOps 用「智能参与生成」，文案口径不同，可后续统一为「AI 生成」。
 - **commit（Task C3）**：仅文档（ISSUES.md ISS-099 + AI_CHANGES §73），无代码改动。单独提交，未 push。
+
+## §74 · 问题3：质检面板底部按钮交互反馈（ISS-100）
+- 左「忽略质检生成看板」仅无阻断时亮；右「一键修复生成看板」修复完自动进 LoadingPage 生成。
+- 新增 `generating` 过渡态，消除「两个 toast 无下文」；修复失败/阻断残留均有明确内联反馈。
+- 文件：frontend/src/components/quality/QualityCheckPanel.tsx（tsc 0 错误）。
