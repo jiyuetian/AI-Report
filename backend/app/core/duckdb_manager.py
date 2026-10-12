@@ -423,6 +423,15 @@ class DuckDBManager:
             CREATE TABLE {cleaned_table} AS 
             SELECT * FROM {raw_table}
         """)
+        # night45：物化「原始文件行号」列，供附录 B 行级明细定位（1-based，含表头偏移）。
+        # 老数据集若已存在 cleaned 表（无此列）则走 rowid+2 近似（见 quality.py _src_row_expr）。
+        try:
+            cols = [r[0].lower() for r in self.conn.execute(f"DESCRIBE {cleaned_table}").fetchall()]
+            if "_src_row" not in cols:
+                self.conn.execute(f"ALTER TABLE {cleaned_table} ADD COLUMN _src_row INTEGER")
+                self.conn.execute(f"UPDATE {cleaned_table} SET _src_row = rowid + 2")
+        except Exception:
+            pass
         return cleaned_table
     
     def create_norm_from_raw(self, dataset_id: str) -> str:

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.dashboard import Dashboard
 from app.models.chart import Chart
-from app.models.quality import CleanRule, QualityIssue
+from app.models.quality import CleanRule, QualityIssue, QualityRowChange
 from app.core.duckdb_manager import get_duckdb
 
 
@@ -113,81 +113,104 @@ def _qc_notnull(qc: str) -> str:
     return f"{qc} IS NOT NULL AND CAST({qc} AS VARCHAR) <> ''"
 
 
+# night45：附录 B 行级明细——数据问题（issue_type）中文标签
+_ISSUE_LABEL = {
+    "null": "空值（缺失）", "duplicate": "主键重复", "format": "格式不统一",
+    "range": "超范围/离群", "logic": "逻辑错误", "code": "码值不一致",
+    "type": "类型异常", "distribution": "分布异常",
+}
+_STRATEGY_LABEL = {
+    "deduplicate": "deduplicate", "keep_first": "keep_first",
+    "fill_median": "fill_median", "fill_mean": "fill_mean", "fill_mode": "fill_mode",
+    "fill_forward": "fill_forward", "fill_backward": "fill_backward", "fill_by_group": "fill_by_group",
+    "fill_constant": "fill_constant", "fill_boundary": "fill_boundary",
+    "coerce_numeric": "coerce_numeric", "convert_format": "convert_format",
+    "convert_standard": "convert_standard", "enum_normalize": "enum_normalize",
+    "unit_unify": "unit_unify", "date_normalize": "date_normalize",
+    "winsorize": "winsorize", "iqr_outlier": "iqr_outlier", "truncate": "truncate",
+    "phone_mask": "phone_mask", "id_card_mask": "id_card_mask", "bank_card_mask": "bank_card_mask",
+    "swap_values": "swap_values", "map_closest": "map_closest", "set_today": "set_today",
+    "delete": "delete", "drop": "drop", "mark": "mark",
+    "mark_anomaly": "mark_anomaly", "mark_duplicate": "mark_duplicate",
+}
+_STATUS_LABEL = {"done": "已修复", "todo": "待处理", "ignored": "已忽略"}
+
+
 async def _clean_log(sql_db: AsyncSession, dataset_ids: List[str]) -> List[Dict[str, Any]]:
-    """B. 清洗与质检日志：合并两路真实数据——
-    1) clean_rules：用户实际执行的清洗算子（已修复，影响行数回填）；
-    2) quality_issues：平台自动质检发现的异常（按 数据集/字段/类型/状态 聚合），
-       展示检测阶段的异常分布，使"先质检→后清洗"的链路在附录里完整可见。
-    本项目真实数据集中 clean_rules 多为生成时未触发，故质检发现是清洗过程的主要白盒来源。"""
+    """B. 清洗与质检日志（night45 行级化）。
+
+    统一为「原始文件行 | 字段 | 数据问题 | 清洗策略 | 清洗前 | 清洗后 | 状态」逐行明细：
+    - 优先读取 quality_row_changes（修复/质检落库的逐行变更）；
+    - 若该数据集尚无行级记录（老数据 / 未触发修复），回落到 clean_rules + quality_issues 聚合，
+      保证附录 B 始终有内容、不出现空白。
+    """
     if not dataset_ids:
         return []
+    rows = (await sql_db.execute(
+        select(QualityRowChange)
+        .where(QualityRowChange.dataset_id.in_(dataset_ids))
+        .order_by(QualityRowChange.dataset_id, QualityRowChange.src_row)
+    )).scalars().all()
+
+    if rows:
+        out = []
+        for r in rows:
+            out.append({
+                "src_row": r.src_row,
+                "field": r.field_name or "-",
+                "issue_type": _ISSUE_LABEL.get(r.issue_type or "", r.issue_type or "-"),
+                "strategy": _STRATEGY_LABEL.get(r.strategy or "", r.strategy or "-"),
+                "before": "" if r.before_value is None else r.before_value,
+                "after": "" if r.after_value is None else r.after_value,
+                "status": _STATUS_LABEL.get(r.status, r.status or "-"),
+                "stage": r.stage or "apply",
+            })
+        return out
+
+    # —— 回落：老数据集无行级记录时，用聚合展示（保留原 night11/night12 行为）——
     rules = (await sql_db.execute(
         select(CleanRule).where(CleanRule.dataset_id.in_(dataset_ids)).order_by(CleanRule.execution_order, CleanRule.id)
     )).scalars().all()
     issues = (await sql_db.execute(
         select(QualityIssue).where(QualityIssue.dataset_id.in_(dataset_ids))
     )).scalars().all()
-    # (dataset, field, type) -> 该字段对应质检问题的"影响行数"
-    # 1.10 修复：原仅取 status=="done" 的 issue，但真实数据中 winsorize 规则对应的质检问题
-    # 多为 ignored/todo（affect_rows=2），导致 apply 阶段"影响行数"全为 None。
-    # 现改为覆盖 done/ignored/todo 三态，并取最大 affect_rows，避免同字段多状态重复计数。
-    # 这样附录 B「已清洗」行的 winsorize 也能显示真实影响行数（比"策略 winsorize"更具体）。
     rows_map = {}
     for iss in issues:
         if iss.status in ("done", "ignored", "todo"):
             key = (iss.dataset_id, iss.field_name, iss.type)
-            prev = rows_map.get(key)
             cur = iss.affect_rows or 0
+            prev = rows_map.get(key)
             if prev is None or cur > prev:
                 rows_map[key] = iss.affect_rows
 
     log = []
     seq = 0
-    # 1) 已执行清洗
     for r in rules:
         seq += 1
         params = r.params or {}
         affected = rows_map.get((r.dataset_id, r.target_field, params.get("issue_type", "")))
-        detail_parts = []
-        if params.get("strategy"):
-            detail_parts.append(f"策略 {params['strategy']}")
-        if params.get("issue_type"):
-            detail_parts.append(f"问题类型 {params['issue_type']}")
-        if affected is not None:
-            detail_parts.append(f"影响 {affected} 行")
         log.append({
-            "seq": seq,
-            "stage": "apply",
-            "dataset_id": r.dataset_id,
-            "rule_type": r.rule_type,
-            "strategy": params.get("strategy", ""),
-            # night11 Item5 ISS-051：透出底层问题类型，供前端按字段把影响行数拆分「空值/异常/重复」
-            "issue_type": (params.get("issue_type") or r.rule_type or ""),
-            "target_field": r.target_field or "-",
+            "src_row": None, "field": r.target_field or "-",
+            "issue_type": _ISSUE_LABEL.get(params.get("issue_type") or r.rule_type or "", params.get("issue_type") or r.rule_type or "-"),
+            "strategy": _STRATEGY_LABEL.get(params.get("strategy") or "", params.get("strategy") or "-"),
+            "before": "", "after": "", "status": "已修复", "stage": "apply",
             "affected_rows": affected,
-            "detail": "；".join(detail_parts) or "-",
         })
-    # 2) 质检发现（聚合）
     grp = {}
     for iss in issues:
         key = (iss.dataset_id, iss.field_name, iss.type, iss.status)
         grp[key] = grp.get(key, 0) + 1
-    status_label = {"done": "已修复", "ignored": "已忽略", "todo": "待处理"}
     for (ds, field, typ, status), cnt in sorted(grp.items()):
         seq += 1
         log.append({
-            "seq": seq,
-            "stage": "detect",
-            "dataset_id": ds,
-            "rule_type": "质检发现",
-            "strategy": typ,
-            # night11 Item5 ISS-051：透出底层问题类型（typ 即 iss.type，如 null/duplicate/format/range/winsorize）
-            "issue_type": typ,
-            "target_field": field or "-",
+            "src_row": None, "field": field or "-",
+            "issue_type": _ISSUE_LABEL.get(typ, typ),
+            "strategy": _STRATEGY_LABEL.get(typ, typ),
+            "before": "", "after": "", "status": _STATUS_LABEL.get(status, status), "stage": "detect",
             "affected_rows": cnt,
-            "detail": f"状态 {status_label.get(status, status)}",
         })
     return log
+
 
 
 def _normalize_chart(c: Dict[str, Any], default_ds: Optional[str], idx: int) -> Dict[str, Any]:

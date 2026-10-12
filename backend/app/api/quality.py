@@ -11,7 +11,7 @@ from app.core.quality_checker import QualityChecker
 from app.core.ai_quality_checker import AIQualityChecker
 from app.core.database import get_db, async_session_factory
 from app.core.security import get_current_user
-from app.models.quality import QualityIssue, CleanRule, ChangeLog
+from app.models.quality import QualityIssue, CleanRule, ChangeLog, QualityRowChange
 from app.models.dataset import Dataset
 from app.api.datasets import _assert_dataset_access
 
@@ -150,6 +150,59 @@ def _capture_column_stats(db, cleaned_table: str, column: str) -> dict:
         return stat
     except Exception as e:
         return {"error": str(e)}
+
+
+def _src_row_expr(db, cleaned_table: str) -> str:
+    """返回可取「原始文件行号」的表达式：清洗层物化了 _src_row 列则用它，否则 rowid+2 近似（含表头偏移）。"""
+    try:
+        cols = [r[0].lower() for r in db.conn.execute(f"DESCRIBE \"{cleaned_table}\"").fetchall()]
+        if "_src_row" in cols:
+            return "_src_row"
+    except Exception:
+        pass
+    return "(rowid + 2)"
+
+
+def _capture_row_map(db, cleaned_table: str, column: str) -> Dict[int, Optional[str]]:
+    """捕获某列「原始文件行号 -> 清洗前/后单元格值」的整列映射，供修复前后 diff 出逐行变更。"""
+    try:
+        src_expr = _src_row_expr(db, cleaned_table)
+        col = f'"{column}"'
+        rows = db.conn.execute(
+            f"SELECT {src_expr}, CAST({col} AS VARCHAR) FROM \"{cleaned_table}\""
+        ).fetchall()
+        return {int(r[0]): (None if r[1] is None else str(r[1])) for r in rows}
+    except Exception:
+        return {}
+
+
+def _build_row_changes(
+    before_map: Dict[int, Optional[str]],
+    after_map: Dict[int, Optional[str]],
+    dataset_id: str,
+    issue_type: Optional[str],
+    column: str,
+    strategy: str,
+) -> List["QualityRowChange"]:
+    """night45：对比修复前后整列映射，产出逐行 QualityRowChange。
+    - 行消失（keep_first/keep_last/drop 等）→ after='(整行已删除)'；
+    - 值变化 → before/after；mark_* 不改数据 → 空列表。"""
+    changes: List[QualityRowChange] = []
+    for src, before in before_map.items():
+        if src not in after_map:
+            changes.append(QualityRowChange(
+                dataset_id=dataset_id, stage="apply", issue_type=issue_type,
+                field_name=column, strategy=strategy, src_row=src,
+                before_value=before, after_value="(整行已删除)", status="done",
+            ))
+        elif after_map[src] != before:
+            changes.append(QualityRowChange(
+                dataset_id=dataset_id, stage="apply", issue_type=issue_type,
+                field_name=column, strategy=strategy, src_row=src,
+                before_value=before, after_value=after_map[src], status="done",
+            ))
+    return changes
+
 
 @router.post("/check")
 async def check_quality(
@@ -333,6 +386,8 @@ async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = D
         # 根据修复策略执行实际数据修改（写入清洗层）
         # B1：捕获清洗前字段统计快照（行级明细 before）
         before_stats = _capture_column_stats(db, cleaned_table, column)
+        # night45：整列「行号 -> 值」映射，用于修复后逐行 diff 出 quality_row_changes
+        before_row_map = _capture_row_map(db, cleaned_table, column)
 
         if request.fix_strategy == "keep_first":
             db.conn.execute(f"""
@@ -530,6 +585,12 @@ async def fix_quality_issue(request: QualityFixRequest, sql_db: AsyncSession = D
                    OR TRIM(CAST("{column}" AS VARCHAR)) = ''
             """)
         
+        # night45：修复后整列映射，diff 出逐行变更并写入 quality_row_changes（附录 B 行级明细）
+        # mark_* 不实际改数据 → diff 为空，自然跳过。
+        after_row_map = _capture_row_map(db, cleaned_table, column)
+        for _rc in _build_row_changes(before_row_map, after_row_map, dataset_id, request.issue_type, request.column, request.fix_strategy):
+            sql_db.add(_rc)
+
         # 记录清洗规则（血缘层④白盒展示：清洗动作 → 血缘页可见）
         _RULE_TYPE_MAP = {
             "keep_first": "remove_duplicate", "keep_last": "remove_duplicate",

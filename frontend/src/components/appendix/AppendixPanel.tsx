@@ -115,71 +115,47 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
     );
   });
 
-  /* ── B. 清洗与质检：行级明细表（ISS-051 night12 改向）──
-     用户要求从 night11 的「叙事卡片」改为「行级明细表」。
-     重要：管线元数据（后端 _clean_log）仅按「字段 × 问题类型」聚合存储——
-     含 issue_type / strategy / stage / affected_rows(影响行数) / status，
-     【不记录】原始数据行号、逐行清洗前/清洗后单元格值。
-     故下表仅能呈现聚合级行（= 一条 clean_log 记录），无法呈现逐数据行明细。
-     若需逐行明细（原始数据行号 | 清洗前 | 清洗后），须在 data_cleaner 落 change_log，超出本轮范围。 */
+  /* ── B. 清洗与质检：行级明细表（night45 行级化）──
+     统一格式：原始文件行 | 字段 | 数据问题 | 清洗策略 | 清洗前结果 | 清洗后结果 | 状态。
+     后端 _clean_log 优先读 quality_row_changes（逐行变更）；老数据集无行级记录时回落聚合展示。 */
   const cleanLogTable = (() => {
     const log: any[] = data.clean_log || [];
     if (!log.length) {
       return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本看板暂无清洗与质检记录" />;
     }
-    const rows = log.map((e: any, i: number) => {
-      const stageLabel = e.stage === 'apply' ? '已执行清洗' : '质检发现';
-      let statusLabel = '-';
-      if (e.stage === 'apply') statusLabel = '已执行';
-      else {
-        const st = e.detail || '';
-        if (st.includes('已修复') || st.includes('done')) statusLabel = '已修复';
-        else if (st.includes('已忽略') || st.includes('ignored')) statusLabel = '已忽略';
-        else if (st.includes('待处理') || st.includes('todo')) statusLabel = '待处理';
-        else statusLabel = e.detail || '-';
-      }
-      const strategyLabel = e.strategy ? `${e.rule_type || ''}·${e.strategy}` : (e.rule_type || '-');
-      return {
-        key: i,
-        field: e.target_field || '-',
-        stage: stageLabel,
-        issueType: e.issue_type || e.rule_type || '-',
-        strategy: strategyLabel,
-        affected: e.affected_rows ?? null,
-        status: statusLabel,
-      };
-    });
+    const rows = log.map((e: any, i: number) => ({
+      key: i,
+      srcRow: e.src_row == null ? '—' : `行 ${e.src_row}`,
+      field: e.field || '-',
+      issueType: e.issue_type || '-',
+      strategy: e.strategy || '-',
+      before: e.before === '' || e.before == null ? '—' : e.before,
+      after: e.after === '' || e.after == null ? '—' : e.after,
+      status: e.status || '-',
+    }));
     return (
-      <div>
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="元数据未记录逐行明细"
-          description="管线仅按「字段×问题类型」聚合存储（影响行数 + 状态），未落原始数据行号与逐行清洗前后值。下表为聚合级行（= 一条清洗/质检记录）。如需逐行明细（行号/清洗前/清洗后），须在 data_cleaner 落 change_log，建议单列需求。"
-        />
-        <Table
-          size="small"
-          rowKey="key"
-          pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }}
-          dataSource={rows}
-          scroll={{ x: 'max-content' }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无清洗与质检记录" /> }}
-          columns={[
-            { title: '字段', dataIndex: 'field', key: 'field', width: 160, fixed: 'left' as const },
-            { title: '阶段', dataIndex: 'stage', key: 'stage', width: 110, render: (s: string) => <Tag color={s === '已执行清洗' ? 'blue' : 'default'}>{s}</Tag> },
-            { title: '问题类型', dataIndex: 'issueType', key: 'issueType', width: 130 },
-            { title: '清洗策略', dataIndex: 'strategy', key: 'strategy', width: 180 },
-            { title: '影响行数', dataIndex: 'affected', key: 'affected', width: 100, align: 'right' as const, render: (v: any) => (v === null ? <Text type="secondary">-</Text> : numFmt(v)) },
-            { title: '清洗后状态', dataIndex: 'status', key: 'status', width: 120, render: (s: string) => {
-              if (s === '已修复') return <Tag color="green">已修复</Tag>;
-              if (s === '已忽略') return <Tag>已忽略</Tag>;
-              if (s === '待处理') return <Tag color="orange">待处理</Tag>;
-              return <span>{s}</span>;
-            } },
-          ]}
-        />
-      </div>
+      <Table
+        size="small"
+        rowKey="key"
+        pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` }}
+        dataSource={rows}
+        scroll={{ x: 'max-content' }}
+        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无清洗与质检记录" /> }}
+        columns={[
+          { title: '原始文件行', dataIndex: 'srcRow', key: 'srcRow', width: 110, fixed: 'left' as const },
+          { title: '字段', dataIndex: 'field', key: 'field', width: 150 },
+          { title: '数据问题', dataIndex: 'issueType', key: 'issueType', width: 140 },
+          { title: '清洗策略', dataIndex: 'strategy', key: 'strategy', width: 170 },
+          { title: '清洗前结果', dataIndex: 'before', key: 'before', width: 200, ellipsis: true },
+          { title: '清洗后结果', dataIndex: 'after', key: 'after', width: 200, ellipsis: true },
+          { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (s: string) => {
+            if (s === '已修复') return <Tag color="green">已修复</Tag>;
+            if (s === '已忽略') return <Tag>已忽略</Tag>;
+            if (s === '待处理') return <Tag color="orange">待处理</Tag>;
+            return <span>{s}</span>;
+          } },
+        ]}
+      />
     );
   })();
 

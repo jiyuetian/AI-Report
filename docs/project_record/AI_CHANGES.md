@@ -1390,3 +1390,9 @@ if _fb_msg:
 - 左「忽略质检生成看板」仅无阻断时亮；右「一键修复生成看板」修复完自动进 LoadingPage 生成。
 - 新增 `generating` 过渡态，消除「两个 toast 无下文」；修复失败/阻断残留均有明确内联反馈。
 - 文件：frontend/src/components/quality/QualityCheckPanel.tsx（tsc 0 错误）。
+
+## §75 · ISS-101 附录 B 行级明细（night45）
+- 新建 quality_row_changes 表 + duckdb 物化 _src_row；fix 前后整列 diff 落逐行变更。
+- 附录 B 改为「原始文件行/字段/数据问题/清洗策略/清洗前/清洗后/状态」6 列 + 分页；移除聚合 Alert。
+- 文件：models/quality.py、api/quality.py、core/appendix_service.py、core/duckdb_manager.py、
+  frontend/src/components/appendix/AppendixPanel.tsx、tests/test_row_changes.py。

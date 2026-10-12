@@ -795,3 +795,18 @@
   3. 新增 `generating` 过渡态 + 内联 Alert「已修复完成，正在生成看板…」覆盖「修复→生成」空窗，
      彻底消除「只有 toast 无下文」。
 - 验收：tsc --noEmit 0 错误。
+
+## ISS-101 · 附录 B 清洗与质检行级明细（统一 6 列格式）
+- 需求：附录 B（报告最底部）从「字段×问题类型」聚合行，改为「原始文件行 | 字段 | 数据问题 |
+  清洗策略 | 清洗前结果 | 清洗后结果」逐行明细，覆盖去重/空值/日期/脱敏/离群/码值/类型转换/
+  删行/质检待处理等场景；质检结果统一落在附录（不在质检页面另开一块）。
+- 实现：
+  1. 新增 `quality_row_changes` 表（dataset_id / stage / issue_type / field_name / strategy /
+     src_row / before_value / after_value / status / created_at）。
+  2. `duckdb_manager.create_cleaned_from_original` 物化 `_src_row` 列（= 原始文件行号，1-based 含表头偏移）；
+     老数据集无此列时用 `rowid+2` 近似。
+  3. `quality.py fix_quality_issue` 修复前后整列 diff（`_build_row_changes`），逐行写入
+     quality_row_changes；删行场景 after='(整行已删除)'。fix-batch 复用同一函数。
+  4. `appendix_service._clean_log` 优先读 quality_row_changes 行级；老数据无行级时回落聚合。
+  5. 前端 `AppendixPanel` B 表改为 6 列 + 分页，移除「元数据未记录逐行明细」Alert。
+- 验收：pytest test_row_changes（4 passed）；tsc --noEmit 0 错误。
