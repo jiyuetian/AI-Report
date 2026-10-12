@@ -1379,3 +1379,9 @@ if _fb_msg:
 - **定性结论**：设计如此，非缺陷。质检是显式 per-dataset 用户操作（`POST /quality/check` + `QualityCheckPanel`），无 `dataset_ids` 扇出；`brain_run_pipeline` 仅把质检算进内存 summary 不落库；`reports.py:147` 报告质量章节只查 primary_dataset_id。故「仅主数据集有 quality_issues 行、其余 0 条」是预期行为。
 - **改进机会（未做）**：多数据集全量质量覆盖需后端/前端扇出 + `reports.py:147` 改按 `dataset_ids` 聚合，属功能增强，不在本期。
 - **commit（Task C2）**：仅文档（ISSUES.md ISS-098 + AI_CHANGES §72），无代码改动。单独提交，未 push。
+
+## §73 · night44 Task C3：AI 绿标透传链复核（2026-10-12 / ISS-099）
+
+- **复核结论**：透传链完整、绿标已在详情页渲染，非缺陷。写入端 brain_run_sse.py:1230-1244/1313-1318 把 generated_by/ai_participated/generation_mode 写入 config；读取端 DashboardPage:692 推导 genMode；:1436 透传给 DashboardOps；渲染端 DashboardOps:369-370 当 generationMode==='ai' 渲染绿色「智能参与生成」Tag。用户已在标题栏看到该绿标。
+- **唯一不一致（非缺陷，可选优化）**：LoadingPage 完成态用「已生成」、DashboardOps 用「智能参与生成」，文案口径不同，可后续统一为「AI 生成」。
+- **commit（Task C3）**：仅文档（ISSUES.md ISS-099 + AI_CHANGES §73），无代码改动。单独提交，未 push。

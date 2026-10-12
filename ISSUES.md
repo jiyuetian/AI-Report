@@ -768,3 +768,15 @@
 - **影响/边界**：当前设计以主数据集为质量中心，次要数据集不参与质检/报告质量章节，属有意收敛（避免对每张表都跑八类探查的算力与噪声）。次要数据集若需质量覆盖，须用户逐张打开质检面板。
 - **改进机会（本期未做，非缺陷）**：若产品要求多数据集全量质量覆盖，需 (a) 前端/后端对 `dataset_ids` 扇出质检，(b) `reports.py:147` 改为按 `dataset_ids` 列表聚合。属功能增强，非回归/缺陷修复，故不在 night44 修复范围；留作后续排期。
 - **状态**：`[DONE-定性]`（night44 Task C2：登记为设计行为 + 改进机会，无代码改动）。
+
+## ISS-099 night44：看板详情页「AI 生成」绿标透传链复核（C3 结论：链 intact，绿标已在详情页渲染，非缺陷，2026-10-12）
+
+- **观察（自测3 遗留）**：用户反馈看板详情页未见「AI 生成」绿标（但标题栏有「智能参与生成」徽标），要求复核 LoadingPage→看板页的生成方式标记透传链。
+- **复核结论：透传链完整、绿标已在详情页渲染，非缺陷**。逐环验证：
+  1. **写入端（后端）**：`brain_run_sse.py` 保存看板时把 `generated_by` / `ai_participated` / `generation_mode`（= `ai` if ai_participated else `rule`）/ `s2_generated_by` 写入 dashboard `config`（:1230-1244 与 :1313-1318）。真 LLM 端到端点亮后 `generated_by=llm` / `ai_participated=True` / `generation_mode=ai`。
+  2. **读取端（前端）**：`DashboardPage.tsx:692` 从 `config` 推导 `genMode`（`generation_mode` → 否则 `ai_participated` → 否则 `generated_by==='llm'` → 否则 `generated_by` 非空='rule' → 否则 ''）；`:703` 取 `s2Gen`。
+  3. **属性透传**：`DashboardPage.tsx:1436` 把 `generationMode={genMode}` / `s2GeneratedBy={s2Gen}` 传给 `<DashboardOps>`。
+  4. **渲染端**：`DashboardOps.tsx:369-370` 当 `generationMode==='ai'` 渲染绿色 Tag「智能参与生成」；`:376-377` 额外渲染「目标·智能」小标（`s2GeneratedBy==='llm'`）。
+- **结论**：详情页（DashboardOps 标题栏）本就会渲染绿色「智能参与生成」徽标，正是「AI 生成」绿标——用户已在标题栏看到它。链无断裂。
+- **唯一不一致（非缺陷，可选优化）**：各处文案口径不同——LoadingPage 完成态用「已生成」(`LoadingPage.tsx:423`)，DashboardOps 用「智能参与生成」；可后续统一为「AI 生成」以对齐用户心智，但属文案优化，不影响功能。
+- **状态**：`[DONE-复核]`（night44 Task C3：链 intact，绿标已在详情页渲染；记录文案不一致供后续统一，无代码改动）。
