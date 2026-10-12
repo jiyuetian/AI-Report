@@ -3,7 +3,7 @@
 意图→配置变更→局部重渲染
 归因追问走血缘下钻
 """
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 from datetime import datetime
 import json
@@ -201,7 +201,10 @@ class ActionExecutor:
         target_chart = None
 
         if title_kw:
-            target_chart = ActionExecutor._locate_chart(charts, {"chart_title": title_kw})
+            # night44 Task C1（ISS-097）：先按去口语修饰后的关键词定位，未命中再回退原始 _locate_chart（保留字段模糊匹配）
+            target_chart, _ = ActionExecutor._match_chart_by_title(charts, title_kw)
+            if target_chart is None:
+                target_chart = ActionExecutor._locate_chart(charts, {"chart_title": title_kw})
         if target_chart is None:
             for chart in charts:
                 if chart_id and chart.get("id") == chart_id:
@@ -833,9 +836,15 @@ class ActionExecutor:
                 target_idx = idx
         elif target_chart is None and title_keyword:
             # 按标题关键词（包含匹配）删除最后一个匹配的
+            # night44 Task C1（ISS-097）：标题关键词带口语修饰（「这张/柱状图」）时也尝试去修饰后匹配
+            _cleaned_kw = ActionExecutor._clean_title_keyword(title_keyword) or title_keyword
+            _kw_candidates = []
+            for _k in (title_keyword, _cleaned_kw):
+                if _k and _k not in _kw_candidates:
+                    _kw_candidates.append(_k)
             for i in range(len(charts) - 1, -1, -1):
                 title = (charts[i].get("title") or "")
-                if title_keyword in title:
+                if any(_k in title for _k in _kw_candidates):
                     target_chart = charts[i]
                     target_idx = i
                     break
@@ -1673,7 +1682,60 @@ class ActionExecutor:
             "message": f"已修复{issue_type}问题：{column}，移除 {removed} 行（{before_rows}->{after_rows}）",
         }
 
+    # night44 Task C1（ISS-097）：口语修饰词清洗 —— 让「这张/柱状图」类指代不再阻断标题命中
+    _TITLE_ORAL_MODIFIERS = ("这张", "那张", "这个", "那个", "这一张", "那一张", "此图", "该图")
+    _TITLE_CHART_TYPE_WORDS = (
+        "柱状图", "柱形图", "条形图", "折线图", "曲线图", "饼图",
+        "散点图", "雷达图", "面积图", "漏斗图", "仪表盘图", "图表",
+    )
+    _TITLE_LEADING_CMD_PREFIXES = ("帮我把", "帮我", "把", "将", "给", "对", "让", "请")
+
     @staticmethod
+    def _clean_title_keyword(raw: str) -> str:
+        """剔除口语指代词与图型词，尽量还原成真实图表标题片段。
+        例：「各月份结案数这张柱状图」→「各月份结案数」；「把销售额那张饼图」→「销售额」。"""
+        if not raw:
+            return ""
+        kw = raw.strip()
+        # 1) 删除句首命令动词（把/将/请/帮我把…），仅从开头剥离
+        while True:
+            _stripped = False
+            for _p in ActionExecutor._TITLE_LEADING_CMD_PREFIXES:
+                if kw.startswith(_p):
+                    kw = kw[len(_p):]
+                    _stripped = True
+                    break
+            if not _stripped:
+                break
+        # 2) 删除指代词（任意位置）
+        for m in ActionExecutor._TITLE_ORAL_MODIFIERS:
+            kw = kw.replace(m, "")
+        # 3) 删除图型词（任意位置）
+        for w in ActionExecutor._TITLE_CHART_TYPE_WORDS:
+            kw = kw.replace(w, "")
+        kw = kw.replace("的图", "").replace("这张图", "").replace("那张图", "")
+        kw = kw.strip().strip("图的").strip()
+        return kw
+
+    @staticmethod
+    def _match_chart_by_title(
+        charts: List[Dict[str, Any]], raw_keyword: str
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """按标题定位图表：先试原始关键词，未命中再试去修饰候选；返回 (chart, used_keyword)。
+        都不命中返回 (None, None)，交由上层走澄清分支（保留既有「答非所问绝不猜」语义）。"""
+        if not raw_keyword:
+            return None, None
+        candidates = []
+        for _k in (raw_keyword.strip(), ActionExecutor._clean_title_keyword(raw_keyword)):
+            if _k and _k not in candidates:
+                candidates.append(_k)
+        for cand in candidates:
+            for c in charts:
+                t = c.get("title") or ""
+                if t == cand or cand in t:
+                    return c, cand
+        return None, None
+
     def _locate_chart(charts: List[Dict[str, Any]], params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """在看板图表里定位用户说的那张图（按 id → 标题精确 → 标题包含）"""
         cid = params.get("chart_id")

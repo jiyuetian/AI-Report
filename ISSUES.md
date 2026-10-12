@@ -750,3 +750,10 @@
 - **根因**：动作执行闭包内曾对闭包变量 `context` / `current_config` 赋值（`context = dict(context)` / `current_config = dashboard.config or {}`），使 `context`/`current_config` 在 `generate_stream` 作用域内变为**局部变量**，其前方引用（:795 `plan_actions(..., context, ...)`、:667 之后的读取）触发 `UnboundLocalError`。属**潜在缺陷**（仅在特定代码路径触发，既有 `test_chat_safe_stream_wrapper_present` grep 静态守卫无法发现）。
 - **修复**：`[DONE]`（night44）闭包内改用只读副本：`_fresh_config = dashboard.config or {}`（:1093）、`_exec_ctx = dict(context)`（:1100），并 `execute_action(act.get("type"), act.get("params", {}), _fresh_config, _exec_ctx)`（:1124-1125）传入副本，绝不再对 `context`/`current_config` 赋值。运行时回归测试 `test_chat_action_p0.py` 真跑三动作分支，断言无 error 事件。
 - **状态**：`[DONE]`（night44：chat.py L1093/L1100/L1124-1125 + 回归测试 2 passed）。
+
+## ISS-097 night44：对话 title_keyword 带口语修饰词（这张/柱状图）致换图/删图无法命中（C1 可用性缺陷，2026-10-12）
+
+- **现象**：R2「把各月份结案数这张柱状图改成折线图」因 `title_keyword` 含口语修饰「这张/柱状」，子串匹配真实标题「各月份结案数」失败，动作执行器只能走 `requires_clarify` 澄清分支（虽诚实但未执行，属可用性降级）。
+- **根因**：`_execute_change_chart`（action_executor.py:204）与 `_execute_delete_chart`（:838）直接用原始 `title_keyword` 做 `in title` 子串匹配，未剥离口语指代词（这张/那张/这个/那个…）与图型词（柱状图/折线图/饼图…）。
+- **修复**：`[DONE]`（night44 Task C1）新增 `ActionExecutor._clean_title_keyword(raw)`（剥离句首命令动词 把/将/请/帮我把… + 指代词 + 图型词 + 孤立尾字「图」）与 `ActionExecutor._match_chart_by_title(charts, raw_keyword)`（先试原始关键词，未命中再试去修饰候选；都不命中回退 None 交由上层澄清，保留「答非所问绝不猜」语义）。`_execute_change_chart` 先走 `_match_chart_by_title` 再回退 `_locate_chart`（保留字段模糊匹配）；`_execute_delete_chart` 对去修饰候选做包含匹配。新增回归测试 `backend/tests/test_title_keyword_clean.py`（5 passed）：覆盖清洗单元 + 换图/删图经去修饰命中、且不误伤真实标题、不错配。
+- **状态**：`[DONE]`（night44 Task C1：action_executor.py + 回归测试 5 passed）。

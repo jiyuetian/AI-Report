@@ -1366,3 +1366,10 @@ if _fb_msg:
 - **commit（Task A）**：chat.py（ISS-095/096 三处修复）+ 新回归测试 + ISSUES.md（ISS-095/096）+ AI_CHANGES §70。单独提交，未 push（push 需用户本机 7897 代理授权）。
 - **Task B（前端管理后台 Tabs 合并）**：`tsc --noEmit` 0 错误（node typescript 校验通过）；7 个前端文件（App.tsx / MainLayout.tsx / E2ETestPage.tsx / AdminPage.tsx / RecalcPage.tsx / ReportPage.tsx / UsageStatsPage.tsx）合并管理后台 Tabs（/recalc、/usage-stats、/report、/ai-log 等入口收敛进统一后台，消除重复 404 入口）；顺手修复 `ReportPage.tsx` 两处错误分支 `e.response?.data?.detail`（ApiError 无 `response` 字段，取不到）→ 改为 `e.message`，与 `request.ts` 返回解析后 JSON 的契约一致。真机点开四页无 404。
 - **commit（Task B）**：7 前端文件（Tabs 合并 + ReportPage 修复）+ AI_CHANGES §70（Task B 注记）。单独提交，未 push（push 需用户本机 7897 代理授权）。
+
+## §71 · night44 Task C1：对话 title_keyword 口语修饰词去修饰（2026-10-12 / ISS-097）
+
+- **背景**：自测 R2「把各月份结案数这张柱状图改成折线图」因关键词带「这张/柱状」未命中真实标题「各月份结案数」，动作执行器退回澄清（诚实但未执行，可用性降级）。
+- **修复（action_executor.py）**：新增 `_clean_title_keyword` / `_match_chart_by_title` 两个静态方法；换图/`_execute_change_chart` 与删图/`_execute_delete_chart` 在标题匹配时先试原始关键词、未命中再试去修饰候选，保留既有「点名未命中即澄清」语义（不静默误改）。
+- **回归测试（新增 backend/tests/test_title_keyword_clean.py）**：5 passed（清洗单元 + 换图/删图去修饰命中 + 不误伤真实标题 + 不错配）。
+- **commit（Task C1）**：action_executor.py（ISS-097 两方法 + 两调用点）+ 新测试 + ISSUES.md（ISS-097）+ AI_CHANGES §71。单独提交，未 push。
