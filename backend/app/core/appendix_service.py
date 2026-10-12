@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.dashboard import Dashboard
 from app.models.chart import Chart
-from app.models.quality import CleanRule, QualityIssue, QualityRowChange
+from app.models.quality import QualityRowChange
 from app.core.duckdb_manager import get_duckdb
 
 
@@ -115,34 +115,41 @@ def _qc_notnull(qc: str) -> str:
 
 # night45：附录 B 行级明细——数据问题（issue_type）中文标签
 _ISSUE_LABEL = {
-    "null": "空值（缺失）", "duplicate": "主键重复", "format": "格式不统一",
-    "range": "超范围/离群", "logic": "逻辑错误", "code": "码值不一致",
-    "type": "类型异常", "distribution": "分布异常",
+    "null": "空值（缺失）", "duplicate": "重复值", "unique": "重复值",
+    "format": "格式不统一", "range": "超范围/离群", "logic": "逻辑错误",
+    "code": "码值不一致", "type": "类型异常", "distribution": "分布异常",
+    "timeliness": "时效性异常",
 }
+# 清洗策略（fix_strategy / 老 detect 类型）中文标签——覆盖全部真实落库值与历史遗留值
 _STRATEGY_LABEL = {
-    "deduplicate": "deduplicate", "keep_first": "keep_first",
-    "fill_median": "fill_median", "fill_mean": "fill_mean", "fill_mode": "fill_mode",
-    "fill_forward": "fill_forward", "fill_backward": "fill_backward", "fill_by_group": "fill_by_group",
-    "fill_constant": "fill_constant", "fill_boundary": "fill_boundary",
-    "coerce_numeric": "coerce_numeric", "convert_format": "convert_format",
-    "convert_standard": "convert_standard", "enum_normalize": "enum_normalize",
-    "unit_unify": "unit_unify", "date_normalize": "date_normalize",
-    "winsorize": "winsorize", "iqr_outlier": "iqr_outlier", "truncate": "truncate",
-    "phone_mask": "phone_mask", "id_card_mask": "id_card_mask", "bank_card_mask": "bank_card_mask",
-    "swap_values": "swap_values", "map_closest": "map_closest", "set_today": "set_today",
-    "delete": "delete", "drop": "drop", "mark": "mark",
-    "mark_anomaly": "mark_anomaly", "mark_duplicate": "mark_duplicate",
+    # 去重
+    "deduplicate": "去重", "keep_first": "去重·保留首行", "keep_last": "去重·保留末行",
+    # 空值填充
+    "fill_median": "中位数填充", "fill_mean": "均值填充", "fill_mode": "众数填充",
+    "fill_forward": "前向填充", "fill_backward": "后向填充", "fill_by_group": "分组填充",
+    "fill_constant": "常数填充", "fill_boundary": "边界填充",
+    # 格式/类型
+    "coerce_numeric": "强制数值化", "convert_format": "格式转换", "convert_standard": "标准化转换",
+    "enum_normalize": "枚举归一", "unit_unify": "单位统一", "date_normalize": "日期归一",
+    # 离群/截断
+    "winsorize": "缩尾处理", "iqr_outlier": "IQR离群截断", "truncate": "截断",
+    # 脱敏
+    "phone_mask": "手机号脱敏", "id_card_mask": "身份证脱敏", "bank_card_mask": "银行卡脱敏",
+    # 其他
+    "swap_values": "值互换", "map_closest": "最近匹配", "set_today": "置为今天",
+    "delete": "删除行", "drop": "删除空值行", "mark": "标记",
+    "mark_anomaly": "标记异常", "mark_duplicate": "标记重复",
 }
 _STATUS_LABEL = {"done": "已修复", "todo": "待处理", "ignored": "已忽略"}
 
 
 async def _clean_log(sql_db: AsyncSession, dataset_ids: List[str]) -> List[Dict[str, Any]]:
-    """B. 清洗与质检日志（night45 行级化）。
+    """B. 清洗明细（night45 行级化，2026-10-12 收紧）。
 
-    统一为「原始文件行 | 字段 | 数据问题 | 清洗策略 | 清洗前 | 清洗后 | 状态」逐行明细：
-    - 优先读取 quality_row_changes（修复/质检落库的逐行变更）；
-    - 若该数据集尚无行级记录（老数据 / 未触发修复），回落到 clean_rules + quality_issues 聚合，
-      保证附录 B 始终有内容、不出现空白。
+    仅展示「已执行清洗」的逐行改动，统一为
+    「原始文件行 | 字段 | 数据问题 | 清洗策略 | 清洗前 | 清洗后 | 状态」：
+    - 读取 quality_row_changes（修复时落库的逐行变更，即「你改动影响的行」）；
+    - 不聚合、不混入待处理质检发现；无任何改动则附录 B 为空（前端显示空态）。
     """
     if not dataset_ids:
         return []
@@ -152,64 +159,19 @@ async def _clean_log(sql_db: AsyncSession, dataset_ids: List[str]) -> List[Dict[
         .order_by(QualityRowChange.dataset_id, QualityRowChange.src_row)
     )).scalars().all()
 
-    if rows:
-        out = []
-        for r in rows:
-            out.append({
-                "src_row": r.src_row,
-                "field": r.field_name or "-",
-                "issue_type": _ISSUE_LABEL.get(r.issue_type or "", r.issue_type or "-"),
-                "strategy": _STRATEGY_LABEL.get(r.strategy or "", r.strategy or "-"),
-                "before": "" if r.before_value is None else r.before_value,
-                "after": "" if r.after_value is None else r.after_value,
-                "status": _STATUS_LABEL.get(r.status, r.status or "-"),
-                "stage": r.stage or "apply",
-            })
-        return out
-
-    # —— 回落：老数据集无行级记录时，用聚合展示（保留原 night11/night12 行为）——
-    rules = (await sql_db.execute(
-        select(CleanRule).where(CleanRule.dataset_id.in_(dataset_ids)).order_by(CleanRule.execution_order, CleanRule.id)
-    )).scalars().all()
-    issues = (await sql_db.execute(
-        select(QualityIssue).where(QualityIssue.dataset_id.in_(dataset_ids))
-    )).scalars().all()
-    rows_map = {}
-    for iss in issues:
-        if iss.status in ("done", "ignored", "todo"):
-            key = (iss.dataset_id, iss.field_name, iss.type)
-            cur = iss.affect_rows or 0
-            prev = rows_map.get(key)
-            if prev is None or cur > prev:
-                rows_map[key] = iss.affect_rows
-
-    log = []
-    seq = 0
-    for r in rules:
-        seq += 1
-        params = r.params or {}
-        affected = rows_map.get((r.dataset_id, r.target_field, params.get("issue_type", "")))
-        log.append({
-            "src_row": None, "field": r.target_field or "-",
-            "issue_type": _ISSUE_LABEL.get(params.get("issue_type") or r.rule_type or "", params.get("issue_type") or r.rule_type or "-"),
-            "strategy": _STRATEGY_LABEL.get(params.get("strategy") or "", params.get("strategy") or "-"),
-            "before": "", "after": "", "status": "已修复", "stage": "apply",
-            "affected_rows": affected,
+    out = []
+    for r in rows:
+        out.append({
+            "src_row": r.src_row,
+            "field": r.field_name or "-",
+            "issue_type": _ISSUE_LABEL.get(r.issue_type or "", r.issue_type or "-"),
+            "strategy": _STRATEGY_LABEL.get(r.strategy or "", r.strategy or "-"),
+            "before": "" if r.before_value is None else r.before_value,
+            "after": "" if r.after_value is None else r.after_value,
+            "status": _STATUS_LABEL.get(r.status, r.status or "-"),
+            "stage": r.stage or "apply",
         })
-    grp = {}
-    for iss in issues:
-        key = (iss.dataset_id, iss.field_name, iss.type, iss.status)
-        grp[key] = grp.get(key, 0) + 1
-    for (ds, field, typ, status), cnt in sorted(grp.items()):
-        seq += 1
-        log.append({
-            "src_row": None, "field": field or "-",
-            "issue_type": _ISSUE_LABEL.get(typ, typ),
-            "strategy": _STRATEGY_LABEL.get(typ, typ),
-            "before": "", "after": "", "status": _STATUS_LABEL.get(status, status), "stage": "detect",
-            "affected_rows": cnt,
-        })
-    return log
+    return out
 
 
 

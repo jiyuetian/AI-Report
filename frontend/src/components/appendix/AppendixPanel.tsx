@@ -115,9 +115,10 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
     );
   });
 
-  /* ── B. 清洗与质检：行级明细表（night45 行级化）──
+  /* ── B. 清洗明细：行级逐行表（night45 行级化，2026-10-12 收紧）──
      统一格式：原始文件行 | 字段 | 数据问题 | 清洗策略 | 清洗前结果 | 清洗后结果 | 状态。
-     后端 _clean_log 优先读 quality_row_changes（逐行变更）；老数据集无行级记录时回落聚合展示。 */
+     后端 _clean_log 仅返 quality_row_changes（已执行清洗的逐行改动 = 你改动影响的行），不聚合、
+     不混入待处理质检发现；无改动时 data.clean_log 为空，此处显示空态。 */
   const cleanLogTable = (() => {
     const log: any[] = data.clean_log || [];
     if (!log.length) {
@@ -222,7 +223,7 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
         defaultActiveKey="dict"
         items={[
           { key: 'dict', label: 'A. 字段字典', children: fieldDictTables },
-          { key: 'clean', label: `B. 清洗与质检${(data.clean_log || []).length ? ` (${data.clean_log.length})` : ''}`, children: cleanLogTable },
+          { key: 'clean', label: `B. 清洗明细${(data.clean_log || []).length ? ` (${data.clean_log.length})` : ''}`, children: cleanLogTable },
           { key: 'metric', label: 'C. 指标计算明细', children: metricsTable },
         ]}
       />

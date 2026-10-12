@@ -1396,3 +1396,7 @@ if _fb_msg:
 - 附录 B 改为「原始文件行/字段/数据问题/清洗策略/清洗前/清洗后/状态」6 列 + 分页；移除聚合 Alert。
 - 文件：models/quality.py、api/quality.py、core/appendix_service.py、core/duckdb_manager.py、
   frontend/src/components/appendix/AppendixPanel.tsx、tests/test_row_changes.py。
+
+## §76 · ISS-102 附录 B 行级明细收紧 + 清洗策略中文化 + 删除死页
+- 附录 B 仅显已执行清洗逐行（不聚合、不混待处理）；清洗策略全量中文化；删孤儿 CleanPage。
+- 文件：core/appendix_service.py、frontend/src/components/appendix/AppendixPanel.tsx；删除 views/quality/CleanPage.tsx(+css)。

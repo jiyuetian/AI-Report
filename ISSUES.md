@@ -810,3 +810,18 @@
   4. `appendix_service._clean_log` 优先读 quality_row_changes 行级；老数据无行级时回落聚合。
   5. 前端 `AppendixPanel` B 表改为 6 列 + 分页，移除「元数据未记录逐行明细」Alert。
 - 验收：pytest test_row_changes（4 passed）；tsc --noEmit 0 错误。
+
+## ISS-102 · 附录 B 行级明细收紧 + 清洗策略中文化 + 删除死页 CleanPage
+- 需求澄清（用户 2026-10-12）：
+  1. 附录 B 行级明细 = 仅「已执行清洗」逐行改动（你改动影响的行），**不能聚合**、不混入待处理质检发现。
+     撤销上轮要把质检发现炸成行级的方向——检测器本就带 row_indices，但那是待处理项而非改动行。
+  2. 清洗策略列显示英文 → 改中文。
+  3. 独立「数据清洗页」(CleanPage) 不需要，清洗明细已在看板附录 B；删死页。
+- 实现：
+  1. appendix_service._STRATEGY_LABEL 由自映射（英文→英文）改为全量中文（去重/填充/格式/离群/脱敏/标记等）；
+     _ISSUE_LABEL 补齐 unique/timeliness。
+  2. _clean_log 移除聚合回落分支，仅返 quality_row_changes 逐行（无则空，前端显空态）；不再引用
+     CleanRule/QualityIssue（精简 import）。
+  3. 前端 AppendixPanel B 表标签改「B. 清洗明细」，注释同步。
+  4. 删除孤儿死组件 frontend/src/views/quality/CleanPage.tsx + CleanPage.css（导航/路由从未挂接，纯 mock）。
+- 验收：py_compile OK；pytest test_row_changes 4 passed；tsc --noEmit 0 错误。
