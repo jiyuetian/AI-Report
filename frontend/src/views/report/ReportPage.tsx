@@ -50,14 +50,14 @@ export default function ReportPage() {
     setLoading(true)
     setError('')
     try {
-      const resp = await http.post('/api/v1/reports', {
+      const resp = await http.post('/reports', {
         dashboard_id: dashboardId,
         force_regenerate: true,
       })
       const rid = resp.report_id
       window.location.href = `/report?report_id=${rid}&dashboard_id=${dashboardId}`
     } catch (e: any) {
-      setError(e.response?.data?.detail || '报告生成失败')
+      setError(e.message || '报告生成失败')
     } finally {
       setLoading(false)
     }
@@ -73,13 +73,13 @@ export default function ReportPage() {
     ;(async () => {
       try {
         const [jsonResp, htmlResp] = await Promise.all([
-          http.get(`/api/v1/reports/${reportId}/json`),
-          http.get(`/api/v1/reports/${reportId}/html`),
+          http.get(`/reports/${reportId}/json`),
+          http.get(`/reports/${reportId}/html`),
         ])
         setReportData(jsonResp.data)
         setHtmlContent(htmlResp)
       } catch (e: any) {
-        setError(e.response?.data?.detail || '报告加载失败')
+        setError(e.message || '报告加载失败')
       } finally {
         setLoading(false)
       }
@@ -91,7 +91,7 @@ export default function ReportPage() {
     if (!dashboardId) return
     setHistoryLoading(true)
     try {
-      const resp = await http.get('/api/v1/reports', {
+      const resp = await http.get('/reports', {
         dashboard_id: dashboardId,
         limit: 50,
       })

@@ -46,15 +46,10 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    // 管理后台：聚合原「审计/分析/测试联调」+ 自身概览，整组仅管理员可见
+    // 管理后台：顶栏单项直达 /admin（2026-10-12 用户拍板：去掉下拉弹窗，AI 监控/运维页并入管理后台页内子菜单）
     group: '管理后台',
     children: [
-      { key: '/admin', icon: <SettingOutlined />, label: '总览', path: '/admin', adminOnly: true },
-      { key: '/ai-log', icon: <FileSearchOutlined />, label: 'AI 操作日志', path: '/ai-log', adminOnly: true },
-      { key: '/metrics', icon: <BarChartOutlined />, label: '派生指标', path: '/metrics', adminOnly: true },
-      { key: '/recalc', icon: <BarChartOutlined />, label: '下游重算', path: '/recalc', adminOnly: true },
-      { key: '/usage-stats', icon: <BarChartOutlined />, label: 'AI 使用统计', path: '/usage-stats', adminOnly: true },
-      { key: '/e2e', icon: <ExperimentOutlined />, label: '全链路联调', path: '/e2e', adminOnly: true },
+      { key: '/admin', icon: <SettingOutlined />, label: '管理后台', path: '/admin', adminOnly: true },
     ],
   },
 ]

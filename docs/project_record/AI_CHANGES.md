@@ -1363,4 +1363,6 @@ if _fb_msg:
 - **运行时回归测试（新增 backend/tests/test_chat_action_p0.py）**：真跑 `send_message_stream → safe_stream → generate_stream → execute_action`，mock `plan_actions`/`check_moderation`/`check_feasibility`/`log_user_action`/`log_ai_action`，隔离临时 SQLite（重定向 `app.core.database` 引擎/会话工厂）。两个用例：① `test_chat_action_p0_add_change_delete` 驱动 add/change/delete 三分支，断言流无 error 事件、complete 事件动作 success、config 真实落库变更、`updated_by == "test-user"`（str 不崩）；② `test_chat_p0_closure_fix_present` 静态守卫修复标记仍在。pytest **2 passed**。
 - **关键设计**：`safe_stream` 会吞掉 `UnboundLocalError`/`AttributeError` 并转为 error 事件，故测试通过「收集 SSE 事件 + 断言无 error 事件」来捕获回归（而非依赖异常抛出），确保即便闭包 bug 重现也能被断言发现。
 - **约束遵守**：不碰 B3/B4/B5 功能代码；chat.py 规范化为 CRLF（与仓库既有提交/文件约定一致；无 .gitattributes，`core.autocrlf=true` 仅影响 checkout）。
-- **commit**：chat.py（ISS-095/096 三处修复）+ 新回归测试 + ISSUES.md（ISS-095/096）+ AI_CHANGES §70。单独提交（Task A 一类一 commit），未 push（push 需用户本机 7897 代理授权）。
+- **commit（Task A）**：chat.py（ISS-095/096 三处修复）+ 新回归测试 + ISSUES.md（ISS-095/096）+ AI_CHANGES §70。单独提交，未 push（push 需用户本机 7897 代理授权）。
+- **Task B（前端管理后台 Tabs 合并）**：`tsc --noEmit` 0 错误（node typescript 校验通过）；7 个前端文件（App.tsx / MainLayout.tsx / E2ETestPage.tsx / AdminPage.tsx / RecalcPage.tsx / ReportPage.tsx / UsageStatsPage.tsx）合并管理后台 Tabs（/recalc、/usage-stats、/report、/ai-log 等入口收敛进统一后台，消除重复 404 入口）；顺手修复 `ReportPage.tsx` 两处错误分支 `e.response?.data?.detail`（ApiError 无 `response` 字段，取不到）→ 改为 `e.message`，与 `request.ts` 返回解析后 JSON 的契约一致。真机点开四页无 404。
+- **commit（Task B）**：7 前端文件（Tabs 合并 + ReportPage 修复）+ AI_CHANGES §70（Task B 注记）。单独提交，未 push（push 需用户本机 7897 代理授权）。

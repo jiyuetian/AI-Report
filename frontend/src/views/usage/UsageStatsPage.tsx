@@ -15,18 +15,18 @@ export default function UsageStatsPage() {
 
   const loadOverview = (rg: Range) => {
     setLoading(true)
-    http.get('/api/v1/usage-stats/overview', { params: { time_range: rg } })
+    http.get('/usage-stats/overview', { params: { time_range: rg } })
       .then((r: any) => setOverview(r))
       .catch(() => message.error('统计概览加载失败'))
       .finally(() => setLoading(false))
   }
   const loadPatterns = () => {
-    http.get('/api/v1/usage-stats/patterns')
+    http.get('/usage-stats/patterns')
       .then((r: any) => setPatterns(r))
       .catch(() => message.error('使用模式加载失败'))
   }
   const loadEvents = () => {
-    http.get('/api/v1/usage-stats/events', { params: { limit: 50 } })
+    http.get('/usage-stats/events', { params: { limit: 50 } })
       .then((r: any) => setEvents(Array.isArray(r) ? r : []))
       .catch(() => message.error('事件流加载失败'))
   }

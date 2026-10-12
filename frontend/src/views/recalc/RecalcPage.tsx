@@ -23,23 +23,23 @@ export default function RecaclPage() {
   const [loading, setLoading] = useState(false)
 
   const loadStatus = () => {
-    http.get('/api/v1/recalc/status').then((r: any) => setStatus(r)).catch(() => message.error('状态加载失败'))
+    http.get('/recalc/status').then((r: any) => setStatus(r)).catch(() => message.error('状态加载失败'))
   }
   const loadHistory = () => {
-    http.get('/api/v1/recalc/history').then((r: any) => setHistory((r?.history || []).map((h: any) => ({
+    http.get('/recalc/history').then((r: any) => setHistory((r?.history || []).map((h: any) => ({
       recalc_id: h.recalc_id, status: h.status, scope: h.scope,
       affected_count: h.affected_count, trigger_action: h.trigger_action, created_at: h.created_at,
     })))).catch(() => message.error('历史加载失败'))
   }
   const loadGraph = () => {
-    http.get('/api/v1/recalc/dependency-graph').then((r: any) => setGraph(r)).catch(() => message.error('依赖图加载失败'))
+    http.get('/recalc/dependency-graph').then((r: any) => setGraph(r)).catch(() => message.error('依赖图加载失败'))
   }
 
   useEffect(() => { loadStatus(); loadHistory(); loadGraph() }, [])
 
   const trigger = () => {
     setLoading(true)
-    http.post('/api/v1/recalc/trigger', { scope, dry_run: false })
+    http.post('/recalc/trigger', { scope, dry_run: false })
       .then((r: any) => {
         message.success('已触发下游重算')
         loadStatus(); loadHistory()

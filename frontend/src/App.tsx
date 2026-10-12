@@ -49,11 +49,6 @@ import LineagePage from './views/lineage/LineagePage'
 import SharePage from './views/share/SharePage'
 import AdminPage from './views/admin/AdminPage'
 import ReportPage from './views/report/ReportPage'
-import AiLogPage from './views/ai-log/AiLogPage'
-import MetricPage from './views/metrics/MetricPage'
-import RecaclPage from './views/recalc/RecalcPage'
-import UsageStatsPage from './views/usage/UsageStatsPage'
-import E2ETestPage from './test/E2ETestPage'
 import { Card, Button } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -132,31 +127,12 @@ function App() {
                   <Route path="/lineage" element={<LineagePage />} />
                   <Route path="/share" element={<SharePage />} />
                   <Route path="/report" element={<ReportPage />} />
-                  <Route path="/ai-log" element={
-                    <ProtectedRoute requireAdmin>
-                      <AiLogPage />
-                    </ProtectedRoute>
-                  } />
-                  <Route path="/metrics" element={
-                    <ProtectedRoute requireAdmin>
-                      <MetricPage />
-                    </ProtectedRoute>
-                  } />
-                  <Route path="/recalc" element={
-                    <ProtectedRoute requireAdmin>
-                      <RecaclPage />
-                    </ProtectedRoute>
-                  } />
-                  <Route path="/usage-stats" element={
-                    <ProtectedRoute requireAdmin>
-                      <UsageStatsPage />
-                    </ProtectedRoute>
-                  } />
-                  <Route path="/e2e" element={
-                    <ProtectedRoute requireAdmin>
-                      <E2ETestPage />
-                    </ProtectedRoute>
-                  } />
+                  {/* 2026-10-12：AI 监控/运维页并入管理后台页内 Tabs，旧路由重定向兼容深链接 */}
+                  <Route path="/ai-log" element={<Navigate to="/admin?tab=ai-log" replace />} />
+                  <Route path="/metrics" element={<Navigate to="/admin?tab=metrics" replace />} />
+                  <Route path="/recalc" element={<Navigate to="/admin?tab=recalc" replace />} />
+                  <Route path="/usage-stats" element={<Navigate to="/admin?tab=usage-stats" replace />} />
+                  <Route path="/e2e" element={<Navigate to="/admin?tab=e2e" replace />} />
                   {/* 原型演示占位屏 */}
                   <Route path="/demo/:key" element={<DemoPage />} />
                   <Route path="/admin" element={

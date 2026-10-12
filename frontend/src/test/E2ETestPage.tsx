@@ -10,13 +10,13 @@ export default function E2ETestPage() {
 
   const runAll = () => {
     setRunning(true)
-    http.post('/api/v1/integration/run')
+    http.post('/integration/run')
       .then((r: any) => { setReport(r); message.success('联调完成') })
       .catch((e: any) => message.error('联调失败：' + (e?.message || e)))
       .finally(() => setRunning(false))
   }
   const loadReport = () => {
-    http.get('/api/v1/integration/report')
+    http.get('/integration/report')
       .then((r: any) => setReport(r))
       .catch(() => message.error('报告加载失败'))
   }

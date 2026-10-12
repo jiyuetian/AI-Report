@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AppThemeContext } from '../../themeContext';
 import {
   Card, Tabs, Statistic, Row, Col, Table, Tag, Button,
@@ -15,10 +16,17 @@ import {
   WalletOutlined, FileTextOutlined, SettingOutlined,
   ArrowUpOutlined, ArrowDownOutlined, WarningOutlined,
   CheckCircleOutlined, ClockCircleOutlined, ThunderboltOutlined,
-  ReloadOutlined, SyncOutlined, ProfileOutlined
+  ReloadOutlined, SyncOutlined, ProfileOutlined,
+  FileSearchOutlined, BarChartOutlined, ApartmentOutlined, ExperimentOutlined
 } from '@ant-design/icons';
 import './AdminPage.css';
 import PromptCenter from './PromptCenter';
+// AI 监控/运维页并入管理后台页内子菜单（2026-10-12：顶栏去掉下拉弹窗，全部收进本页 Tabs）
+import AiLogPage from '../ai-log/AiLogPage';
+import MetricPage from '../metrics/MetricPage';
+import RecalcPage from '../recalc/RecalcPage';
+import UsageStatsPage from '../usage/UsageStatsPage';
+import E2ETestPage from '../../test/E2ETestPage';
 import { http } from '../../utils/request';
 
 const { Text } = Typography;
@@ -726,7 +734,13 @@ const TemplatesTab: React.FC = () => {
 };
 
 // 主页面
+const VALID_TAB_KEYS = ['overview','users','roles','quota','audit','prompts','templates','settings','ai-log','metrics','recalc','usage-stats','e2e'];
+
 const AdminPage: React.FC = () => {
+  // 子菜单与 URL 双向同步：/admin?tab=recalc 支持旧路由重定向后的深链接直达
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab') || 'overview';
+  const activeKey = VALID_TAB_KEYS.includes(tabParam) ? tabParam : 'overview';
   return (
     <div className="admin-page">
       <h2 className="page-title">
@@ -736,7 +750,8 @@ const AdminPage: React.FC = () => {
       {/* 2026-09-18 修复：antd5 已废弃 <Tabs><TabPane> 子组件写法，
           会产生一个无法点击的幻影空 Tab（原型对比中圈出的空白）；改为 items 声明式写法 */}
       <Tabs
-        defaultActiveKey="overview"
+        activeKey={activeKey}
+        onChange={(k) => setSearchParams(k === 'overview' ? {} : { tab: k }, { replace: true })}
         className="admin-tabs"
         items={[
           { key: 'overview', label: <span><DashboardOutlined /> 概览</span>, children: <OverviewTab /> },
@@ -747,6 +762,11 @@ const AdminPage: React.FC = () => {
           { key: 'prompts', label: <span><ThunderboltOutlined /> Prompt 中心</span>, children: <PromptCenter /> },
           { key: 'templates', label: <span><ProfileOutlined /> 分析模板</span>, children: <TemplatesTab /> },
           { key: 'settings', label: <span><SettingOutlined /> 设置</span>, children: <SettingsTab /> },
+          { key: 'ai-log', label: <span><FileSearchOutlined /> AI 操作日志</span>, children: <AiLogPage /> },
+          { key: 'metrics', label: <span><BarChartOutlined /> 派生指标</span>, children: <MetricPage /> },
+          { key: 'recalc', label: <span><ApartmentOutlined /> 下游重算</span>, children: <RecalcPage /> },
+          { key: 'usage-stats', label: <span><BarChartOutlined /> AI 使用统计</span>, children: <UsageStatsPage /> },
+          { key: 'e2e', label: <span><ExperimentOutlined /> 全链路联调</span>, children: <E2ETestPage /> },
         ]}
       />
     </div>
