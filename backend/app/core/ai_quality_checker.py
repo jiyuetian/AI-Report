@@ -216,23 +216,44 @@ class AIQualityChecker:
         # 2. 构建提示词
         prompt = self._build_prompt(sample_data, existing_issues or [])
         
-        # 3. 调用LLM（AI质检使用较短超时，快速失败降级，避免拖慢整体质检流程）
+        # 3. 调用LLM（ISS-103：质检整体 30s 封顶——外层 wait_for(25s) + 本处单次 8s、不重试。
+        #    单次只给 8s：主用供应商若挂起/慢，快速 failover 到 OpenRouter 免费层（已入 LLM_PROVIDERS 链尾），
+        #    让其有充足时间（约 25s 预算余量）返回真实 AI 结果，而不是被单层 20s 耗尽预算。
+        #    失败/超时快速降级为"AI未参与"，由前端按 summary.llm_called 明确标注兜底结果，不让用户干等）
         gateway = get_llm_gateway()
         request = LLMRequest(
             prompt=prompt,
             json_mode=True,
             max_tokens=3000,
             temperature=0.3,
-            timeout=15.0  # AI质检对长prompt可能超时，短超时快速降级不影响规则检测结果
+            timeout=8.0
         )
-        
+
         # 默认降级响应（LLM不可用时返回）
         fallback = {
             "issues": [],
             "note": "AI质检服务暂不可用，已跳过AI补充检测"
         }
-        
-        response: LLMResponse = await gateway.chat_complete(request, fallback)
+
+        # 外层总闸（ISS-103 补充）：max_retries=0 只砍掉"单 key 3 次重试"，
+        # 网关仍会逐 provider failover（各 provider 超时见 .env LLM_PROVIDERS 的 "timeout" 字段），
+        # 必须对整链加 asyncio.wait_for 总预算 28s——超时即取消并快速降级为"AI未参与"。
+        # 28s 依据：前端 30s 等待上限 - 轮询/传输余量(2s)；当前主用 unisound-u2-flash（送的通用模型）
+        # 离线约 8.7s、晚高峰拥堵可达 45s，故 .env 给其 9s 超时（慢则快速 failover）；
+        # 兜底 sensenova-6.8-flash-lite 高峰尖峰约 17s，.env 给其 18s 超时。
+        # 9s + 18s = 27s < 28s 预算，两层都慢时仍能容下 6.8 在预算内完成，避免误降级。
+        import asyncio
+        try:
+            response: LLMResponse = await asyncio.wait_for(
+                gateway.chat_complete(request, fallback, max_retries=0),
+                timeout=28.0,
+            )
+        except asyncio.TimeoutError:
+            response = LLMResponse(
+                success=False,
+                content="",
+                error="AI质检总时长超28s（含provider failover），快速降级为规则兜底",
+            )
         
         # 4. 解析结果
         issues = []
