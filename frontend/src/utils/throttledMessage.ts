@@ -63,4 +63,5 @@ export const throttledMessage = {
   info: (content: string, key?: string, duration?: number) => emit('info', content, key, duration),
   success: (content: string, key?: string, duration?: number) => emit('success', content, key, duration),
   loading: (content: string, key?: string, duration?: number) => emit('loading', content, key, duration),
+  destroy: (key?: string) => { message.destroy(key); },
 };

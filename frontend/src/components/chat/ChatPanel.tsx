@@ -374,6 +374,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const regenerateReply = async (msg: ChatMessage) => {
     if (!msg.id || !sessionId) return;
     setIsLoading(true);
+    // 问题3：重试给可见反馈，避免"点击无反应"的错觉（AI 可能在后台轮训多个模型）
+    throttledMessage.loading('正在重新请求 AI…', 'retry-ai');
     try {
       const res = await authorizedFetch('/api/v1/chat/regenerate-reply', {
         method: 'POST',
@@ -429,6 +431,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       throttledMessage.error('重试失败，请稍后再试', 'retry-fail');
     } finally {
       setIsLoading(false);
+      throttledMessage.destroy('retry-ai');
     }
   };
 

@@ -12,7 +12,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Card, Input, Button, Tabs, Tag, Empty, Spin,
-  Tree, Badge, Drawer, List, Row, Col,
+  Badge, Drawer, List, Row, Col,
   message, Segmented, Tooltip
 } from 'antd';
 import {
@@ -138,7 +138,7 @@ const LineagePage: React.FC = () => {
   // 追踪指标：非空时仅显示该指标加工链路（2026-09-18 修复：此前漏声明导致页面运行时 ReferenceError）
   const [traceNodeId, setTraceNodeId] = useState<string | null>(null);
   // 默认「加工链路」视图：横向六列，逐层看加工过程（对齐原型）
-  const [viewMode, setViewMode] = useState<'chain' | 'graph' | 'tree'>('chain');
+  const [viewMode, setViewMode] = useState<'chain' | 'graph'>('chain');
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -494,7 +494,7 @@ const LineagePage: React.FC = () => {
         lineStyle: { opacity: 0.55, width: 1.5, curveness: 0.15, color: '#bfbfbf' }
       }]
     };
-  }, [graphData, highlightedNodes, collapsedLayers, chartWidth, impactMode, selectedNode, deepDownstreamOf]);
+  }, [graphData, highlightedNodes, collapsedLayers, chartWidth, impactMode, selectedNode, deepDownstreamOf, traceSet]);
 
   // 加载影响分析（真实后端 API）
   const loadImpactAnalysis = (node: LineageNode) => {
@@ -528,20 +528,6 @@ const LineagePage: React.FC = () => {
   };
 
   // 树形结构数据
-  const getTreeData = () => {
-    if (!graphData) return [];
-    return LAYER_TYPES.map(layer => ({
-      title: layer.label,
-      key: layer.key,
-      icon: layer.icon,
-      children: (graphData.layers[layer.key] || []).map(node => ({
-        title: node.name,
-        key: node.id,
-        isLeaf: true
-      }))
-    }));
-  };
-
   // ===== 验证链 STEP 数据（对齐原型 STEP1~4）=====
   const buildVerifySteps = () => {
     if (!graphData) return [];
@@ -996,11 +982,10 @@ const LineagePage: React.FC = () => {
             size="small"
             options={[
               { label: '加工链路', value: 'chain' },
-              { label: '图谱视图', value: 'graph' },
-              { label: '层级视图', value: 'tree' }
+              { label: '图谱视图', value: 'graph' }
             ]}
             value={viewMode}
-            onChange={(v) => setViewMode(v as 'chain' | 'graph' | 'tree')}
+            onChange={(v) => setViewMode(v as 'chain' | 'graph')}
           />
         </div>
 
@@ -1040,7 +1025,7 @@ const LineagePage: React.FC = () => {
               <div className="chain-left">{renderChain()}</div>
               {renderDetailPanel()}
             </div>
-          ) : viewMode === 'graph' ? (
+          ) : (
             <Card className="lineage-graph-card">
               <div ref={wrapRef} style={{ width: '100%' }}>
                 {chartReady && (
@@ -1069,19 +1054,6 @@ const LineagePage: React.FC = () => {
                 )}
               </div>
             </Card>
-          ) : (
-            <Card className="lineage-tree-card">
-              <Tree
-                treeData={getTreeData()}
-                showIcon
-                defaultExpandAll
-                onSelect={(keys) => {
-                  const nodeId = keys[0] as string;
-                  const node = graphData?.nodes.find(n => n.id === nodeId);
-                  if (node) selectNode(node, true);
-                }}
-              />
-            </Card>
           )}
 
           {/* 底部一键回溯验证（链路视图显示） */}
@@ -1096,7 +1068,7 @@ const LineagePage: React.FC = () => {
         )}
       </div>
 
-      {/* 详情抽屉（图谱/层级视图用） */}
+      {/* 详情抽屉（图谱视图用） */}
       <Drawer
         title={selectedNode?.name}
         placement="right"

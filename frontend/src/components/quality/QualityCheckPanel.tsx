@@ -672,8 +672,8 @@ export default function QualityCheckPanel({
         if (!remainBlocking) {
           setGenerating(true)
           setApplyResult({ success: data.success, failed: 0 })
-          message.success(`已修复 ${data.success} 项，正在生成看板…`)
-          // 给内联"正在生成看板…"一帧渲染时间，再打开 LoadingPage（真实生成进度由 LoadingPage 呈现）
+          // 移除冗余 toast：LoadingPage 会立即呈现"正在为你生成看板"，不再重复提示打断
+          // 给一帧渲染时间，再打开 LoadingPage（真实生成进度由 LoadingPage 呈现）
           setTimeout(() => { onProceed?.(); setGenerating(false) }, 350)
         } else {
           message.warning('仍有阻断性问题未修复，已停止自动生成，请在下方表格逐条处理后继续')

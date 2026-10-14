@@ -22,11 +22,30 @@ from app.core.action_executor import ActionExecutor, ActionType
 from app.core.moderation import check_moderation, ContentModerator, BoundaryType
 from app.core.ai_action_log import log_ai_action
 from app.core.ai_fail_reason import classify_ai_fail_reason
+from app.core.config import get_llm_provider_list
 from app.models.chat import ChatSession, ChatMessage, TokenQuota
 from app.models.dashboard import Dashboard
 from app.models.dataset import Dataset
 
 router = APIRouter(prefix="/chat", tags=["Chat-对话"])
+
+
+def _build_ai_error(stage: str, error: str) -> Dict[str, Any]:
+    """构造统一的 AI 失败 ai_error：明确已尝试多模型轮训 + 网络/配置排查提示（问题3）。"""
+    try:
+        _n = len(get_llm_provider_list() or [])
+    except Exception:
+        _n = 0
+    provider_hint = f"已依次尝试 {_n} 个模型供应商均不可用" if _n > 1 else "模型服务不可用"
+    return {
+        "stage": stage,
+        "error": error,
+        "options": ["retry", "rule_fallback"],
+        "message": (
+            f"⚠️ AI 智能回复调用失败（{provider_hint}，疑似网络/代理或 API 密钥异常），未能生成回答。\n"
+            "你可以：①点「重试」再次请求 AI；②点「规则引导」改用本地内置引导回复（无需 AI）。"
+        ),
+    }
 
 
 # ============== 看板配置并发写锁 ==============
@@ -926,15 +945,7 @@ async def send_message_stream(
                     llm_reply_used = True
                 else:
                     # AI 失败：不再静默降级为规则引导，而是把失败与选择权交还用户
-                    ai_error = {
-                        "stage": "llm_natural_response",
-                        "error": llm_resp["error"],
-                        "options": ["retry", "rule_fallback"],
-                        "message": (
-                            "⚠️ AI 智能回复调用失败（模型限流或网络异常），未能生成回答。\n"
-                            "你可以：①点「重试」再次请求 AI；②点「规则引导」改用本地内置引导回复。"
-                        ),
-                    }
+                    ai_error = _build_ai_error("llm_natural_response", llm_resp["error"])
                     llm_msg = ai_error["message"]
             # ── D 修复（诚实兜底）── 本分支 actions 恒空（UNKNOWN/不置信），action_executed=False：
             # 若文本含"已经做好了/我帮你加了/第N张就是我做的"等冒领构造，强制补声明（ISS-033 / Bug2）
@@ -1567,12 +1578,7 @@ async def regenerate_reply(
                 new_content = assistant_msg.content or ""
                 ai_participated = False
                 ai_failed_reason = classify_ai_fail_reason(result.get("error") or "other")
-                ai_error = {
-                    "stage": "regenerate_reply",
-                    "error": result.get("error") or "AI 调用失败",
-                    "options": ["retry", "rule_fallback"],
-                    "message": result.get("error") or "AI 调用失败，请重试或改用规则引导。",
-                }
+                ai_error = _build_ai_error("regenerate_reply", result.get("error") or "AI 调用失败")
             # 5) 落库：仅更新文案，不触碰看板 config / 不执行动作
             assistant_msg.content = new_content
             await db.commit()

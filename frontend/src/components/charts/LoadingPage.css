@@ -152,6 +152,24 @@
   color: rgba(255, 255, 255, 0.45);
 }
 
+[data-theme="dark"] .lp-eta-banner {
+  background: linear-gradient(135deg, #11223f 0%, #1e1b3a 100%);
+  border-color: #2f54eb;
+  box-shadow: 0 4px 16px rgba(47, 84, 235, 0.3);
+}
+
+[data-theme="dark"] .lp-eta-icon {
+  color: #69b1ff;
+}
+
+[data-theme="dark"] .lp-eta-title {
+  color: #69b1ff;
+}
+
+[data-theme="dark"] .lp-eta-sub {
+  color: #91caff;
+}
+
 @media (max-width: 768px) {
   .loading-page {
     padding: 16px;

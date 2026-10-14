@@ -8,7 +8,8 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Card, Progress, Button, Space, Typography, message, Modal, Tag } from 'antd';
 import {
   LoadingOutlined,
-  CheckCircleOutlined
+  CheckCircleOutlined,
+  ClockCircleOutlined
 } from '@ant-design/icons';
 import './LoadingPage.css';
 import { authHeaders, authorizedFetch } from '../../utils/request';
@@ -399,13 +400,27 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           strokeWidth={8}
           showInfo={false}
         />
+        {/* 问题2：ETA 时间提醒升级为醒目提示条（原埋在灰色小字里极易被忽略） */}
+        {!isError && !isComplete && (
+          <div className="lp-eta-banner">
+            <ClockCircleOutlined className="lp-eta-icon" />
+            <div className="lp-eta-body">
+              <span className="lp-eta-title">{etaText}</span>
+              <span className="lp-eta-sub">请勿关闭或刷新此页面，系统正在后台生成看板，完成后将自动跳转</span>
+            </div>
+            {retryCount > 0 && (
+              <Tag color="orange" className="lp-eta-retry">已自动重试 {retryCount} 次</Tag>
+            )}
+          </div>
+        )}
+
         <div className="lp-progress-meta">
           <Text type="secondary" style={{ fontSize: 13 }}>
             {isError
               ? (phase === 'cancelled' ? '任务已取消' : '看板生成失败')
               : (isComplete ? '看板生成完成！' : (
                 <span>
-                  {`正在：${STAGES[currentStageIdx]?.name}（第 ${currentStageIdx + 1}/5 步） · ${etaText}${retryCount > 0 ? ` · 已自动重试 ${retryCount} 次` : ''}`}
+                  {`正在：${STAGES[currentStageIdx]?.name}（第 ${currentStageIdx + 1}/5 步）`}
                   {genModeLive && (
                     <Tag
                       color={genModeLive === 'ai' ? 'green' : 'default'}
