@@ -104,7 +104,7 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
         const list: VersionItem[] = (res.versions || []).map((v: any, i: number) => ({
           key: v.id || `${i}`,
           id: v.id,
-          label: `v${v.number}`,
+          label: `1.${Math.max(0, v.number - 1)}`,
           time: v.created_at ? new Date(v.created_at).toLocaleString('zh-CN') : '',
           by: v.created_by || '匿名',
           diff: v.description || v.name || '版本记录',
@@ -487,7 +487,7 @@ export default function DashboardOps({ id, title, onRename, onDelete, generation
                 extra={v.current ? <Tag color="blue">当前</Tag> : v.actions}
                 style={{ alignItems: 'flex-start' }}>
                 <List.Item.Meta
-                  title={<span>{v.label} · {v.by}</span>}
+                  title={<span>版本 {v.label}</span>}
                   description={<>
                     <div style={{ color: 'rgba(0,0,0,.45)' }}>{v.time}</div>
                     <div style={{ marginTop: 4 }}>{v.diff}</div>

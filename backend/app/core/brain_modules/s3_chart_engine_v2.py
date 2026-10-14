@@ -492,6 +492,14 @@ class S3ChartEngine:
         # 派生指标反哺：指标列是已验证派生指标时，把加工公式与安全聚合方式写进配置
         metric_field = y or val
         config.update(self._derived_metric_config(metric_field))
+        # 聚合安全（CHART-AGG）：原始数值字段按语义角色定聚合，避免 duration(逾期天数/账龄)
+        # 被前端默认 sum 成"累计值"。派生指标已在 _derived_metric_config 强制 avg；此处补原始字段。
+        if "aggregation" not in config and metric_field:
+            _agg_role = _metric_role(metric_field)
+            if _agg_role in ("amount", "count"):
+                config["aggregation"] = "sum"
+            elif _agg_role in ("duration", "rate", "age"):
+                config["aggregation"] = "avg"
 
         # 比率类指标（抵押率/逾期率等）不能按金额口径展示：
         #   「总抵押率」语义错误 → 改「平均抵押率」；金额类 KPI 的 ¥ 前缀也要去掉
