@@ -8,6 +8,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import redis
 import json
 import uuid
+import os
 
 from app.core.config import settings
 
@@ -19,12 +20,18 @@ SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
-# Redis连接（用于登录锁定）；本地无 Redis 时降级为不锁定，避免阻断登录
-try:
-    redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    redis_client.ping()
-except Exception:
+# Redis连接（用于登录锁定）；本地无 Redis 或显式 REDIS_DISABLED 时降级为内存兜底，避免阻断登录。
+# 注意：若环境设置了 HTTP(S)_PROXY 且本机 Redis 不可达，redis-py 重试线程会在 LSP 代理拦截下触发
+# "PyEval_SaveThread: GIL released" 级别致命崩溃（绕过 try/except 直接杀进程），无法用 try/except 兜住。
+# 故提供 REDIS_DISABLED 开关：CI / 无 Redis 环境下直接跳过连接，走内存兜底。
+if os.getenv("REDIS_DISABLED"):
     redis_client = None
+else:
+    try:
+        redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        redis_client.ping()
+    except Exception:
+        redis_client = None
 
 # 登录锁定配置
 MAX_LOGIN_ATTEMPTS = 5

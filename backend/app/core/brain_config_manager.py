@@ -14,12 +14,16 @@ import os
 
 # Redis连接（配置热更新缓存） - Redis不可用时自动降级为纯数据库模式
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-try:
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-    redis_client.ping()
-except Exception:
+if os.getenv("REDIS_DISABLED"):
     redis_client = None
-    print("[BrainConfig] Redis不可用，降级为纯数据库模式")
+    print("[BrainConfig] REDIS_DISABLED，降级为纯数据库模式")
+else:
+    try:
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client.ping()
+    except Exception:
+        redis_client = None
+        print("[BrainConfig] Redis不可用，降级为纯数据库模式")
 
 # 缓存键前缀
 CONFIG_CACHE_PREFIX = "brain:config:"

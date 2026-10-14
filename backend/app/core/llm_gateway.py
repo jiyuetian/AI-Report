@@ -213,6 +213,9 @@ class RateLimiter:
     
     async def _check_redis(self) -> bool:
         """检查Redis是否可用"""
+        if os.getenv("REDIS_DISABLED"):
+            self._redis_available = False
+            return False
         if self._redis_available is not None:
             return self._redis_available
         try:
@@ -457,7 +460,11 @@ class LLMGateway:
                         if request.json_mode:
                             request_body["response_format"] = {"type": "json_object"}
 
-                        eff_timeout = getattr(request, 'timeout', None) or TIMEOUT_SECONDS
+                        # ISS-103 质检 30s 封顶：允许每个 provider 在 .env 里用 "timeout" 字段
+                        # 单独设定单次调用超时（覆盖 request.timeout）。健康主用模型 1-3s 返回，
+                        # 给 5-6s 足够；OpenRouter/unisound 免费大模型常需 15-20s，给 20-22s 才有机会
+                        # 在 25s 总预算内完成。不写该字段则回落 request.timeout / 全局默认。
+                        eff_timeout = prov.get("timeout") or getattr(request, "timeout", None) or TIMEOUT_SECONDS
                         response = await client.post(
                             "/chat/completions",
                             json=request_body,
