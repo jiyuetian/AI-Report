@@ -48,6 +48,7 @@ class ChartRecommendation:
     priority: int = 0
     rule_name: str = ""
     reason: str = ""
+    narrative_order: int = 0  # 叙事位次（1KPI 2趋势 3对比 4分布 5其他 6风险）
 
     def to_dict(self) -> Dict:
         return {
@@ -61,6 +62,7 @@ class ChartRecommendation:
             "priority": self.priority,
             "rule_name": self.rule_name,
             "reason": self.reason,
+            "narrative_order": self.narrative_order,
         }
 
 
@@ -731,6 +733,51 @@ class S3ChartEngine:
             existing_types.add(ctype)
         return result
 
+    # ---- 叙事顺序（教练拍板 2026-10-14）：先规模 → 趋势 → 对比 → 分布 → 其他 → 风险 ----
+    _NARRATIVE_RISK_KW = ("逾期", "风险", "预警", "不良", "违约", "坏账", "催收", "核销")
+    _NARRATIVE_TREND_KW = ("趋势", "变化", "增长", "下降", "波动", "走势")
+    _NARRATIVE_COMPARE_KW = ("对比", "排名", "排行", "比较", "top")
+    _NARRATIVE_DIST_KW = ("占比", "构成", "分布", "结构")
+
+    @classmethod
+    def _narrative_rank(cls, rec: "ChartRecommendation") -> int:
+        """给单张图定叙事位次（1=KPI 2=趋势 3=对比 4=分布 5=其他 6=风险）。
+
+        风险/逾期类无条件排最后：读者得先知道整体盘子有多大，风险数字才有参照系。
+        其余先按标题关键词判定，标题无关键词时按图表类型本身的属性归类
+        （line 天然是趋势、bar 天然是对比、pie 天然是分布）。
+        """
+        title = str(rec.title or "")
+        low = title.lower()
+        ctype = str(rec.chart_type or "")
+        if any(k in title for k in cls._NARRATIVE_RISK_KW):
+            return 6
+        if ctype == "kpi":
+            return 1
+        if ctype == "line":
+            return 2 if any(k in title for k in cls._NARRATIVE_TREND_KW) else 2
+        if ctype == "bar":
+            return 3 if any(k in title for k in cls._NARRATIVE_COMPARE_KW) else 3
+        if ctype == "pie":
+            return 4 if any(k in title for k in cls._NARRATIVE_DIST_KW) else 4
+        if ctype == "scatter":
+            return 5
+        return 5
+
+    @classmethod
+    def _enforce_narrative_order(cls, charts: List["ChartRecommendation"]) -> List["ChartRecommendation"]:
+        """强制叙事顺序：KPI → 趋势 → 对比 → 分布 → 其他 → 风险（原位次内保持原顺序）。
+
+        背景（用户真机验收 P0）：风控数据集里逾期/风险类图被排在最前，读者还不知道
+        整体盘子多大就直接看风险数字，缺乏参照系。规则引擎内部只按 yaml 的 priority
+        排序，无法表达"风险必须殿后"这类跨类型约束，故在产出最终 config 前统一重排。
+
+        Python 的 sort 是稳定排序，同位次内保留规则引擎原有的优先级相对顺序。
+        """
+        for r in charts:
+            r.narrative_order = cls._narrative_rank(r)
+        return sorted(charts, key=lambda r: r.narrative_order)
+
     # ---- 看板生成：不强制 5 图，只出真实的 ----
     def generate_dashboard_config(
         self, fields: List[str], grain: str = "detail",
@@ -769,6 +816,8 @@ class S3ChartEngine:
             "1个分类维度（如地区/产品）、或1个日期字段（用于趋势图），再重新生成看板。"
             if no_chartable else ""
         )
+        # NARRATIVE-ORDER（2026-10-14）：产出最终 config 前统一强制叙事顺序
+        filtered = self._enforce_narrative_order(filtered)
         return {
             "success": True,
             "grain": grain,
