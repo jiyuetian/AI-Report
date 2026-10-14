@@ -183,6 +183,13 @@ class FieldAnalyzer:
             num_ratio = sum(1 for v in vals if _is_number(v)) / n
             date_ratio = sum(1 for v in vals if _is_date(v)) / n
 
+            # 2') DATE-PRIORITY（2026-10-14）：字段名明确是日期命名，且值全部可解析为日期
+            #     （含 20240115 紧凑格式）→ 必须判 DATE。
+            #     否则紧凑日期因"纯数字"让 num_ratio=1.0 抢先判成 NUMBER，
+            #     数据集里就没有 DATE 字段 → 金额趋势、订单趋势等时间序列图全部消失。
+            if _is_date_named(field_name) and all(_is_date(v) for v in vals):
+                return FieldType.DATE
+
             # 2) 值级判定优先
             if num_ratio >= 0.8:
                 # 数值：若名又强烈暗示分类/地区，则以名为准（极少情况）

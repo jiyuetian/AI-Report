@@ -20,6 +20,8 @@ def normalize_field_name(name) -> str:
     s = s.replace("\u200b", "").replace("\ufeff", "")
     s = s.strip().strip(_QUOTES).strip()
     s = _WS_RE.sub("", s)
+    # 去掉常见分隔符，避免 loan_amount / Loan-Amount / Loan Amount 互相判不上
+    s = re.sub(r"[._\-()（）\[\]【】%％]+", "", s)
     return s.lower()
 
 def resolve_field_name(name, available_fields) -> Optional[str]:
