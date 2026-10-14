@@ -545,6 +545,106 @@ def _compute_field_profiles(duck, table_name: str, fields: List[str],
         return None
 
 
+def _fmt_num(v) -> str:
+    """把数值格式化成中文可读形式（带万/亿单位 + 原始千分位），便于 LLM 引用与人工核验。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if f != f:
+        return "NaN"
+    if abs(f) >= 1e8:
+        disp = f"{f / 1e8:.4g}亿"
+    elif abs(f) >= 1e4:
+        disp = f"{f / 1e4:.4g}万"
+    else:
+        disp = f"{f:.4g}"
+    return f"{disp}（{format(round(f), ',')}）"
+
+
+def _build_real_data_block(duck_inst, dataset_id, final_charts) -> str:
+    """S4b 注入：基于清洗后明细表算每张图表的真实聚合数字，喂给 LLM 写分析摘要，
+    从根上杜绝『基于图表配置合理推断』导致的数字编造（clean 基线曾编造 12.3亿/45% 等）。
+    任何异常一律返回空串，绝不阻断主流程。"""
+    if duck_inst is None or not final_charts:
+        return ""
+    try:
+        tbl = duck_inst.get_layer_table_name(dataset_id, "cleaned")
+        if not duck_inst.table_exists(tbl):
+            tbl = duck_inst.get_layer_table_name(dataset_id, "raw")
+        if not duck_inst.table_exists(tbl):
+            return ""
+        _cre = re.compile(r"^[A-Za-z0-9_\u4e00-\u9fff]+$")
+        _q = lambda f: '"' + f.replace('"', '""') + '"' if f and _cre.match(f) else None
+        lines = []
+        for i, c in enumerate(final_charts[:8], 1):
+            if not isinstance(c, dict):
+                continue
+            ctype = (c.get("chart_type") or "").lower()
+            dim = c.get("x_field") or c.get("category_field")
+            metric = c.get("y_field") or c.get("value_field")
+            title = c.get("title") or f"图{i}"
+            qd, qm = _q(dim), _q(metric)
+            try:
+                if ctype in ("scatter", "histogram"):
+                    flds = [f for f in (dim, metric) if f and _cre.match(f)]
+                    if not flds and qm:
+                        flds = [metric]
+                    if not flds and qd:
+                        flds = [dim]
+                    stats = []
+                    for fld in flds:
+                        r = duck_inst.conn.execute(
+                            f'SELECT MIN("{fld}"), MAX("{fld}"), AVG("{fld}") FROM "{tbl}"'
+                        ).fetchone()
+                        if r:
+                            stats.append(f"{fld}: {_fmt_num(r[0])}~{_fmt_num(r[1])}（均值{_fmt_num(r[2])}）")
+                    if stats:
+                        lines.append(f"- 图{i} [{ctype}] {title}:\n  " + " / ".join(stats))
+                    continue
+                if ctype == "kpi" or (qm and not qd):
+                    if qm:
+                        try:
+                            r = duck_inst.conn.execute(f'SELECT SUM({qm}) FROM "{tbl}"').fetchone()
+                            if r and r[0] is not None:
+                                lines.append(f"- 图{i} [{ctype}] {title}: 合计 {_fmt_num(r[0])}")
+                                continue
+                        except Exception:
+                            pass
+                    r = duck_inst.conn.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()
+                    lines.append(f"- 图{i} [{ctype}] {title}: 记录数 {r[0] if r else 0}")
+                elif qd and qm:
+                    try:
+                        rows = duck_inst.conn.execute(
+                            f'SELECT {qd}, SUM({qm}) FROM "{tbl}" GROUP BY {qd} ORDER BY 2 DESC LIMIT 8'
+                        ).fetchall()
+                        parts = [f"{d}: {_fmt_num(v)}" for d, v in rows]
+                        lines.append(f"- 图{i} [{ctype}] {title}（按{dim}汇总{metric}）:\n  " + " / ".join(parts))
+                    except Exception:
+                        rows = duck_inst.conn.execute(
+                            f'SELECT {qd}, COUNT(*) FROM "{tbl}" GROUP BY {qd} ORDER BY 2 DESC LIMIT 8'
+                        ).fetchall()
+                        parts = [f"{d}: {v}笔" for d, v in rows]
+                        lines.append(f"- 图{i} [{ctype}] {title}（按{dim}计数）:\n  " + " / ".join(parts))
+                elif qd and not qm:
+                    rows = duck_inst.conn.execute(
+                        f'SELECT {qd}, COUNT(*) FROM "{tbl}" GROUP BY {qd} ORDER BY 2 DESC LIMIT 8'
+                    ).fetchall()
+                    parts = [f"{d}: {v}笔" for d, v in rows]
+                    lines.append(f"- 图{i} [{ctype}] {title}:\n  " + " / ".join(parts))
+                else:
+                    continue
+            except Exception as e:
+                print(f"[Brain] S4b 真实数据单图计算跳过(不阻断): {e}")
+                continue
+        if not lines:
+            return ""
+        return "## 真实数据（来自清洗后明细表，撰写时必须引用以下具体数字，禁止臆造）\n" + "\n".join(lines)
+    except Exception as e:
+        print(f"[Brain] S4b 真实数据块生成失败(不阻断): {e}")
+        return ""
+
+
 def _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason):
     """night36 Task A2：看板侧把 S3 失败原因归一为与 chat.py 对齐的枚举。
     night36-fix F1：复用 app.core.ai_fail_reason.classify_ai_fail_reason（单一事实来源，避免分叉）。"""
@@ -1058,6 +1158,13 @@ async def brain_run_pipeline(
                         charts_summary += f"{i}. [{c.get('chart_type','?')}] {c.get('title','')} (维度: {c.get('x_field') or c.get('category_field','')} / 指标: {c.get('y_field') or c.get('value_field','')})\n"
     
                     goals_summary = "\n".join(f"- {g.get('goal','')}" for g in goals[:5]) if goals else "无"
+
+                    # Task C（night46）：S4b 注入真实统计，杜绝 LLM 编造数字
+                    real_data_block = _build_real_data_block(duck_inst, dataset_id, final_charts)
+                    real_data_section = (
+                        f"## 真实数据（撰写时必须引用以下具体数字，禁止臆造）\n{real_data_block}\n\n"
+                        if real_data_block else ""
+                    )
     
                     # ★ 改造：分析说明按原型升级为「结论 → 佐证 → 建议」完整段落，
                     # 解决用户反馈"按原型除了图表还有分析报告"。
@@ -1071,9 +1178,10 @@ async def brain_run_pipeline(
                         f"## 看板主题\n{theme_tag}\n\n"
                         f"## 分析目标\n{goals_summary}\n\n"
                         f"## 图表配置\n{charts_summary}\n\n"
+                        f"{real_data_section}"
                         f"## 撰写要求（务必遵循）\n"
                         f"1. 总长度 400-700 字；分 3 段（结论 → 佐证 → 建议），中间用换行分隔，不要列表。\n"
-                        f"2. 第一段【结论】：用 2-3 句话概括核心业务发现，必须包含关键数字或比例（基于上述图表配置合理推断即可）。\n"
+                        f"2. 第一段【结论】：用 2-3 句话概括核心业务发现，必须引用『真实数据』章节中的具体数字或比例；若某指标真实数据未给出，只做定性描述，绝对禁止编造数字、比例或金额。\n"
                         f"3. 第二段【佐证】：用 2-3 句话把结论归因到具体图表维度，例如「结合『XX 分布』与『YY 趋势』可见……」。\n"
                         f"4. 第三段【建议】：给出 2-3 条 actionable 业务动作建议，例如「建议收紧 X 类准入」「加强对 Y 维度的监控」等。\n"
                         f"5. 用专业但平实的 BI 分析师口吻；中文输出；不要 JSON；不要 Markdown 加粗；"
@@ -1355,7 +1463,10 @@ async def check_blocking_issues(db: AsyncSession, dataset_id: str) -> tuple[bool
             and_(
                 QualityIssue.dataset_id == dataset_id,
                 QualityIssue.severity == "blocking",
-                QualityIssue.status.in_(["pending", "confirmed"])
+                # ISS-103 修复：问题入库时 status="todo"（修复后 done、撤销后 ignored），
+                # 旧查询条件 ["pending","confirmed"] 无任何写入路径 → 闸门恒放行。
+                # 改为与实际状态机一致：未修复(todo)或已确认(confirmed)的阻断项都拦截。
+                QualityIssue.status.in_(["todo", "confirmed"])
             )
         )
     )
