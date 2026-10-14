@@ -122,6 +122,10 @@ def _is_number(v: Any) -> bool:
 
 
 _DATE_RE = re.compile(r"^\d{4}[-/年.]\d{1,2}([-/月.]\d{1,2})?$")
+# DATE-FIX(2026-10-14)：支持紧凑格式 20240115 / 202401，否则真实业务日期列
+# 识别不出 DATE → 金额趋势、订单趋势等时间序列图全部消失。
+_DATE_COMPACT_RE = re.compile(r"^(19|20)\d{6}$")
+_DATE_COMPACT_YM_RE = re.compile(r"^(19|20)\d{4}$")
 
 
 def _is_date(v: Any) -> bool:
@@ -130,7 +134,21 @@ def _is_date(v: Any) -> bool:
     s = str(v).strip()
     if not s:
         return False
-    return bool(_DATE_RE.match(s))
+    if _DATE_RE.match(s):
+        return True
+    # DATE-FIX：紧凑格式 20240115 / 202401
+    if _DATE_COMPACT_RE.match(s):
+        try:
+            m, d = int(s[4:6]), int(s[6:8])
+            return 1 <= m <= 12 and 1 <= d <= 31
+        except Exception:
+            return False
+    if _DATE_COMPACT_YM_RE.match(s):
+        try:
+            return 1 <= int(s[4:6]) <= 12
+        except Exception:
+            return False
+    return False
 
 
 # ----------------------------- 字段分析器 -----------------------------
@@ -239,7 +257,11 @@ class FieldAnalyzer:
 
 def _is_date_named(name: str) -> bool:
     """只在明确日期词出现时返回 True，避免「年龄/年限/天干」等误命中"""
-    return bool(re.search(r"日期|时间|年月|年[月日份]|day|date|time|month|period", name, re.IGNORECASE))
+    # DATE-FIX：补业务日期列命名（到期日/放款日/起息日/还款日…），否则趋势图因识别不出 DATE 而消失
+    return bool(re.search(
+        r"日期|时间|年月|年[月日份]|到期日|放款日|发放日|起息|还款日|结清日|记账日|账单日|入账日|月份|季度|年份"
+        r"|day|date|time|month|period|_dt\b",
+        name, re.IGNORECASE))
 
 
 # ----------------------------- 引擎 -----------------------------
@@ -622,6 +644,27 @@ class S3ChartEngine:
                 used_metrics[_m] = used_metrics.get(_m, 0) + 1
             if len(recs) >= max_charts:
                 break
+
+        # SCALE-KPI（2026-10-14）：总额视角保底。
+        # yaml 的 KPI 关键词门控无法覆盖所有业务命名（如「贷款本金」「借据余额」「授信额度」），
+        # 一旦没命中，看板就完全没有总量视角（用户实测：总额类图表 0 张）。
+        # 这里做确定性保底：只要存在数值字段，就必须给出一张总规模 KPI，并排在最前。
+        if not any(r.chart_type == "kpi" for r in recs):
+            _num_fields = [f for f, t in field_types.items() if t == FieldType.NUMBER]
+            if _num_fields:
+                _m = self._best_metric(_num_fields, field_types, self.derived_metrics) or _num_fields[0]
+                _role = _metric_role(_m)
+                _agg = "sum" if _role in ("amount", "count") else (
+                    "avg" if _role in ("duration", "rate", "age") else "sum")
+                _title = f"平均{_m}" if _agg == "avg" else f"总{_m}"
+                recs.insert(0, ChartRecommendation(
+                    chart_type="kpi", title=_title,
+                    x_field=None, y_field=_m, category_field=None, value_field=_m,
+                    priority=100, rule_name="总规模KPI-保底",
+                    reason="总额视角保底（任意数值字段，聚合按语义角色）",
+                    config={"aggregation": _agg},
+                ))
+                print(f"[S3-v2][scale-kpi] 总额视角保底: {_title} ({_m}, {_agg})")
 
         if len(recs) < max_charts:
             recs = self._apply_fallback(recs, field_types, grain, cardinality, max_charts, used_metrics)

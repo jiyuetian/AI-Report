@@ -94,6 +94,12 @@ class DataCleaner:
         # 根据策略执行修复
         if strategy == "deduplicate":
             result = self._fix_deduplicate(table_name, column)
+        elif strategy == "fill_constant":
+            # CLEAN-FIX（2026-10-14）：金额/零值主导字段空值填业务零值（默认 0）。
+            # 该策略此前在 quality_checker 里可选，但执行层从未实现 → 一键修复会静默失败。
+            result = self._fix_fill_constant(table_name, column, params.get("value", 0))
+        elif strategy == "fill_unknown":
+            result = self._fix_fill_constant(table_name, column, params.get("value", "未知"))
         elif strategy == "fill_median":
             group_by = params.get("group_by")
             result = self._fix_fill_median(table_name, column, group_by)
@@ -198,6 +204,34 @@ class DataCleaner:
             "sql": f"CREATE TABLE {temp_table} AS SELECT DISTINCT ON ({column}) * FROM {table_name}"
         }
     
+    def _fix_fill_constant(self, table_name: str, column: str, value=0) -> Dict[str, Any]:
+        """
+        常量填充（CLEAN-FIX 2026-10-14）
+
+        用于金额 / 零值主导字段：空值语义为"未发生"（如未代偿），应填 0 而不是中位数，
+        避免把"没发生"伪造成"已发生"（中位数填充会让未代偿记录凭空获得一笔代偿金额）。
+        """
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            lit = str(value)
+        else:
+            lit = "'" + str(value).replace("'", "''") + "'"
+        sql = f"""
+            UPDATE {table_name}
+            SET "{column}" = {lit}
+            WHERE "{column}" IS NULL
+        """
+        try:
+            self.db.conn.execute(sql)
+            status, note = "success", f"常量填充完成（值={value}）"
+        except Exception as exc:  # 列类型与填充值不兼容时明确报错，不静默吞掉
+            status, note = "error", f"常量填充失败: {exc}"
+        return {
+            "affected_rows": -1,
+            "status": status,
+            "sql": sql,
+            "note": note
+        }
+
     def _fix_fill_median(self, table_name: str, column: str, group_by: Optional[str]) -> Dict[str, Any]:
         """
         分组中位填充

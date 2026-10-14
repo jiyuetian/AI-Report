@@ -160,9 +160,31 @@ class QualityChecker:
         pk_keywords = ['id', '编号', '借据', '合同', '订单', '流水', 'no.', '序号', 'code', '编码']
         return any(kw in col_lower for kw in pk_keywords)
     
-    def _get_repair_options(self, issue_type: IssueType, column: str) -> List[Dict]:
+    # CLEAN-FIX（2026-10-14）：金额 / 零值主导字段的空值语义是"未发生"（如未代偿 = 0），
+    # 用中位数填充会把"没发生"伪造成"已发生"，业务上是错的（用户实测：代偿金额被中位数填充）。
+    _AMOUNT_COLUMN_KEYWORDS = (
+        "金额", "总额", "本金", "余额", "额度", "代偿", "放款", "借款", "借据", "贷款",
+        "担保", "敞口", "利息", "罚息", "费用", "价格", "收入", "成本",
+        "amount", "balance", "principal", "limit", "fee", "cost",
+    )
+
+    @classmethod
+    def _is_amount_like(cls, column, column_stats=None) -> bool:
+        """判定该列是否为"金额 / 零值主导"语义：统计零值占比 >= 50%，或字段名命中金额词"""
+        if isinstance(column_stats, dict):
+            zr = column_stats.get("zero_rate")
+            if isinstance(zr, (int, float)) and zr >= 0.5:
+                return True
+        name = str(column or "").lower()
+        return any(k in name for k in cls._AMOUNT_COLUMN_KEYWORDS)
+
+    def _get_repair_options(self, issue_type: IssueType, column: str,
+                            column_stats=None) -> List[Dict]:
         """获取预设修复方案（不依赖AI）；带 recommended 标记的是该类问题的默认推荐方案，
-        供前端"一键采纳推荐方案"批量执行（2026-09-17 对齐 B 的推荐清洗计划交互）"""
+        供前端"一键采纳推荐方案"批量执行（2026-09-17 对齐 B 的推荐清洗计划交互）
+
+        CLEAN-FIX：NULL 类不再无条件推荐 fill_median —— 金额 / 零值主导字段改推荐业务零值填充。
+        """
         REPAIR_OPTIONS = {
             IssueType.NULL: [
                 {"strategy": "fill_median", "label": "用中位数填充", "description": "使用该字段的中位数填充空值", "recommended": True},
@@ -210,19 +232,20 @@ class QualityChecker:
                 {"strategy": "drop", "label": "删除离群行", "description": "删除统计离群的数据行"},
             ],
         }
-        # 警告（非阻断）时不提供破坏性修复，只建议确认/忽略，防止误删干净数据
-        if self._type_options_restricted:
-            REPAIR_OPTIONS = {
-                t: [o for o in opts if o["strategy"] != "drop"]
-                for t, opts in REPAIR_OPTIONS.items()
-            }
-        return REPAIR_OPTIONS.get(issue_type, [])
-    
-    # ==================== 产品化样本（原始行 + 清洗后结果） ====================
-    # 2026-09-18 产品化：为每个问题附最多 5 条真实受影响样本，供前端展示
-    # 「原始数据第几行 + 清洗前的值 + 对应的问题 + 清洗后处理成的结果」。
-    # 清洗后结果由本类按推荐修复策略做轻量模拟（与 /quality/fix 的实际 SQL 口径一致），
-    # 不改原始层、不影响修复写库，仅用于预览告知用户「点了修复后会变成什么样」。
+        opts = [dict(o) for o in REPAIR_OPTIONS.get(issue_type, [])]
+        # CLEAN-FIX：金额 / 零值主导字段 → 默认推荐改为「按业务零值填充(0)」
+        if issue_type == IssueType.NULL and self._is_amount_like(column, column_stats):
+            for o in opts:
+                o.pop("recommended", None)
+            for o in opts:
+                if o.get("strategy") == "fill_constant":
+                    o["recommended"] = True
+                    o["label"] = "按业务零值填充(0)"
+                    o["description"] = ("该字段为金额/零值主导字段，空值通常表示未发生（如未代偿），"
+                                        "填 0 比中位数更符合业务语义")
+                    o["default_value"] = 0
+                    break
+        return opts
 
     def _build_samples(self, issue, table_name: str) -> List[Dict[str, Any]]:
         """为单条问题构造产品化样本（行号 / 原值 / 问题说明 / 清洗后结果）"""

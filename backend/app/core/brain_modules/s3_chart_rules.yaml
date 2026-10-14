@@ -9,7 +9,9 @@ rules:
     priority: 100
     condition:
       field_types: ["number"]
-      keywords: ["金额", "总额", "total", "amount", "balance"]
+      keywords: ["金额", "总额", "本金", "余额", "额度", "放款", "借款", "借据", "贷款",
+                 "担保", "代偿", "授信", "敞口", "规模", "收入", "成本", "利息", "罚息",
+                 "total", "amount", "balance", "principal", "limit", "loan"]
       aggregation: "sum"
     chart:
       type: "kpi"

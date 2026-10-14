@@ -204,10 +204,31 @@ const UsersTab: React.FC = () => {
     )}
   ];
 
+  // 2026-10-14：先汇总再明细 —— 原实现一进 tab 直接铺表格，缺少"这个模块整体是什么样"的总览
+  const _uTotal = users.length;
+  const _uActive = users.filter((u: any) => !!u.is_active).length;
+  const _uAdmin = users.filter((u: any) => (u.roles || []).includes('admin')).length;
+  const _uQuota = users.reduce((acc: number, u: any) => acc + Number(u.token_quota || 0), 0);
+
   return (
     <Card>
       {loading ? <Spin tip="加载用户..." /> : (
-        <Table columns={userColumns} dataSource={users} rowKey="id" locale={{ emptyText: '暂无用户（系统尚未初始化账号）' }} />
+        <>
+          <div style={{ background: 'linear-gradient(180deg, rgba(24,144,255,0.06) 0%, rgba(24,144,255,0.02) 100%)', border: '1px solid rgba(24,144,255,0.25)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>整体汇总</div>
+            <Row gutter={16}>
+              <Col span={6}><Statistic title="用户总数" value={_uTotal} prefix={<UserOutlined />} /></Col>
+              <Col span={6}>
+                <Statistic title="启用中" value={_uActive} valueStyle={{ color: '#52c41a' }} />
+              </Col>
+              <Col span={6}>
+                <Statistic title="管理员" value={_uAdmin} valueStyle={{ color: _uAdmin ? '#cf1322' : undefined }} />
+              </Col>
+              <Col span={6}><Statistic title="Token配额合计" value={_uQuota} /></Col>
+            </Row>
+          </div>
+          <Table columns={userColumns} dataSource={users} rowKey="id" locale={{ emptyText: '暂无用户（系统尚未初始化账号）' }} />
+        </>
       )}
 
       <Modal
@@ -498,7 +519,33 @@ const AuditTab: React.FC = () => {
         <Button onClick={exportCsv}>导出CSV</Button>
       </div>
       {loading ? <Spin tip="加载审计..." /> : (
-        <Table columns={auditColumns} dataSource={logs} rowKey="id" locale={{ emptyText: '暂无审计日志' }} />
+        <>
+          {/* 2026-10-14：先汇总再明细 —— 汇总随筛选条件实时变化 */}
+          <div style={{ background: 'linear-gradient(180deg, rgba(24,144,255,0.06) 0%, rgba(24,144,255,0.02) 100%)', border: '1px solid rgba(24,144,255,0.25)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>整体汇总</div>
+            <Row gutter={16}>
+              <Col span={6}><Statistic title="日志条数" value={logs.length} /></Col>
+              <Col span={6}>
+                <Statistic
+                  title="成功"
+                  value={logs.filter((l: any) => l.result === 'success').length}
+                  valueStyle={{ color: '#52c41a' }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="失败"
+                  value={logs.filter((l: any) => l.result && l.result !== 'success').length}
+                  valueStyle={{ color: '#cf1322' }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic title="涉及用户" value={new Set(logs.map((l: any) => l.user || '系统')).size} />
+              </Col>
+            </Row>
+          </div>
+          <Table columns={auditColumns} dataSource={logs} rowKey="id" locale={{ emptyText: '暂无审计日志' }} />
+        </>
       )}
     </Card>
   );
@@ -727,7 +774,36 @@ const TemplatesTab: React.FC = () => {
         <Button icon={<ReloadOutlined />} onClick={loadTpls}>刷新</Button>
       </div>
       {loading ? <Spin tip="加载模板..." /> : (
-        <Table columns={tplColumns} dataSource={tpls} rowKey="id" locale={{ emptyText: '暂无模板' }} />
+        <>
+          {/* 2026-10-14：先汇总再明细 */}
+          <div style={{ background: 'linear-gradient(180deg, rgba(24,144,255,0.06) 0%, rgba(24,144,255,0.02) 100%)', border: '1px solid rgba(24,144,255,0.25)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>整体汇总</div>
+            <Row gutter={16}>
+              <Col span={6}><Statistic title="模板数" value={tpls.length} /></Col>
+              <Col span={6}>
+                <Statistic
+                  title="已批准"
+                  value={tpls.filter((t: any) => !!t.approved).length}
+                  valueStyle={{ color: '#52c41a' }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="待确认"
+                  value={tpls.filter((t: any) => !t.approved).length}
+                  valueStyle={{ color: '#fa8c16' }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title="套用总次数"
+                  value={tpls.reduce((a: number, t: any) => a + Number(t.usage_count || 0), 0)}
+                />
+              </Col>
+            </Row>
+          </div>
+          <Table columns={tplColumns} dataSource={tpls} rowKey="id" locale={{ emptyText: '暂无模板' }} />
+        </>
       )}
     </Card>
   );

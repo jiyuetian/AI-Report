@@ -155,18 +155,37 @@ class SchemaValidator:
                 if page_size > 0:
                     return False, "宏观粒度禁止行级明细表（请使用聚合表或关闭分页）"
         
-        # 字段存在性检查
-        fields_to_check = [
-            config.get("x_field"),
-            config.get("y_field"),
-            config.get("category_field"),
-            config.get("value_field")
-        ]
-        
-        for field in fields_to_check:
-            if field and field not in available_fields:
-                return False, f"字段 '{field}' 不存在于数据集中"
-        
+        # 字段存在性检查（FIELD-NORM 2026-10-14）
+        # 原实现是精确字符串比对：AI 输出 " 抵押率 "（带空格）或大小写差异即判"字段不存在"，
+        # 重试 2 次仍错 → 整批降级 rule_engine（AI 答对却被错杀）。
+        # 现改为：先归一化就近纠正并回写真实字段名，纠不回来才报错（且错误里带上候选字段，
+        # 供上层把原因回传给 AI 自愈）。
+        try:
+            from app.core.field_norm import normalize_chart_fields, nearest_fields
+        except Exception:  # 归一化不可用时退回原逻辑，不阻断主流程
+            normalize_chart_fields = None
+            nearest_fields = None
+
+        if normalize_chart_fields is not None:
+            _fixed = normalize_chart_fields(config, available_fields)
+            if _fixed:
+                config.setdefault("_field_norm_fixed", _fixed)
+                print("[S3-LLM][field-norm] 已纠正字段: " + ", ".join(
+                    f"{k}: {v}" for k, v in _fixed.items()))
+
+        for key in ("x_field", "y_field", "category_field", "value_field"):
+            field = config.get(key)
+            if not field:
+                continue
+            if field in available_fields:
+                continue
+            _hint = ""
+            if nearest_fields is not None:
+                _near = nearest_fields(field, available_fields)
+                if _near:
+                    _hint = "；可用字段参考: " + ", ".join(_near)
+            return False, f"字段 '{field}' 不存在于数据集中" + _hint
+
         return True, ""
 
 

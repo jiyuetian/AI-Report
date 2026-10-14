@@ -4,7 +4,7 @@
  * 全部来自后端真实管线元数据（GET /dashboards/{id}/appendix），确定性展示、可复跑复现。
  */
 import React, { useEffect, useState } from 'react';
-import { Card, Tabs, Table, Tag, Typography, Empty, Spin, Alert } from 'antd';
+import { Card, Tabs, Table, Tag, Typography, Empty, Spin, Alert, Row, Col, Statistic } from 'antd';
 import { http } from '../../utils/request';
 // Phase 5：SkillPanel 薄壳收口（展示本面板由哪些后端 skill 驱动，暗色自动继承）
 import SkillPanel from '../skills/SkillPanel';
@@ -134,7 +134,62 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
       after: e.after === '' || e.after == null ? '—' : e.after,
       status: e.status || '-',
     }));
+    // ── 整体汇总（2026-10-14 补回）：此前该 tab 只有逐行明细，缺少"这次清洗到底做了什么"的总览
+    const _bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) || 0) + 1);
+    const fieldSet = new Set<string>();
+    const rowSet = new Set<string>();
+    const issueMap = new Map<string, number>();
+    const strategyMap = new Map<string, number>();
+    const statusMap = new Map<string, number>();
+    log.forEach((e: any) => {
+      if (e.field) fieldSet.add(e.field);
+      if (e.src_row != null) rowSet.add(String(e.src_row));
+      if (e.issue_type) _bump(issueMap, String(e.issue_type));
+      if (e.strategy) _bump(strategyMap, String(e.strategy));
+      if (e.status) _bump(statusMap, String(e.status));
+    });
+    const _sorted = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]);
+    const _fixed = statusMap.get('已修复') || 0;
+    const _pending = statusMap.get('待处理') || 0;
+    const cleanSummary = (
+      <div
+        style={{
+          background: 'linear-gradient(180deg, rgba(24,144,255,0.06) 0%, rgba(24,144,255,0.02) 100%)',
+          border: '1px solid rgba(24,144,255,0.25)',
+          borderRadius: 10,
+          padding: '14px 16px',
+          marginBottom: 14,
+        }}
+      >
+        <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 14 }}>整体汇总</div>
+        <Row gutter={16}>
+          <Col span={4}><Statistic title="清洗改动" value={log.length} suffix="处" /></Col>
+          <Col span={5}><Statistic title="涉及字段" value={fieldSet.size} suffix="个" /></Col>
+          <Col span={5}><Statistic title="涉及数据行" value={rowSet.size} suffix="行" /></Col>
+          <Col span={5}>
+            <Statistic title="已修复" value={_fixed} valueStyle={{ color: '#52c41a' }} />
+          </Col>
+          <Col span={5}>
+            <Statistic title="待处理" value={_pending} valueStyle={{ color: _pending ? '#fa8c16' : undefined }} />
+          </Col>
+        </Row>
+        <div style={{ marginTop: 12 }}>
+          <Text strong style={{ marginRight: 8 }}>问题类型分布</Text>
+          {_sorted(issueMap).map(([k, v]) => (
+            <Tag key={k} color="volcano" style={{ marginBottom: 4 }}>{k} · {v}</Tag>
+          ))}
+        </div>
+        <div style={{ marginTop: 6 }}>
+          <Text strong style={{ marginRight: 8 }}>清洗策略分布</Text>
+          {_sorted(strategyMap).map(([k, v]) => (
+            <Tag key={k} color="blue" style={{ marginBottom: 4 }}>{k} · {v}</Tag>
+          ))}
+        </div>
+      </div>
+    );
     return (
+      <div>
+        {cleanSummary}
       <Table
         size="small"
         rowKey="key"
@@ -157,6 +212,7 @@ const AppendixPanel: React.FC<{ dashboardId: string }> = ({ dashboardId }) => {
           } },
         ]}
       />
+      </div>
     );
   })();
 
