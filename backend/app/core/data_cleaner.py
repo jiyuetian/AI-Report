@@ -204,6 +204,20 @@ class DataCleaner:
             "sql": f"CREATE TABLE {temp_table} AS SELECT DISTINCT ON ({column}) * FROM {table_name}"
         }
     
+    def fill_constant(self, table_name: str, column: str, value: Any = 0) -> Dict[str, Any]:
+        """常量填充（公开 API；与 execute_fix 的 fill_constant 策略同一实现）。
+
+        适用于零值主导字段（如代偿金额）：空值语义是"未发生"（没代偿），应填 0；
+        用中位数填充会把"没发生"伪造成"已发生"，业务上是错的。
+
+        Args:
+            table_name: 物理表名
+            column: 列名
+            value: 填充常量，默认 0（业务零值）
+        """
+        print(f"[CLEAN] fill_constant: {table_name}.{column} <- {value!r}")
+        return self._fix_fill_constant(table_name, column, value)
+
     def _fix_fill_constant(self, table_name: str, column: str, value=0) -> Dict[str, Any]:
         """
         常量填充（CLEAN-FIX 2026-10-14）

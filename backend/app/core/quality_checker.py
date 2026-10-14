@@ -160,14 +160,6 @@ class QualityChecker:
         pk_keywords = ['id', '编号', '借据', '合同', '订单', '流水', 'no.', '序号', 'code', '编码']
         return any(kw in col_lower for kw in pk_keywords)
     
-    # CLEAN-FIX（2026-10-14）：金额 / 零值主导字段的空值语义是"未发生"（如未代偿 = 0），
-    # 用中位数填充会把"没发生"伪造成"已发生"，业务上是错的（用户实测：代偿金额被中位数填充）。
-    _AMOUNT_COLUMN_KEYWORDS = (
-        "金额", "总额", "本金", "余额", "额度", "代偿", "放款", "借款", "借据", "贷款",
-        "担保", "敞口", "利息", "罚息", "费用", "价格", "收入", "成本",
-        "amount", "balance", "principal", "limit", "fee", "cost",
-    )
-
     @classmethod
     def _is_amount_like(cls, column, column_stats=None) -> bool:
         """判定该列是否为"金额 / 零值主导"语义：统计零值占比 >= 50%，或字段名命中金额词"""
@@ -175,8 +167,38 @@ class QualityChecker:
             zr = column_stats.get("zero_rate")
             if isinstance(zr, (int, float)) and zr >= 0.5:
                 return True
+        # 语义角色判定统一走 _detect_semantic_role，避免两处词表各说各话
+        return cls._detect_semantic_role(column, column_stats) == "amount_zero_heavy"
+
+    # 字段语义角色（教练拍板 2026-10-14）：不同语义的空值填充策略必须不同，
+    # 不能一律用中位数 —— 代偿金额被中位数填充，等于把"未代偿"伪造成"已代偿"。
+    _ROLE_ZERO_HEAVY = ("代偿", "担保", "押金", "保证金", "定金", "垫付", "核销")
+    _ROLE_DURATION = ("逾期", "天数", "周期", "期限", "账龄", "年龄", "时长", "月数", "年数")
+    _ROLE_RATE = ("率", "%", "比例", "占比", "ratio", "rate", "percent")
+
+    @classmethod
+    def _detect_semantic_role(cls, column, column_stats=None) -> str:
+        """判定字段语义角色，返回 amount_zero_heavy / duration / rate / number / unknown。
+
+        Args:
+            column: 字段名
+            column_stats: 可选，含 zero_rate 时用于判定"零值主导"（>= 50% 视为零值主导）
+        """
         name = str(column or "").lower()
-        return any(k in name for k in cls._AMOUNT_COLUMN_KEYWORDS)
+        # 零值主导优先判定：先按统计（最可靠），再按业务词
+        if isinstance(column_stats, dict):
+            zr = column_stats.get("zero_rate")
+            if isinstance(zr, (int, float)) and zr >= 0.5:
+                return "amount_zero_heavy"
+        if any(k in name for k in cls._ROLE_ZERO_HEAVY):
+            return "amount_zero_heavy"
+        # name.endswith("比")：v1.3 用例 A2-5 点名的「收入负债比」这类比率列，
+        # 词表里只有"率/%/比例/占比"会漏掉它，而它必须走 AVG（求和会荒谬）。
+        if any(k in name for k in cls._ROLE_RATE) or name.endswith("比"):
+            return "rate"
+        if any(k in name for k in cls._ROLE_DURATION):
+            return "duration"
+        return "number"
 
     def _get_repair_options(self, issue_type: IssueType, column: str,
                             column_stats=None) -> List[Dict]:
@@ -234,17 +256,30 @@ class QualityChecker:
         }
         opts = [dict(o) for o in REPAIR_OPTIONS.get(issue_type, [])]
         # CLEAN-FIX：金额 / 零值主导字段 → 默认推荐改为「按业务零值填充(0)」
-        if issue_type == IssueType.NULL and self._is_amount_like(column, column_stats):
-            for o in opts:
-                o.pop("recommended", None)
-            for o in opts:
-                if o.get("strategy") == "fill_constant":
-                    o["recommended"] = True
-                    o["label"] = "按业务零值填充(0)"
-                    o["description"] = ("该字段为金额/零值主导字段，空值通常表示未发生（如未代偿），"
-                                        "填 0 比中位数更符合业务语义")
-                    o["default_value"] = 0
-                    break
+        if issue_type == IssueType.NULL:
+            _role = self._detect_semantic_role(column, column_stats)
+            if _role == "amount_zero_heavy":
+                # 零值主导（代偿/担保/押金…）：空值 = 未发生 → 填业务零值 0
+                for o in opts:
+                    o.pop("recommended", None)
+                for o in opts:
+                    if o.get("strategy") == "fill_constant":
+                        o["recommended"] = True
+                        o["label"] = "按业务零值填充(0)"
+                        o["description"] = ("该字段为金额/零值主导字段，空值通常表示未发生（如未代偿），"
+                                            "填 0 比中位数更符合业务语义")
+                        o["default_value"] = 0
+                        break
+            elif _role in ("duration", "rate"):
+                # 时长/比率类：中位数合理，但把理由讲清楚，别让"中位数"看起来是随手选的
+                for o in opts:
+                    o.pop("recommended", None)
+                for o in opts:
+                    if o.get("strategy") == "fill_median":
+                        o["recommended"] = True
+                        _kind = "时长/周期类" if _role == "duration" else "比率/占比类"
+                        o["description"] = (f"该字段为{_kind}，用中位数填充比均值更抗极值影响")
+                        break
         return opts
 
     def _build_samples(self, issue, table_name: str) -> List[Dict[str, Any]]:
