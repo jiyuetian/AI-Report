@@ -22,6 +22,18 @@ _PROXY = os.environ.get("LLM_PROXY") or "http://127.0.0.1:7897"
 os.environ["HTTPS_PROXY"] = _PROXY
 os.environ["HTTP_PROXY"] = _PROXY
 
+# === 环境固化：magic DLL PATH ===
+# 历史坑：python-magic 依赖的 libmagic DLL 不在 PATH 时，app.api.upload 里的
+# `import magic` 会在部分机器上抛 ImportError/OSError，后端直接起不来。
+# 此前曾在 site-packages 的 magic/loader.py 里打过临时补丁（违反“不碰 site-packages”
+# 铁律，且换机器即失效）。这里把修复固化回仓库：在 app 导入 magic 之前（uvicorn.run
+# 才会触发 app 导入）把 libmagic 目录前置进 PATH。目录不存在则静默跳过，不影响启动。
+import os as _os
+_magic_dll = _os.path.join(_os.path.dirname(_os.path.dirname(_os.__file__)),
+                           "Lib", "site-packages", "magic", "libmagic")
+if _os.path.isdir(_magic_dll) and _magic_dll not in _os.environ.get("PATH", ""):
+    _os.environ["PATH"] = _magic_dll + ";" + _os.environ.get("PATH", "")
+
 import uvicorn
 
 HOST = "127.0.0.1"
