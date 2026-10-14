@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Card, Button, Tag, Table, Modal, Radio, Input, Space, Divider, Alert, message, Typography, Empty, Select, Tooltip } from 'antd'
+import { Card, Button, Tag, Table, Modal, Radio, Input, Space, Divider, Alert, message, Typography, Empty, Select, Tooltip, Progress } from 'antd'
 import {
   CheckCircleOutlined, WarningOutlined, CloseCircleOutlined,
   ToolOutlined, ReloadOutlined, ThunderboltOutlined, LoadingOutlined,
@@ -187,6 +187,21 @@ export default function QualityCheckPanel({
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState(false)
   const [aiStatus, setAiStatus] = useState<'idle' | 'running' | 'done' | 'failed'>('idle')
+  // ISS-103：质检结果（规则+AI）未就绪前显示"等待提示页"，不直接把规则结果裸抛给用户——
+  // 用户已离开本步后再补 AI 无意义。AI 失败/超时则明确标注"本次为规则兜底结果"。
+  const [aiWaiting, setAiWaiting] = useState(false)
+  // AI 参与状态可视化：done 后展示"AI 已参与，补充发现 N 个问题"，让用户感知 AI 是否参与
+  const [aiIssueCount, setAiIssueCount] = useState<number | null>(null)
+  // ISS-103：LLM 全链路失败时后端 status 仍为 done（summary.fallback_used=true），
+  // 此时不能显示绿色"AI 已参与"，必须显示琥珀色兜底提示
+  const [aiFallback, setAiFallback] = useState(false)
+  // 等待页计时（给用户"通常 20–30 秒出结果"的确定感）
+  const [aiElapsed, setAiElapsed] = useState(0)
+  useEffect(() => {
+    if (!aiWaiting) { setAiElapsed(0); return }
+    const t = setInterval(() => setAiElapsed(s => s + 1), 1000)
+    return () => clearInterval(t)
+  }, [aiWaiting])
   const [applyingPlan, setApplyingPlan] = useState(false)
   // 当前批量修复模式（用于分别控制两个按钮的 loading 态）：'blocking' | 'all'
   const [planMode, setPlanMode] = useState<'blocking' | 'all'>('all')
@@ -241,7 +256,7 @@ export default function QualityCheckPanel({
   const pollAiResult = useCallback((dsId: string) => {
     if (aiIntervalRef.current) clearInterval(aiIntervalRef.current)
     let attempts = 0
-    const MAX_ATTEMPTS = 45  // ~90秒后停止轮询
+    const MAX_ATTEMPTS = 15  // ISS-103：质检整体 30s 封顶（2s×15），超时转兜底提示，不让用户干等
     const timer = setInterval(async () => {
       attempts++
       try {
@@ -251,16 +266,23 @@ export default function QualityCheckPanel({
           clearInterval(timer)
           aiIntervalRef.current = null
           setAiStatus('done')
+          setAiWaiting(false)
+          setAiIssueCount(Number(data.ai_issues_count) || 0)
+          // 准确信号：llm_called=true 才代表 AI 真正参与了本次质检（含 OpenRouter 免费层）。
+          // 不能用 fallback_used：wait_for 超时场景 fallback_used=False 但 AI 实际未参与，
+          // 若按 fallback_used 判断会误显示绿色"AI 已参与"。故以 llm_called 取反作为兜底标记。
+          setAiFallback(!((data.summary as any)?.llm_called))
           const issues = (data.issues || []) as ApiQualityIssue[]
           mergeAiResult(issues)
           if (data.ai_issues_count > 0) {
-            message.info({ content: `质检完成：规则结果已显示，AI 补充发现 ${data.ai_issues_count} 个潜在问题`, key: 'qc' })
+            message.info({ content: `质检完成：规则 + AI 共发现 ${data.ai_issues_count} 个 AI 补充问题`, key: 'qc' })
           }
         } else if (data.status === 'failed') {
           clearInterval(timer)
           aiIntervalRef.current = null
           setAiStatus('failed')
-          message.warning(`AI补充检测暂不可用：${data.error || '未知原因'}（规则检测结果不受影响）`)
+          setAiWaiting(false)
+          message.warning('AI补充检测未完成（超时或服务暂不可用），本次展示规则兜底结果')
         }
         // running/pending：继续轮询
       } catch (e) {
@@ -270,6 +292,7 @@ export default function QualityCheckPanel({
         clearInterval(timer)
         aiIntervalRef.current = null
         setAiStatus(s => (s === 'idle' || s === 'running') ? 'failed' : s)
+        setAiWaiting(false)
       }
     }, 2000)
     aiIntervalRef.current = timer
@@ -300,6 +323,8 @@ export default function QualityCheckPanel({
       aiIntervalRef.current = null
     }
     setAiStatus('idle')
+    setAiWaiting(false)
+    setAiFallback(false)
     const existing = getStateForFile(fileId, groupIssuesByType([]))
     setState(existing)
   }, [fileId])
@@ -348,9 +373,11 @@ export default function QualityCheckPanel({
     runningRef.current = true
     setChecking(true)
     setAiStatus('running')
+    setAiWaiting(true)
+    setAiFallback(false)
     // 静默模式不弹 toast；非静默也只给 8 秒兜底时长，避免异常路径下永久卡住
     if (!silent) {
-      message.loading({ content: '正在进行规则质检（秒级），AI补充检测后台进行中...', key: 'qc', duration: 8 })
+      message.loading({ content: '正在进行质检（规则 + AI 合并反馈，通常 10–25 秒）...', key: 'qc', duration: 8 })
     }
     // 规则检测很快，仅保留45秒兜底超时，避免按钮卡在loading
     const ctrl = new AbortController()
@@ -386,11 +413,11 @@ export default function QualityCheckPanel({
       stateRef.current = newState
       setChecked(true)
 
+      // ISS-103：规则结果先落地，等待页继续展示直至 AI 就绪（不弹"规则完成"打断等待页体验）
       if (!silent) {
         message.destroy('qc')
-        message.success(`规则质检完成（${fileName || fileId}），AI补充检测后台进行中`)
       }
-      // 启动后台轮询，AI结果就绪后自动合并进面板
+      // 启动后台轮询，AI结果就绪后结束等待页并展示完整结果
       pollAiResult(datasetId)
       return grouped
     } catch (error: any) {
@@ -403,6 +430,7 @@ export default function QualityCheckPanel({
         }
       }
       setAiStatus('failed')
+      setAiWaiting(false)
       return null
     } finally {
       clearTimeout(timer)
@@ -742,6 +770,41 @@ export default function QualityCheckPanel({
     }))
   )
   
+  // ISS-103：规则+AI 结果未就绪时显示等待提示页——用户在本步只看一次完整结果，不做"后补"；
+  // AI 失败/超时由 pollAiResult 结束等待并转入兜底提示（见下方 failed banner）
+  if (aiWaiting) {
+    return (
+      <SkillPanel panelKind="quality" title="数据质检">
+        <Card
+          title={
+            <Space>
+              <span>数据质检 {fileName && <Text type="secondary" style={{ fontWeight: 400 }}>— {fileName}</Text>}</span>
+              <Tag icon={<LoadingOutlined spin />} color="processing">检测中</Tag>
+            </Space>
+          }
+          style={{ marginTop: 0 }}
+        >
+          <div style={{ textAlign: 'center', padding: '56px 24px 64px' }}>
+            <LoadingOutlined spin style={{ fontSize: 40, color: '#1677ff' }} />
+            <div style={{ fontSize: 16, fontWeight: 600, marginTop: 16 }}>
+              正在综合规则检测与 AI 补充检测…
+            </div>
+            <div style={{ fontSize: 13, color: '#8c8c8c', marginTop: 8 }}>
+              规则检测已完成，AI 补充检测进行中，通常 10–25 秒返回；最长等待 30 秒，超时会明确提示并给出规则兜底结果
+            </div>
+            <div style={{ width: 320, margin: '24px auto 0' }}>
+              <Progress
+                percent={Math.min(95, Math.round((aiElapsed / 30) * 100))}
+                status="active"
+                format={() => `已等待 ${aiElapsed}s`}
+              />
+            </div>
+          </div>
+        </Card>
+      </SkillPanel>
+    )
+  }
+
   return (
     <SkillPanel panelKind="quality" title="数据质检">
     <Card
@@ -763,20 +826,23 @@ export default function QualityCheckPanel({
       }
       style={{ marginTop: 0 }}
     >
-      {(aiStatus === 'running' || aiStatus === 'idle') && checked && (
+      {/* ISS-103：让用户明确感知 AI 是否参与了本次质检 */}
+      {aiStatus === 'done' && checked && aiIssueCount !== null && !aiFallback && (
         <Alert
-          type="info"
-          icon={<LoadingOutlined spin />}
+          type="success"
           showIcon
-          message="规则检测已完成；AI补充检测正在后台进行，结果就绪后会自动补充到下方"
+          message={aiIssueCount > 0
+            ? `AI 已参与质检：补充发现 ${aiIssueCount} 个规则外潜在问题（分布异常 / 语义异常 / 字段矛盾等）`
+            : 'AI 已参与质检：未发现规则之外的补充问题'}
           style={{ marginBottom: 16 }}
         />
       )}
-      {aiStatus === 'failed' && (
+      {(aiStatus === 'failed' || (aiStatus === 'done' && aiFallback)) && checked && (
         <Alert
           type="warning"
           showIcon
-          message="AI补充检测暂不可用，当前显示为规则检测结果（阻断性判定不受影响）"
+          message="AI 补充检测未完成（超时或服务暂不可用），本次展示的是规则兜底检测结果"
+          description="AI 可发现分布异常、语义异常、字段矛盾等规则覆盖不到的问题，本次未包含该部分；可点击右上角「重新质检」重试。"
           style={{ marginBottom: 16 }}
         />
       )}

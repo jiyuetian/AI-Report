@@ -825,3 +825,22 @@
   3. 前端 AppendixPanel B 表标签改「B. 清洗明细」，注释同步。
   4. 删除孤儿死组件 frontend/src/views/quality/CleanPage.tsx + CleanPage.css（导航/路由从未挂接，纯 mock）。
 - 验收：py_compile OK；pytest test_row_changes 4 passed；tsc --noEmit 0 错误。
+
+## ISS-103 · S4b「AI 分析摘要」编造数字——prompt 只给图表配置，无真实数值（2026-10-14 / night46）
+- 现象：brain_run_sse.py S4b 生成的「AI 分析摘要」包含硬编造数值——clean 基线（acceptance_loan.xlsx）产出「总放款金额约 12.3 亿元」「6 个月以内短期贷款占比 45%」「年利率超过 9% 的笔数占 8%」等，均与真实数据背离（真实总额 5500 万=0.55 亿、期限仅 12/24/36 月、利率上限 6.8%）。
+- 根因：S4b 原 prompt 只喂图表**配置**（chart_type/title/维度名），并明确写「基于上述图表配置合理推断即可」——LLM 无任何真实数值可依据，被迫编造。
+- 修复（backend/app/api/brain_run_sse.py）：
+  1. 新增 `_fmt_num()` 千分位 + 万/亿单位格式化（如 `5500万（55,000,000）`），便于人工核验。
+  2. 新增 `_build_real_data_block(duck_inst, dataset_id, final_charts)` 从 DuckDB 清洗层表按每张图真实聚合：KPI→`SUM`、分组图→`SUM`+`COUNT`、scatter/histogram→`MIN/MAX/AVG`；全程 try/except，异常返回空串不阻断主流程。
+  3. S4b prompt 在「图表配置」后注入「## 真实数据」章节，第 2 条要求改为「必须引用真实数据、绝对禁止编造」。
+- 验证：py_compile 通过；桩实跑（真实 duckdb 引擎 + 复刻表）clean 返回 合计5500万 / 线上2470万·线下2030万·合作1000万 / 期限12:3笔·24:3笔·36:2笔，dirty 返回 合计16.9万 / 江苏5万·广东4.2万…；最终生产链路验收见 night46 before_after_s4b.md。
+- 状态：[DONE]（桩验证通过 + 生产链路并排对比确认，见 before_after_s4b.md）。
+
+## ISS-104 · 质检面板 AI 等待态 + fallback 兜底琥珀色提示（2026-10-14 / night46）
+- 现象：质检 AI 尚未就绪（或全链路失败走规则兜底）时，面板直接把规则结果裸抛给用户，无「等待中/本次为规则兜底」区分，用户误以为 AI 已参与。
+- 修复（frontend/src/components/quality/QualityCheckPanel.tsx）：
+  1. 新增 `aiWaiting` / `aiIssueCount` / `aiFallback` 三状态。
+  2. AI 失败/超时时显式标注「本次为规则兜底结果」（琥珀色），不让用户误判 AI 已参与。
+  3. 整体 30s 封顶（2s×15）转兜底提示，避免干等。
+- 验收：tsc --noEmit 0 错误（前端类型校验）。
+- 状态：[DONE]。

@@ -1400,3 +1400,21 @@ if _fb_msg:
 ## §76 · ISS-102 附录 B 行级明细收紧 + 清洗策略中文化 + 删除死页
 - 附录 B 仅显已执行清洗逐行（不聚合、不混待处理）；清洗策略全量中文化；删孤儿 CleanPage。
 - 文件：core/appendix_service.py、frontend/src/components/appendix/AppendixPanel.tsx；删除 views/quality/CleanPage.tsx(+css)。
+
+## §77 · night46 Task C：S4b 分析摘要注入真实 DuckDB 数据，杜绝编造数字（2026-10-14 / ISS-103）
+- 背景：night46 基线采集发现 S4b「AI 分析摘要」编造数字（clean 编造「12.3亿」，真实 0.55 亿），根因为 prompt 只给图表配置 +「合理推断即可」。
+- 修复（backend/app/api/brain_run_sse.py）：
+  1. `_fmt_num()`（L548）千分位 + 万/亿单位。
+  2. `_build_real_data_block()`（L565）从 DuckDB 清洗层表按图真实聚合（KPI→SUM / 分组→SUM+COUNT / scatter→MIN/MAX/AVG），try/except 不阻断。
+  3. S4b prompt（L1163 注入、L1184 改指令为「必须引用真实数据、禁止编造」）。
+- 验证：py_compile + 桩实跑（真实 duckdb 引擎）；生产链路并排对比见 night_runs/night46/before_after_s4b.md。
+- commit：brain_run_sse.py（单独提交，Refs ISS-103）。未 push。
+
+## §78 · night46：质检面板 AI 等待态兜底 + REDIS_DISABLED 优雅降级（2026-10-14 / ISS-104）
+- QualityCheckPanel.tsx（ISS-104）：新增 aiWaiting/aiIssueCount/aiFallback 三状态 + 琥珀色「规则兜底」标注；30s 封顶转兜底。
+- REDIS_DISABLED 三文件（infra，CI/无 Redis 环境优雅降级）：
+  1. core/security.py（L27）登录锁定 Redis 连接降级为内存兜底。
+  2. core/brain_config_manager.py（L17）BrainConfig 降级为纯数据库模式。
+  3. core/llm_gateway.py（L216）LLM 网关跳过 Redis 缓存连接。
+  - 正常环境（未设 REDIS_DISABLED=1）完全不受影响。
+- commit：QualityCheckPanel.tsx + ISSUES.md（ISS-103/104）+ AI_CHANGES（§77/§78），单独提交（含台账），未 push。
