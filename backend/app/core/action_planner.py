@@ -247,41 +247,12 @@ def _llm_plan_call(system_prompt: str, user_prompt: str, max_tokens: int = 700) 
         return None
 
 
-def _plan_with_llm(message: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """P0-2：把规则未命中的看板操作语义交给 LLM 直接规划成单个动作。
+def _validate_llm_action(data: Dict[str, Any], charts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """night49：单动作合规校验（从 _plan_with_llm 抽出，供单/多动作两路复用）。
 
-    返回：
-      - 合规动作 dict（type/params/intent_type/confidence/classified_by）
-      - {"clarify": reason}  —— LLM 认为信息不足需澄清
-      - None                  —— LLM 失败/产出不合规 → 由调用方降级回规则/UNKNOWN
+    通过返回标准化动作 dict（type/params/intent_type/confidence/classified_by）；
+    缺关键参数 / 类型不合法 / chart_id 不存在 → None（调用方降级）。
     """
-    charts = (context or {}).get("current_config", {}).get("charts", []) or []
-    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or (context or {}).get("field_profiles") or []
-    chart_desc = "\n".join(
-        f"- {c.get('title')}（id={c.get('id')}, 类型={c.get('chart_type')}）" for c in charts
-    ) or "（无）"
-    field_desc = "\n".join(
-        f"- {fp.get('name')}（{'数值' if _is_numeric_profile(fp) else '文本/分类'}）" for fp in fps
-    ) or "（无）"
-
-    system = (
-        "你是 BI 看板对话的执行规划器。用户用自然语言对看板提出修改要求，"
-        "请直接输出要执行的【单个动作】JSON（不要任何解释）。\n"
-        "可用动作类型：" + "/".join(_ALLOWED_SEMANTIC_TYPES) + "。\n"
-        "约束：\n"
-        "1. change_chart：必须给 chart_id 或 title_keyword（从现有图表里选），以及 target_type（pie/bar/line/scatter/table/kpi）。\n"
-        "2. add_chart：必须给 chart_type，以及真实 dimension_field/metric_field（从字段画像选）或 title_keyword。\n"
-        "3. 只能引用真实存在的图表与字段，不得臆造。\n"
-        "4. 若用户意图不清晰或缺少必要信息，输出 {\"need_clarify\": true, \"reason\": \"...\"}。\n\n"
-        f"现有图表：\n{chart_desc}\n\n字段画像：\n{field_desc}\n"
-    )
-    user = f"用户要求：{message}\n请输出动作 JSON。"
-    data = _llm_plan_call(system, user)
-    if not isinstance(data, dict):
-        return None
-    if data.get("need_clarify"):
-        return {"clarify": data.get("reason") or "信息不足，请补充说明具体要做什么。"}
-
     atype = data.get("type") or data.get("action_type")
     if atype not in _ALLOWED_SEMANTIC_TYPES:
         return None
@@ -303,16 +274,213 @@ def _plan_with_llm(message: str, context: Dict[str, Any]) -> Optional[Dict[str, 
     return {
         "type": atype,
         "params": params,
-        "clause": message,
         "intent_type": atype,
         "confidence": 75,
         "classified_by": "llm_semantic",
     }
 
 
+def _lineage_brief(context: Dict[str, Any]) -> str:
+    """night49：把六层血缘摘要压成给 LLM 的只读简报（每层≤300字符）。
+
+    与报表生成同源（AIContextBuilder L0-L5），让对话 AI 知道「当前版本是什么、
+    数据从哪来、加工到哪层」，据此判断用户诉求该落在哪一层调整或整链重生。
+    """
+    lin = (context or {}).get("lineage") or {}
+    if not lin:
+        return ""
+    parts = []
+    for k, label in (
+        ("L0_raw", "L0原始层"), ("L1_clean", "L1清洗层"), ("L2_processed", "L2加工层"),
+        ("L3_aggregated", "L3聚合层"), ("L4_charts", "L4图表层"), ("L5_findings", "L5质检层"),
+    ):
+        v = lin.get(k)
+        if not v:
+            continue
+        try:
+            parts.append(f"{label}: {json.dumps(v, ensure_ascii=False, default=str)[:300]}")
+        except Exception:
+            continue
+    return "\n".join(parts)
+
+
+def _plan_with_llm(message: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """P0-2：把规则未命中的看板操作语义交给 LLM 直接规划成动作。
+
+    night49 升级（AI 最高权限批量生成 + 血缘感知 + 整链重生判定）：
+      1. LLM 可一次输出多个动作 {"actions": [...]}（最多 8 个）——「加 A、B、C 三张卡片」
+         这类批量请求不再被"单动作"约束逼成澄清反问（用户实测痛点：只加了 1 张卡 + AI 未参与）。
+      2. 注入六层血缘简报（与报表生成同源），AI 据此判断诉求落在哪一层。
+      3. 若用户诉求是整体重做，LLM 输出 {"rebuild": true} → 调用方路由到
+         regenerate_dashboard（复用 S3 主链路：候选池 → LLM 选图）。
+
+    返回：
+      - 单动作 dict（type/params/intent_type/confidence/classified_by）
+      - {"actions": [动作dict, ...]}  —— LLM 批量规划出的多动作
+      - {"rebuild": True, "requirements": str} —— AI 判定应整链重新生成
+      - {"clarify": reason}           —— LLM 认为信息不足需澄清
+      - None                          —— LLM 失败/产出不合规 → 由调用方降级回规则/UNKNOWN
+    """
+    charts = (context or {}).get("current_config", {}).get("charts", []) or []
+    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or (context or {}).get("field_profiles") or []
+    chart_desc = "\n".join(
+        f"- {c.get('title')}（id={c.get('id')}, 类型={c.get('chart_type')}）" for c in charts
+    ) or "（无）"
+    field_desc = "\n".join(
+        f"- {fp.get('name')}（{'数值' if _is_numeric_profile(fp) else '文本/分类'}）" for fp in fps
+    ) or "（无）"
+    lin_brief = _lineage_brief(context)
+    lineage_block = (
+        f"\n当前版本数据血缘（只读摘要，据此判断用户诉求应落在哪一层调整）：\n{lin_brief}\n"
+        if lin_brief else ""
+    )
+
+    system = (
+        "你是 BI 看板对话的执行规划器。用户用自然语言对看板提出修改要求，"
+        "请直接输出要执行的动作 JSON（不要任何解释）。\n"
+        "可用动作类型：" + "/".join(_ALLOWED_SEMANTIC_TYPES) + "。\n"
+        "输出格式（三选一）：\n"
+        "1. 单动作：{\"type\": \"...\", \"params\": {...}}\n"
+        "2. 批量请求（用户一次要求加/改多个指标或图表）："
+        "{\"actions\": [{\"type\": \"...\", \"params\": {...}}, ...]}，最多 8 个动作，"
+        "每个动作都必须单独合规。\n"
+        "3. 整体重做（用户明确要重新生成整份看板/报表，或指出现有版本整体不对需要推倒重来）："
+        "{\"rebuild\": true, \"requirements\": \"<重做要求摘要>\"}；局部增删改不要用 rebuild。\n"
+        "约束：\n"
+        "1. change_chart：必须给 chart_id 或 title_keyword（从现有图表里选），以及 target_type（pie/bar/line/scatter/table/kpi）。\n"
+        "2. add_chart：必须给 chart_type，以及真实 dimension_field/metric_field（从字段画像选）或 title_keyword。\n"
+        "3. 只能引用真实存在的图表与字段，不得臆造；用户提到的指标要在字段画像里找最接近的真实字段。\n"
+        "4. 若用户意图不清晰或缺少必要信息，输出 {\"need_clarify\": true, \"reason\": \"...\"}；"
+        "但用户已明确列出多个指标时不要反问，直接批量输出 actions。\n"
+        f"{lineage_block}\n"
+        f"现有图表：\n{chart_desc}\n\n字段画像：\n{field_desc}\n"
+    )
+    user = f"用户要求：{message}\n请输出动作 JSON。"
+    data = _llm_plan_call(system, user)
+    if not isinstance(data, dict):
+        return None
+    if data.get("need_clarify"):
+        return {"clarify": data.get("reason") or "信息不足，请补充说明具体要做什么。"}
+    # night49：AI 判定整链重生
+    if data.get("rebuild"):
+        return {
+            "rebuild": True,
+            "requirements": str(data.get("requirements") or message)[:400],
+            "classified_by": "llm_semantic",
+        }
+
+    # night49：多动作批处理
+    if isinstance(data.get("actions"), list) and data.get("actions"):
+        outs = []
+        for _d in data["actions"][:8]:
+            if not isinstance(_d, dict):
+                continue
+            _a = _validate_llm_action(_d, charts)
+            if _a:
+                _a["clause"] = message
+                outs.append(_a)
+        if outs:
+            return {"actions": outs}
+        return None
+
+    act = _validate_llm_action(data, charts)
+    if act is None:
+        return None
+    act["clause"] = message
+    return act
+
+
 def _is_numeric_profile(fp: Dict[str, Any]) -> bool:
     ftype = (fp.get("type") or fp.get("dtype") or "").upper()
     return any(t in ftype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL", "NUMBER", "DEC"))
+
+
+def _explicit_numeric_tokens(clause: str, context: Dict[str, Any]) -> List[str]:
+    """night49：抽出子句中用户明确点名、且属数值型（可作指标）的真实字段。
+    用于判定「一次加多张卡片」类批量请求，交给 LLM 批量规划。"""
+    toks = explicit_field_tokens(clause)
+    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or \
+        (context or {}).get("field_profiles") or []
+    nums: List[str] = []
+    for t in toks:
+        fp = next((f for f in fps if (f.get("name") or f.get("column") or "") == t), None)
+        if fp and _is_numeric_profile(fp):
+            nums.append(t)
+    return nums
+
+
+def _rule_multi_add(clause: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """night49 规则兜底：AI 不可达时，对多指标子句逐指标生成 add_chart 动作（避免只生成 1 张卡）。
+    字段键同时兼容规则/LLM 两套命名（metric_field/target_field/metric_name/value_field）。"""
+    nums = _explicit_numeric_tokens(clause, context)
+    acts: List[Dict[str, Any]] = []
+    for m in nums:
+        acts.append({
+            "type": "add_chart",
+            "params": {
+                "chart_type": "kpi",
+                "metric_field": m,
+                "target_field": m,
+                "metric_name": m,
+                "value_field": m,
+                "title_keyword": m,
+                "classified_by": "rule_multi_metric",
+            },
+            "clause": clause,
+            "intent_type": "add_chart",
+            "confidence": 70,
+            "classified_by": "rule_multi_metric",
+        })
+    return acts
+
+
+def _consume_llm_plan(llm_plan: Dict[str, Any], clause: str,
+                      actions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """night49：把 _plan_with_llm 的返回挂到 actions，返回应作为 primary_intent 的 dict 或 None。
+    与 SEMANTIC_ACTION 原分支逻辑等价，抽出供「多指标批量生成」与「语义规划」两路复用，避免二次 LLM 调用。"""
+    if llm_plan.get("clarify"):
+        actions.append(_clarify_action(
+            "semantic_clarify", llm_plan["clarify"], clause, None,
+            pending={"intent_type": "semantic", "clause": clause}))
+        return None
+    if llm_plan.get("rebuild"):
+        _ra = {
+            "type": "regenerate_dashboard",
+            "params": {"requirements": llm_plan.get("requirements") or clause},
+            "clause": clause,
+            "intent_type": "regenerate_dashboard",
+            "confidence": 75,
+            "classified_by": "llm_semantic",
+        }
+        actions.append(_ra)
+        return {
+            "intent_type": "regenerate_dashboard",
+            "confidence": 75,
+            "analysis": {"raw_message": clause, "extracted_params": _ra["params"],
+                         "classified_by": "llm_semantic"},
+            "is_confident": True,
+            "classified_by": "llm_semantic",
+        }
+    if llm_plan.get("actions"):
+        for _a in llm_plan["actions"]:
+            actions.append(_a)
+        _a0 = llm_plan["actions"][0]
+        return {
+            "intent_type": _a0.get("intent_type") or _a0.get("type"),
+            "confidence": _a0.get("confidence", 75),
+            "analysis": {"raw_message": clause, "extracted_params": _a0.get("params", {}),
+                         "classified_by": "llm_semantic"},
+            "is_confident": True,
+            "classified_by": "llm_semantic",
+        }
+    actions.append(llm_plan)
+    return {
+        "intent_type": llm_plan["intent_type"],
+        "confidence": llm_plan["confidence"],
+        "analysis": {"raw_message": clause, "extracted_params": llm_plan.get("params", {})},
+        "is_confident": True,
+        "classified_by": "llm_semantic",
+    }
 
 
 def detect_vague_chart_type(clause: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -853,6 +1021,31 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
         analysis = result.get("analysis", {})
         params = analysis.get("extracted_params", {}) or {}
 
+        # ---- night49：多指标「加/改多张卡片」请求 → 交给 LLM 批量规划（AI 最高权限生成）。
+        # 规则 ADD_CHART/CHANGE_CHART 只会取首个指标生成 1 张卡（生产痛点：只加了 1 张）。
+        # 这里在规则分类之后、单动作生成之前短路：命中多指标则直接走 _plan_with_llm；
+        # AI 不可达/不合规时回退规则逐指标生成，保证不丢请求（与 night48「规则升主链路」一致）。
+        if itype in (IntentType.ADD_CHART.value, IntentType.CHANGE_CHART.value):
+            _nums = _explicit_numeric_tokens(clause, context)
+            if len(_nums) >= 2:
+                _lp = _plan_with_llm(clause, context)
+                if isinstance(_lp, dict) and (_lp.get("actions") or _lp.get("rebuild")):
+                    _np = _consume_llm_plan(_lp, clause, actions)
+                    if _np is not None and primary is None:
+                        primary = _np
+                    continue
+                # AI 不可达/不合规 → 规则逐指标兜底（避免只生成 1 张卡）
+                for _ma in _rule_multi_add(clause, context):
+                    actions.append(_ma)
+                if primary is None:
+                    primary = {
+                        "intent_type": "add_chart", "confidence": 70,
+                        "analysis": {"raw_message": clause, "extracted_params": {"metrics": _nums},
+                                     "classified_by": "rule_multi_metric"},
+                        "is_confident": True, "classified_by": "rule_multi_metric",
+                    }
+                continue
+
         # ---- P0-2：规则未命中但属看板操作语义 → 交 LLM 主导规划动作 ----
         if itype == IntentType.SEMANTIC_ACTION.value:
             _llm_plan = _plan_with_llm(clause, context)
@@ -860,23 +1053,11 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
                 # LLM 失败/产出不合规 → 降级回规则（落 unparsed，最终走 UNKNOWN 自然回复）
                 unparsed.append(clause)
                 continue
-            if _llm_plan.get("clarify"):
-                actions.append(_clarify_action(
-                    "semantic_clarify", _llm_plan["clarify"], clause, None,
-                    pending={"intent_type": "semantic", "clause": clause},
-                ))
-                if primary is None:
-                    primary = result
-                continue
-            actions.append(_llm_plan)
-            if primary is None:
-                primary = {
-                    "intent_type": _llm_plan["intent_type"],
-                    "confidence": _llm_plan["confidence"],
-                    "analysis": {"raw_message": clause, "extracted_params": _llm_plan.get("params", {})},
-                    "is_confident": True,
-                    "classified_by": "llm_semantic",
-                }
+            _np = _consume_llm_plan(_llm_plan, clause, actions)
+            if _np is not None and primary is None:
+                primary = _np
+            elif _llm_plan.get("clarify") and primary is None:
+                primary = result
             continue
 
         if itype == IntentType.UNKNOWN.value or not result.get("is_confident", True):

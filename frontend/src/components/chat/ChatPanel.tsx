@@ -426,6 +426,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         action_source: actionSource,
         ai_failed_reason: aiFailedReason,
       } : m));
+      // night49：重试结束后给出确定性反馈，杜绝"点了没反应"的观感
+      if (aiError) {
+        throttledMessage.error(`AI 仍不可达：${aiError.error?.slice(0, 80) || '调用失败'}`, 'retry-still-fail');
+      } else if (aiParticipated) {
+        throttledMessage.success('AI 已重新生成本条回复', 'retry-ok');
+      } else {
+        throttledMessage.warning('AI 仍未参与（模型通道限流/不可达），已保留原结果', 'retry-no-ai');
+      }
     } catch (e) {
       console.error('重试 AI 失败:', e);
       throttledMessage.error('重试失败，请稍后再试', 'retry-fail');

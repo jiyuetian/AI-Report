@@ -354,6 +354,106 @@ def _extract_position_hints(message: str) -> Dict[str, Any]:
     return out
 
 
+def _fetch_sample_rows(dataset_id: str, limit: int = 200):
+    """night49：整链重生取样——优先清洗层，退化原始层。只读 SELECT，绝不写。"""
+    if not dataset_id:
+        return []
+    try:
+        from app.core.duckdb_manager import get_duckdb
+        db = get_duckdb()
+        for t in (f"ds_{dataset_id}_cleaned", f"ds_{dataset_id}"):
+            try:
+                if db.table_exists(t):
+                    cur = db.conn.execute(f'SELECT * FROM "{t}" LIMIT {int(limit)}')
+                    cols = [d[0] for d in cur.description]
+                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[Chat] 整链重生取样失败(忽略): {e}")
+    return []
+
+
+async def _run_dashboard_rebuild(
+    requirements: str,
+    dataset_id: str,
+    field_profiles: list,
+    current_config: Dict[str, Any],
+    grain: str = "row",
+) -> Dict[str, Any]:
+    """night49：AI 判定「整条链路重新生成」时的执行器。
+
+    与报表生成走同一套 AI 机制（night48 子任务1 S3 主链路）：
+      规则引擎 generate_all_candidates 产出全量候选池 → LLM select_charts_from_candidates
+      选图/增强/重排（失败回退 engine._select_from_candidates 规则兜底）。
+    用户需求以 goals 注入选图提示词；替换前 charts 快照进 reverse，undo 可恢复。
+    只替换看板 charts（L4 图表层），数据层 L0-L3 不动。
+    """
+    import uuid as _uuid
+    try:
+        from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
+        from app.core.brain_modules.s3_llm_enhancer import select_charts_from_candidates
+
+        fields = [fp.get("name") or fp.get("column") for fp in (field_profiles or [])]
+        fields = [f for f in fields if f]
+        if not fields:
+            return {"success": False, "error": "无可用字段画像，无法整链重生（请先上传/选择数据集）"}
+        theme = (current_config or {}).get("theme", "通用分析")
+        sample = _fetch_sample_rows(dataset_id)
+        engine = S3ChartEngine()
+        pool = engine.generate_all_candidates(
+            fields=fields, grain=grain, theme=theme, goals=None,
+            sample_data=sample, derived_metrics=None)
+        candidates = pool.get("candidates", [])
+
+        llm_sel = None
+        try:
+            llm_sel = await select_charts_from_candidates(
+                db=None, theme=theme, fields=fields,
+                goals=[{"requirement": (requirements or theme)[:400]}],
+                grain=grain, candidate_pool=pool)
+        except Exception as _se:
+            print(f"[Chat] 整链重生 LLM 选图失败，回退规则: {_se}")
+            llm_sel = None
+
+        if llm_sel and llm_sel.get("charts"):
+            chosen = engine._enforce_narrative_order_dicts(llm_sel["charts"])
+            gen_by = "llm"
+        else:
+            chosen = engine._select_from_candidates(candidates, top_n=7)
+            gen_by = "rule_engine"
+
+        new_charts = []
+        for c in chosen:
+            new_charts.append({
+                "id": f"ch_{_uuid.uuid4().hex[:8]}",
+                "chart_type": c.get("chart_type", "bar"),
+                "title": c.get("title", "未命名图表"),
+                "x_field": c.get("x_field"),
+                "y_field": c.get("y_field"),
+                "category_field": c.get("category_field"),
+                "value_field": c.get("value_field"),
+                "config": c.get("config") or {},
+            })
+        old_charts = (current_config or {}).get("charts", []) or []
+        new_config = dict(current_config or {})
+        new_config["charts"] = new_charts
+        return {
+            "success": True,
+            "action_type": "regenerate_dashboard",
+            "message": (f"已按你的要求整链重新生成看板：{len(new_charts)} 张图表"
+                        f"（AI 从 {len(candidates)} 个候选中选定，生成方：{gen_by}）。"
+                        "旧版可通过「撤销」恢复。"),
+            "new_config": new_config,
+            "render_updates": [],
+            "reverse": {"type": "restore_config", "params": {"config": old_charts}},
+        }
+    except Exception as e:
+        import traceback as _tb
+        _tb.print_exc()
+        return {"success": False, "error": f"整链重生失败：{str(e)[:160]}"}
+
+
 # ============== LLM 自然语言回复生成 ==============
 
 def _rule_guidance_message(context: Dict[str, Any]) -> str:
@@ -841,6 +941,16 @@ async def send_message_stream(
         })
         
         # 3. 意图分类 + 动作规划（2026-09-18：复合指令拆成有序动作列表）
+        # night49：六层血缘一次性注入上下文（与报表生成同源 AIContextBuilder L0-L5），
+        # planner 的 LLM 规划与自然语言回复共用——AI 先知道"当前版本血缘"，再决定
+        # 链路对应位置局部调整 or 整链重生。
+        try:
+            from app.core.brain_modules.ai_context_builder import AIContextBuilder
+            context["lineage"] = AIContextBuilder().build_context(dataset_id or "", current_config)
+        except Exception as _le:
+            print(f"[Chat] 血缘上下文构建失败(忽略): {_le}")
+            context["lineage"] = {}
+
         from app.core.action_planner import plan_actions, MAX_CLARIFY_ROUNDS
         plan = plan_actions(request.message, context, override=bool(request.override))
         intent_result = plan["primary_intent"]
@@ -1149,23 +1259,35 @@ async def send_message_stream(
                                     one["error"] = "看板已有50个图表，已达上限，无法继续新增"
                                 else:
                                     from app.core.action_executor import execute_action
-                                    # night13 Item1 (ISS-056)：位置/邻近指令兜底（防 planner 丢落位信息）
-                                    if act.get("type") == "add_chart":
-                                        _pp = act.setdefault("params", {})
-                                        if not _pp.get("position") and not _pp.get("near_title"):
-                                            # night13 Item3 K-2：位置线索可能跨 clause，必须用整句 message 兜底
-                                            _hh = _extract_position_hints(request.message)
-                                            if _hh.get("position"):
-                                                _pp["position"] = _hh["position"]
-                                            if _hh.get("near_title"):
-                                                _pp["near_title"] = _hh["near_title"]
-                                    _act_t0 = time.time()
-                                    r = execute_action(
-                                        act.get("type"),
-                                        act.get("params", {}),
-                                        _fresh_config,
-                                        _exec_ctx
-                                    )
+                                    if act.get("type") == "regenerate_dashboard":
+                                        # night49：AI 判定整链重生——复用 S3 主链路（候选池→LLM选图），
+                                        # 旧版快照进 reverse，undo 可恢复。不走 execute_action（异步 LLM）。
+                                        _act_t0 = time.time()
+                                        r = await _run_dashboard_rebuild(
+                                            requirements=(act.get("params") or {}).get("requirements") or request.message,
+                                            dataset_id=dataset_id,
+                                            field_profiles=field_profiles,
+                                            current_config=_fresh_config,
+                                            grain=dataset_grain,
+                                        )
+                                    else:
+                                        # night13 Item1 (ISS-056)：位置/邻近指令兜底（防 planner 丢落位信息）
+                                        if act.get("type") == "add_chart":
+                                            _pp = act.setdefault("params", {})
+                                            if not _pp.get("position") and not _pp.get("near_title"):
+                                                # night13 Item3 K-2：位置线索可能跨 clause，必须用整句 message 兜底
+                                                _hh = _extract_position_hints(request.message)
+                                                if _hh.get("position"):
+                                                    _pp["position"] = _hh["position"]
+                                                if _hh.get("near_title"):
+                                                    _pp["near_title"] = _hh["near_title"]
+                                        _act_t0 = time.time()
+                                        r = execute_action(
+                                            act.get("type"),
+                                            act.get("params", {}),
+                                            _fresh_config,
+                                            _exec_ctx
+                                        )
                                     one["success"] = bool(r.get("success"))
                                     one["message"] = r.get("message")
                                     one["error"] = r.get("error")
@@ -1349,9 +1471,18 @@ async def send_message_stream(
         _intent_result = intent_result or {}
         # 取顶层 classified_by；add_chart 走 LLM 提取时该值嵌套在 extracted_params.classified_by
         _cb = _intent_result.get("classified_by") or (_intent_result.get("extracted_params") or {}).get("classified_by") or "rule"
+        # night49：动作级 classified_by 也算 AI 参与。LLM 主导规划的多动作 plan（llm_semantic）
+        # 或 llm_add_chart 结构化提取，此前被 primary_intent 的 semantic_rule 盖住，
+        # 前端误渲染「本次 AI 未参与」诚实卡（AI 明明参与了规划却被判规则兜底）。
+        _LLM_CBS = ("llm", "llm_add_chart", "llm_semantic", "llm_plan", "llm_extract")
+        _action_cbs = []
+        for _a in (plan.get("actions") or []):
+            _acb = _a.get("classified_by") or ((_a.get("params") or {}).get("classified_by"))
+            if _acb:
+                _action_cbs.append(str(_acb))
         # night36-fix F5：把"AI 参与"拆成两段，消除 classified_by=llm 但无回复文案时
         # 徽标"规则兜底"与 action_source=llm 自相矛盾的问题。
-        _ai_participated_intent = _cb in ("llm", "llm_add_chart")  # AI 是否参与意图识别/规划
+        _ai_participated_intent = _cb in _LLM_CBS or any(c in _LLM_CBS for c in _action_cbs)  # AI 是否参与意图识别/规划
         _action_source = "llm" if _ai_participated_intent else "rule"
         if response_data.get("ai_error"):
             _ai_participated_reply = False

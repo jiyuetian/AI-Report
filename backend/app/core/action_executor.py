@@ -38,6 +38,7 @@ class ActionType(str, Enum):
     CALCULATE_METRIC = "calculate_metric"      # 指标查询/对比/趋势/解释（基于 metric_registry，红线④）
     RECALC_METRIC = "recalc_metric"          # 下游重算一致性（C-16）：触发/状态/错误恢复/性能（基于 recalc_engine，红线④）
     ADJUST_THRESHOLD = "adjust_threshold"    # night18 ISS-058：对话阈值调整（写 config.thresholds，走动作栈支持 undo）
+    RESTORE_CONFIG = "restore_config"        # night49：整链重生(regenerate_dashboard)的 undo——恢复重生前图表快照
     # ---- night48 子任务3：清洗相关动作（根因2 AI 数据通道）----
     CHANGE_AGGREGATION = "change_aggregation"  # 改某张图的聚合口径（L5 图表层）
     RECLEAN = "reclean"                        # 重新执行清洗（重建清洗层 + 触发下游重算）
@@ -142,6 +143,8 @@ class ActionExecutor:
             # ---- night48 子任务3：清洗相关动作 ----
             ActionType.CHANGE_AGGREGATION: ActionExecutor._execute_change_aggregation,
             ActionType.RECLEAN: ActionExecutor._execute_reclean,
+            # ---- night49：整链重生的 undo（恢复重生前图表快照）----
+            ActionType.RESTORE_CONFIG: ActionExecutor._execute_restore_config,
         }
         
         executor = executors.get(action_type)
@@ -1852,6 +1855,27 @@ class ActionExecutor:
             "success": False,
             "error": "缺少 dataset_id，无法重新清洗",
             "action_type": "reclean",
+        }
+
+    def _execute_restore_config(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """night49：整链重生(regenerate_dashboard)的 undo——恢复重生前的图表快照。
+
+        只恢复 charts 列表，不动 theme/筛选/质检记录等其余配置，缩小回滚爆炸半径。
+        """
+        snap = params.get("config")
+        if not isinstance(snap, list):
+            return {"success": False, "error": "缺少可恢复的图表快照(config)", "action_type": "restore_config"}
+        current_config["charts"] = snap
+        return {
+            "success": True,
+            "action_type": "restore_config",
+            "message": f"已恢复整链重生前的 {len(snap)} 张图表。",
+            "new_config": current_config,
+            "render_updates": [{"type": "config_updated"}],
         }
 
     # night44 Task C1（ISS-097）：口语修饰词清洗 —— 让「这张/柱状图」类指代不再阻断标题命中

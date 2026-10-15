@@ -1111,6 +1111,17 @@ class IntentClassifier:
                 nm = fp.get("name") or fp.get("column") or ""
                 if cand in nm or nm in cand:
                     return nm
+            # night49：口语聚合词剥离后的二次匹配——「逾期平均天数」与字段「逾期天数」
+            # 互不为子串（隔着"平均"），此前直接掉到按角色回退第一个数值字段，
+            # 造成"要逾期天数却加了担保金额"的错配。
+            cand2 = re.sub(r"(平均汇总|平均值|平均|均值|累计|总和|合计|汇总|总共|最新值|最新)", "", cand)
+            if cand2 and cand2 != cand:
+                if cand2 in names:
+                    return cand2
+                for fp in field_profiles:
+                    nm = fp.get("name") or fp.get("column") or ""
+                    if nm and (cand2 in nm or nm in cand2):
+                        return nm
         for fp in field_profiles:
             nm = fp.get("name") or fp.get("column") or ""
             if not nm:
