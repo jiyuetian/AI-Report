@@ -57,6 +57,9 @@ class IntentType(str, Enum):
     EDIT_TITLE = "edit_title"          # 标题编辑
     ADD_CONCLUSION = "add_conclusion"  # 追加结论/总结（2026-09-18 新增：复合指令「改标题+补结论」必需）
     QUALITY_FIX = "quality_fix"        # 数据质量修复（清洗层）
+    # ---- night48 子任务3：清洗相关意图（根因2 AI 数据通道）----
+    CHANGE_AGGREGATION = "change_aggregation"  # 改某张图的聚合口径
+    RECLEAN = "reclean"                        # 重新执行清洗
     CHART_FIX = "chart_fix"            # 图表问题诊断/修复（空图、没数据）
     SEMANTIC_ACTION = "semantic_action"  # P0-2：规则未命中的看板操作语义，交由 LLM 主导规划动作
     UNDO = "undo"                      # night13 Item1：撤销最近一次 AI 操作（会话级 AI 动作栈回退）
@@ -183,6 +186,12 @@ class IntentClassifier:
             r"(结论|总结|小结|洞察)\s*(追加|补充|加上|写|生成|来一段|来一句)",
             r"在\s*(末尾|最后|底部|下面|结尾)\s*[^，。；]{0,8}?(追加|补充|加上|写|生成)\s*[^，。；]{0,10}?(结论|总结|小结)",
         ],
+        # 改聚合口径：必须排在 CHANGE_CHART 之前，否则"把XX图的聚合改成平均"被换图规则抢走
+        IntentType.CHANGE_AGGREGATION: [
+            r"(聚合|agg).{0,6}(改成|改为|换|变成|设为|用|调整)",
+            r"(把|将).{0,10}(聚合|agg).{0,6}(改|换|调整)",
+            r"(改|调整|换).{0,6}(成|为)?.{0,4}(均值|中位数|总和|合计|计数|平均)",
+        ],
         IntentType.CHANGE_CHART: [
             r"(换|改|变成|换成).{0,20}(图|图表|饼图|柱图|线图|散点图|表格)",
             r"(饼图|柱图|线图|散点图).{0,12}(改|换).{0,12}(饼图|柱图|线图|散点图|表格)",
@@ -272,6 +281,12 @@ class IntentClassifier:
             r"(修|修复|处理|解决|弄)[^，。；]{0,6}(一下|下)?(这个|这张|该|那个)?(空)?(图|图表)",
             r"(图|图表)[^，。；]{0,6}(坏|错了|有问题|不对)",
         ],
+        # 重新清洗：必须排在 QUALITY_FIX 之前，否则"重新清洗"会被清洗规则抢走
+        IntentType.RECLEAN: [
+            r"(重新|重跑|重做|再跑|再来一遍).{0,4}(清洗|clean)",
+            r"重清洗",
+            r"重新跑?一遍清洗",
+        ],
         IntentType.QUALITY_FIX: [
             r"(质检|质量检查|质量检测).{0,8}(发现|查出|提示)?.{0,6}(问题|重复|空值|缺失|异常|格式|错误)?",
             r"(修复|清洗|清理).{0,6}(数据|重复|空值|缺失|异常|格式|错误|问题)?",
@@ -279,6 +294,10 @@ class IntentClassifier:
             r"[^，。；]*?(重复|重复数据|一列多值|空值|缺失值|格式不正确|乱码).{0,6}(修复|处理|清理|去重|补全|纠正)?",
             r"(帮我|请|把).{0,4}(修复|去重|清洗|清理|补全).{0,6}(数据|重复|空值|缺失)?",
             r"(数据|字段).{0,4}(有|存在|出现).{0,4}(重复|空值|缺失|异常|格式问题)",
+            # night48 子任务3：fill_* 系列清洗策略也归为质量修复
+            r"(fill_constant|fill_median|fill_mean|fill_mode)",
+            r"(补全|填充|补缺).{0,6}(空值|缺失|字段|列)",
+            r"(改变|调整|修改|改).{0,6}(清洗|填充|补全).{0,6}(策略|方式|方法)",
         ],
     }
     
@@ -491,6 +510,9 @@ class IntentClassifier:
             IntentType.EDIT_TITLE: ["标题", "改名", "重命名", "名称"],
             IntentType.ADD_CONCLUSION: ["结论", "总结", "小结", "洞察", "追加", "补充"],
             IntentType.QUALITY_FIX: ["质检", "修复", "去重", "重复", "清洗", "空值", "缺失"],
+            # ---- night48 子任务3：清洗相关意图 ----
+            IntentType.CHANGE_AGGREGATION: ["聚合", "agg", "口径", "均值", "中位数", "总和", "合计", "计数", "平均"],
+            IntentType.RECLEAN: ["重新清洗", "重跑清洗", "重清洗", "重新跑清洗"],
             IntentType.CHART_FIX: ["图是空的", "图表空", "图没数据", "空图", "修图", "图有问题"],
             # ---- night15-16 Task G：CRUD 关键词 ----
             IntentType.CREATE_CONFIG: ["创建", "新建", "新增配置", "新增规则", "添加配置", "创建配置"],
@@ -890,39 +912,70 @@ class IntentClassifier:
             analysis["extracted_params"] = ep
 
         elif intent_type == IntentType.QUALITY_FIX:
-            # 数据质量修复：提取问题类型、目标列、修复策略
+            # 数据质量修复：提取问题类型、目标列、修复策略、fix_type（night48 子任务3）
             ep = {}
-            # 问题类型
-            if re.search(r"重复|去重|一列多值", message):
-                ep["issue_type"] = "duplicate"
-            elif re.search(r"空值|缺失|null|为空", message):
-                ep["issue_type"] = "null"
-            elif re.search(r"格式|日期|乱码|不正确", message):
-                ep["issue_type"] = "format"
-            elif re.search(r"异常|越界|超范围", message):
-                ep["issue_type"] = "anomaly"
+            raw = message
+            # fix_type 优先：fill_constant/fill_median/fill_mean/fill_mode/drop_column
+            if re.search(r"fill_constant|填常量|填成|填充为", raw):
+                ep["fix_type"] = "fill_constant"
+                fm = re.search(r"(?:填成|填为|改成|换成|填充为|填)\s*[:：]?\s*([^\s，。；]{1,12})", raw)
+                if fm:
+                    ep["value"] = fm.group(1)
+            elif re.search(r"fill_median|中位数|填中位|中位", raw):
+                ep["fix_type"] = "fill_median"
+            elif re.search(r"fill_mean|均值|填均值|平均", raw):
+                ep["fix_type"] = "fill_mean"
+            elif re.search(r"fill_mode|众数|填众数", raw):
+                ep["fix_type"] = "fill_mode"
+            elif re.search(r"drop_column|删除列|删掉列|去掉列", raw):
+                ep["fix_type"] = "drop_column"
+            elif re.search(r"重复|去重|一列多值", raw):
+                ep["fix_type"] = "duplicate"
+            elif re.search(r"空值|缺失|null|为空", raw):
+                ep["fix_type"] = "fill_constant"  # 空值默认填常量
+                ep["value"] = "未知"
             else:
-                ep["issue_type"] = "duplicate"  # 默认按重复处理
+                ep["fix_type"] = "duplicate"  # 默认按重复处理
 
-            # 目标列（如"借据号""借据编号"）——优先匹配"XX号/编号"
-            col_match = re.search(r"([一-龥A-Za-z_]{1,8}?(?:号|编号|序号|类型|日期|状态))", message)
+            # 目标列（如"借据号""代偿金额""逾期天数"）——优先匹配"XX号/编号/金额/天数/率/值/字段/列"
+            col_match = re.search(
+                r"([一-龥A-Za-z_]{1,10}?(?:号|编号|序号|类型|日期|状态|金额|天数|率|值|字段|列))", raw
+            )
             if col_match:
                 col = col_match.group(1)
-                for noise in ("质检", "发现", "检查", "清洗", "修复", "有", "后", "异常", "问题", "重复", "缺失", "空值", "帮我", "请", "的"):
+                for noise in ("质检", "发现", "检查", "清洗", "修复", "有", "后", "异常",
+                              "问题", "重复", "缺失", "空值", "帮我", "请", "的", "把", "将", "用"):
                     col = col.replace(noise, "")
                 ep["column"] = col
-            elif "借据" in message:
+            elif "借据" in raw:
                 ep["column"] = "借据号"
             else:
                 ep["column"] = ""
 
-            # 修复策略
-            if "去重" in message:
-                ep["fix_strategy"] = "keep_first"
-            else:
-                ep["fix_strategy"] = "keep_first"
-
+            ep["issue_type"] = ep["fix_type"]
+            ep["fix_strategy"] = ep["fix_type"]
             analysis["extracted_params"] = ep
+
+        elif intent_type == IntentType.CHANGE_AGGREGATION:
+            # 改聚合口径：提取新聚合 + 目标图（标题/字段）
+            ep = {}
+            if re.search(r"平均|均值|avg|mean|average", message):
+                ep["new_agg"] = "avg"
+            elif re.search(r"总和|合计|sum|total", message):
+                ep["new_agg"] = "sum"
+            elif re.search(r"中位数|median", message):
+                ep["new_agg"] = "median"
+            elif re.search(r"计数|count|个数", message):
+                ep["new_agg"] = "count"
+            else:
+                ep["new_agg"] = "avg"
+            fm = re.search(r"([一-龥A-Za-z_]{1,12}?)(?:的)?\s*(?:聚合|agg)", message)
+            ep["chart_title"] = fm.group(1) if fm else ""
+            ep["field"] = ep["chart_title"]
+            analysis["extracted_params"] = ep
+
+        elif intent_type == IntentType.RECLEAN:
+            analysis["extracted_params"] = {}
 
         elif intent_type in (IntentType.CREATE_CONFIG, IntentType.UPDATE_CONFIG,
                              IntentType.DELETE_CONFIG, IntentType.BULK_UPDATE_DATA,

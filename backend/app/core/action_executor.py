@@ -38,6 +38,9 @@ class ActionType(str, Enum):
     CALCULATE_METRIC = "calculate_metric"      # 指标查询/对比/趋势/解释（基于 metric_registry，红线④）
     RECALC_METRIC = "recalc_metric"          # 下游重算一致性（C-16）：触发/状态/错误恢复/性能（基于 recalc_engine，红线④）
     ADJUST_THRESHOLD = "adjust_threshold"    # night18 ISS-058：对话阈值调整（写 config.thresholds，走动作栈支持 undo）
+    # ---- night48 子任务3：清洗相关动作（根因2 AI 数据通道）----
+    CHANGE_AGGREGATION = "change_aggregation"  # 改某张图的聚合口径（L5 图表层）
+    RECLEAN = "reclean"                        # 重新执行清洗（重建清洗层 + 触发下游重算）
 
 
 class ChartType(str, Enum):
@@ -48,6 +51,16 @@ class ChartType(str, Enum):
     SCATTER = "scatter"
     TABLE = "table"
     KPI = "kpi"
+
+
+def _infer_agg_from_chart(chart: Dict[str, Any]) -> Optional[str]:
+    """从图表字段语义推断默认聚合口径（金额/计数→sum，比率/天数→avg）。"""
+    y = str((chart or {}).get("y_field") or (chart or {}).get("value_field") or "")
+    if any(k in y for k in ("金额", "余额", "代偿", "担保", "本金", "总额", "总数", "count", "数", "量")):
+        return "sum"
+    if any(k in y for k in ("率", "天数", "年龄", "时长", "avg", "mean", "median")):
+        return "avg"
+    return None
 
 
 class ActionExecutor:
@@ -126,6 +139,9 @@ class ActionExecutor:
             # ---- night15-16 Task I：下游重算一致性（C-16）----
             ActionType.RECALC_METRIC: ActionExecutor._execute_recalc_metric,
             ActionType.ADJUST_THRESHOLD: ActionExecutor._execute_adjust_threshold,
+            # ---- night48 子任务3：清洗相关动作 ----
+            ActionType.CHANGE_AGGREGATION: ActionExecutor._execute_change_aggregation,
+            ActionType.RECLEAN: ActionExecutor._execute_reclean,
         }
         
         executor = executors.get(action_type)
@@ -1586,61 +1602,89 @@ class ActionExecutor:
         current_config: Dict[str, Any],
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        执行数据质量修复 - 写入清洗层
+        """执行数据质量修复 - 写入清洗层（night48 子任务3 重写：按 fix_type 分发）
 
-        场景1（清洗层->修复后）：质检发现重复/空值/格式问题，闭环到清洗层实际修复，
-        可被业务加工层(新增指标)和看板输出层(图表/筛选)继续消费。
+        支持的 fix_type：
+          - duplicate / 去重   : 按目标列去重（保留首行）
+          - fill_constant      : {column, value} 空值填常量
+          - fill_median        : 空值填中位数
+          - fill_mean          : 空值填均值
+          - fill_mode          : 空值填众数
+          - drop_column        : 删除整列（仅清洗派生表，红线④）
+        执行后触发 recalc_engine 下游重算（清洗层变动 → L3/L4/L5 须一致）。
         """
         dataset_id = (context or {}).get("dataset_id") or params.get("dataset_id")
         column = params.get("column") or "借据号"
-        issue_type = params.get("issue_type") or "duplicate"
-        fix_strategy = params.get("fix_strategy") or "keep_first"
+        fix_type = params.get("fix_type") or params.get("issue_type") or "duplicate"
+        value = params.get("value")
 
         real_fix = False
         removed = 0
+        filled = 0
+        dropped = False
         before_rows = 0
         after_rows = 0
         error = None
+        recalc_result = None
 
         if dataset_id and dataset_id != "default":
             try:
                 from app.core.duckdb_manager import get_duckdb
                 db = get_duckdb()
                 cleaned = db.create_cleaned_from_original(dataset_id)
-                cols = [c["name"] for c in db.get_table_info(cleaned)["columns"]]
-                # 从平台字段名中定位"借据号"类目标列
-                real_col = next(
-                    (c for c in cols if c == column), None
-                ) or next(
-                    (c for c in cols if "借据" in c or c in ("编号", "序号", "借据编号")), None
+                cols = [c["name"] for c in db.get_table_info(cleaned).get("columns", [])]
+                real_col = next((c for c in cols if c == column), None) or next(
+                    (c for c in cols if column in c or c in ("编号", "序号", "借据编号")), None
                 )
                 before_rows = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
-                if real_col and (issue_type == "duplicate" or "去重" in fix_strategy):
+                if real_col is None:
+                    error = f"清洗层未找到目标列: {column}"
+                elif fix_type in ("duplicate", "去重"):
                     db.conn.execute(f"""
                         DELETE FROM "{cleaned}"
                         WHERE rowid NOT IN (
-                            SELECT MIN(rowid) FROM "{cleaned}"
-                            GROUP BY "{real_col}"
+                            SELECT MIN(rowid) FROM "{cleaned}" GROUP BY "{real_col}"
                         )
                     """)
-                    removed = before_rows - db.conn.execute(
-                        f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
-                    after_rows = before_rows - removed
+                    after_rows = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+                    removed = before_rows - after_rows
                     real_fix = True
-                elif real_col:
-                    # 空值/格式等的通用占位修复（写入清洗层）
-                    db.conn.execute(f"""
-                        DELETE FROM "{cleaned}"
-                        WHERE "{real_col}" IS NULL
-                           OR TRIM(CAST("{real_col}" AS VARCHAR)) = ''
-                    """)
-                    removed = before_rows - db.conn.execute(
-                        f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
-                    after_rows = before_rows - removed
+                elif fix_type == "drop_column":
+                    # 仅删清洗派生表的单列，不碰原始表（红线④）
+                    db.conn.execute(f'ALTER TABLE "{cleaned}" DROP COLUMN "{real_col}"')
+                    dropped = True
+                    after_rows = before_rows
                     real_fix = True
                 else:
-                    error = f"清洗层未找到目标列: {column}"
+                    # fill_constant / fill_median / fill_mean / fill_mode 走统一修复器
+                    _r = ActionExecutor._apply_chart_field_fix(
+                        dataset_id, real_col, fix_type, fill_value=value
+                    )
+                    if _r.get("ok"):
+                        filled = _r.get("filled", 0)
+                        real_fix = True
+                        after_rows = before_rows
+                    else:
+                        error = _r.get("error")
+
+                # 触发下游重算（清洗层变动 → L3/L4/L5 一致性）
+                if real_fix:
+                    try:
+                        from app.core.recalc_engine import RECLAC_ENGINE
+                        _rc = RECLAC_ENGINE.notify_data_change({
+                            "scope": f"cleaned:{real_col}",
+                            "trigger_action": fix_type,
+                            "trigger_source": "chat",
+                            "note": f"清洗层 {real_col} 执行 {fix_type}",
+                        })
+                        _rc_exec = RECLAC_ENGINE.execute_recalc(_rc.get("recalc_id"))
+                        recalc_result = {
+                            "notified": bool(_rc.get("success")),
+                            "executed": _rc_exec.get("executed"),
+                            "affected": _rc.get("affected_count"),
+                        }
+                    except Exception as _re:
+                        recalc_result = {"error": str(_re)}
             except Exception as e:
                 error = str(e)
 
@@ -1648,38 +1692,166 @@ class ActionExecutor:
         if "quality_fix_log" not in current_config:
             current_config["quality_fix_log"] = []
         current_config["quality_fix_log"].append({
-            "issue_type": issue_type,
+            "fix_type": fix_type,
             "column": column,
-            "fix_strategy": fix_strategy,
+            "value": value,
             "removed": removed,
+            "filled": filled,
+            "dropped": dropped,
             "before_rows": before_rows,
             "after_rows": after_rows,
             "real_fix": real_fix,
+            "recalc": recalc_result,
             "note": error or "",
         })
+
+        _verb = {
+            "duplicate": f"去重（移除 {removed} 行）",
+            "去重": f"去重（移除 {removed} 行）",
+            "drop_column": f"删除列 {column}",
+            "fill_constant": f"空值填常量({value})，填充 {filled} 行",
+            "fill_median": f"空值填中位数，填充 {filled} 行",
+            "fill_mean": f"空值填均值，填充 {filled} 行",
+            "fill_mode": f"空值填众数，填充 {filled} 行",
+        }.get(fix_type, fix_type)
 
         return {
             "success": True,
             "action_type": "quality_fix",
             "changes": [{
-                "issue_type": issue_type,
+                "fix_type": fix_type,
                 "column": column,
-                "fix_strategy": fix_strategy,
                 "removed": removed,
+                "filled": filled,
+                "dropped": dropped,
                 "real_fix": real_fix,
             }],
             "new_config": current_config,
             "render_updates": [{
                 "type": "quality_fixed",
-                "issue_type": issue_type,
+                "fix_type": fix_type,
                 "column": column,
                 "removed": removed,
+                "filled": filled,
+                "dropped": dropped,
                 "before_rows": before_rows,
                 "after_rows": after_rows,
                 "real_fix": real_fix,
+                "recalc": recalc_result,
                 "note": error or "",
             }],
-            "message": f"已修复{issue_type}问题：{column}，移除 {removed} 行（{before_rows}->{after_rows}）",
+            "recalc": recalc_result,
+            "message": (
+                f"已执行清洗修复：{_verb}（{before_rows}->{after_rows} 行）"
+                + (f"，下游重算已触发（影响 {recalc_result.get('affected')} 个指标）"
+                   if isinstance(recalc_result, dict) and recalc_result.get("affected") else "")
+            ),
+        }
+
+    @staticmethod
+    def _execute_change_aggregation(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """修改某张图的聚合口径（L5 图表层）：如把 sum 改成 avg（night48 子任务3）。"""
+        chart_id = params.get("chart_id")
+        new_agg = (params.get("new_agg") or params.get("aggregation") or "avg")
+        charts = current_config.get("charts", []) or []
+        target = None
+        if chart_id:
+            target = next((c for c in charts if c.get("id") == chart_id), None)
+        if target is None:
+            kw = (params.get("chart_title") or params.get("title") or "").strip()
+            for c in charts:
+                t = c.get("title") or ""
+                if kw and (t == kw or kw in t):
+                    target = c
+                    break
+        if target is None:
+            # 退而按字段匹配（用户说"逾期天数的聚合"）：y_field/value_field/category_field 含关键词
+            kw = (params.get("field") or params.get("chart_title") or params.get("title") or "").strip()
+            for c in charts:
+                for k in ("y_field", "value_field", "category_field", "x_field"):
+                    if kw and kw in str(c.get(k) or ""):
+                        target = c
+                        break
+                if target:
+                    break
+        if target is None:
+            return {
+                "success": False,
+                "error": f"未找到目标图表（chart_id={chart_id}, 关键词={kw}）",
+                "action_type": "change_aggregation",
+            }
+        old_agg = target.get("aggregation") or _infer_agg_from_chart(target)
+        target["aggregation"] = new_agg
+        return {
+            "success": True,
+            "action_type": "change_aggregation",
+            "changes": [{
+                "chart_id": target.get("id"),
+                "title": target.get("title"),
+                "old_aggregation": old_agg,
+                "new_aggregation": new_agg,
+            }],
+            "new_config": current_config,
+            "render_updates": [{
+                "type": "aggregation_changed",
+                "chart_id": target.get("id"),
+                "title": target.get("title"),
+                "old_aggregation": old_agg,
+                "new_aggregation": new_agg,
+            }],
+            "message": f"已将图表「{target.get('title')}」的聚合口径从 {old_agg or '默认'} 改为 {new_agg}",
+        }
+
+    @staticmethod
+    def _execute_reclean(
+        params: Dict[str, Any],
+        current_config: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """重新执行清洗（night48 子任务3）：重建清洗层 + 触发下游重算。"""
+        dataset_id = (context or {}).get("dataset_id") or params.get("dataset_id")
+        recalc_result = None
+        if dataset_id and dataset_id != "default":
+            try:
+                from app.core.duckdb_manager import get_duckdb
+                db = get_duckdb()
+                cleaned = db.create_cleaned_from_original(dataset_id)
+                after_rows = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
+                try:
+                    from app.core.recalc_engine import RECLAC_ENGINE
+                    _rc = RECLAC_ENGINE.notify_data_change({
+                        "scope": "cleaned:rebuild",
+                        "trigger_action": "reclean",
+                        "trigger_source": "chat",
+                        "note": "重新清洗数据集",
+                    })
+                    _rc_exec = RECLAC_ENGINE.execute_recalc(_rc.get("recalc_id"))
+                    recalc_result = {
+                        "notified": bool(_rc.get("success")),
+                        "executed": _rc_exec.get("executed"),
+                        "affected": _rc.get("affected_count"),
+                    }
+                except Exception as _re:
+                    recalc_result = {"error": str(_re)}
+                return {
+                    "success": True,
+                    "action_type": "reclean",
+                    "changes": [{"cleaned_rows": after_rows}],
+                    "new_config": current_config,
+                    "render_updates": [{"type": "recleaned", "cleaned_rows": after_rows}],
+                    "recalc": recalc_result,
+                    "message": f"已重新清洗数据集，清洗层 {after_rows} 行，并触发下游重算",
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e), "action_type": "reclean"}
+        return {
+            "success": False,
+            "error": "缺少 dataset_id，无法重新清洗",
+            "action_type": "reclean",
         }
 
     # night44 Task C1（ISS-097）：口语修饰词清洗 —— 让「这张/柱状图」类指代不再阻断标题命中
@@ -1773,6 +1945,7 @@ class ActionExecutor:
 
         before = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}"').fetchone()[0]
         empty_cond = f'"{column}" IS NULL OR TRIM(CAST("{column}" AS VARCHAR)) = \'\''
+        before_null = db.conn.execute(f'SELECT COUNT(*) FROM "{cleaned}" WHERE {empty_cond}').fetchone()[0]
 
         if strategy == "drop":
             db.conn.execute(f'DELETE FROM "{cleaned}" WHERE {empty_cond}')
@@ -1780,10 +1953,15 @@ class ActionExecutor:
             return {"ok": True, "action": "drop", "before": before, "after": after,
                     "removed": before - after}
 
-        if strategy in ("fill_constant", "fill_unknown", "fill_mode", "fill_median"):
+        if strategy in ("fill_constant", "fill_unknown", "fill_mode", "fill_median", "fill_mean"):
             if strategy == "fill_median":
                 row = db.conn.execute(
                     f'SELECT MEDIAN(TRY_CAST("{column}" AS DOUBLE)) FROM "{cleaned}"'
+                ).fetchone()
+                val = row[0] if row and row[0] is not None else 0
+            elif strategy == "fill_mean":
+                row = db.conn.execute(
+                    f'SELECT AVG(TRY_CAST("{column}" AS DOUBLE)) FROM "{cleaned}" WHERE NOT ({empty_cond})'
                 ).fetchone()
                 val = row[0] if row and row[0] is not None else 0
             elif strategy == "fill_mode":
@@ -1804,9 +1982,7 @@ class ActionExecutor:
                 db.conn.execute(
                     f'UPDATE "{cleaned}" SET "{column}" = ? WHERE {empty_cond}', [val]
                 )
-            filled = db.conn.execute(
-                f'SELECT COUNT(*) FROM "{cleaned}" WHERE "{column}" IS NOT NULL'
-            ).fetchone()[0]
+            filled = before_null  # 实际被填充的空值行数（= UPDATE 命中行数），非全表非空计数
             return {"ok": True, "action": strategy, "value": val, "filled": filled}
 
         return {"ok": False, "error": f"暂不支持的处理方式：{strategy}"}
