@@ -36,7 +36,8 @@ def _serialize_ai_issues(ai_result) -> List[Dict]:
             "sample_values": iss.sample_values[:5],
             "rule": iss.rule,
             "source": "ai",
-            "repair_options": iss.repair_options or []
+            # DB 落库 / AI 结果序列化都不带 repair_options（模型无此列）→ 按规则重算，避免前端下拉框 'No data'
+            "repair_options": QualityChecker.build_repair_options(iss.type, iss.column)
         })
     return out
 
@@ -360,10 +361,19 @@ async def get_quality_issues(
         )
     )
     issues = result.scalars().all()
+    # 历史数据集从 DB 读取：QualityIssue 模型无 repair_options 列，需按规则重算，
+    # 否则前端「处理方案」下拉框会因 [] 显示 'No data'
+    serialized = []
+    for i in issues:
+        d = i.to_dict()
+        d["repair_options"] = QualityChecker.build_repair_options(
+            d.get("type", ""), d.get("field_name") or ""
+        )
+        serialized.append(d)
     return {
         "dataset_id": dataset_id,
-        "issues": [i.to_dict() for i in issues],
-        "total_count": len(issues)
+        "issues": serialized,
+        "total_count": len(serialized)
     }
 
 

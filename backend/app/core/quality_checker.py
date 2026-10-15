@@ -200,7 +200,31 @@ class QualityChecker:
             return "duration"
         return "number"
 
-    def _get_repair_options(self, issue_type: IssueType, column: str,
+    @staticmethod
+    def build_repair_options(issue_type, column, column_stats=None) -> List[Dict]:
+        """API 序列化复用：按问题类型 + 字段名（可选统计）生成前端「处理方案」下拉框所需的方案列表。
+
+        质检规则在 /check 时已随响应返回 repair_options；但 DB 落库的 issues 与 AI 补充结果
+        序列化时不带该字段（QualityIssue 模型无此列），导致历史数据集 / AI 问题的下拉框为空、
+        AntD 显示 'No data'。这里与 check_table 内口径完全一致地重算（含金额零值主导 → 填 0 等
+        按字段语义的推荐差异），供 /quality/{datasetId}/issues 与 AI 结果序列化统一调用。
+        """
+        if isinstance(issue_type, IssueType):
+            it = issue_type
+        else:
+            try:
+                it = IssueType(issue_type)
+            except ValueError:
+                # AI 自定义类型无对应规则方案时，给一个安全的忽略选项，避免下拉框 'No data'
+                return [{
+                    "strategy": "ignore",
+                    "label": "忽略（AI 建议，需人工确认）",
+                    "description": "该问题由 AI 补充检测发现，暂无预设修复方案，建议人工核实后处理",
+                }]
+        return QualityChecker._get_repair_options(it, column, column_stats)
+
+    @classmethod
+    def _get_repair_options(cls, issue_type: IssueType, column: str,
                             column_stats=None) -> List[Dict]:
         """获取预设修复方案（不依赖AI）；带 recommended 标记的是该类问题的默认推荐方案，
         供前端"一键采纳推荐方案"批量执行（2026-09-17 对齐 B 的推荐清洗计划交互）
@@ -257,7 +281,7 @@ class QualityChecker:
         opts = [dict(o) for o in REPAIR_OPTIONS.get(issue_type, [])]
         # CLEAN-FIX：金额 / 零值主导字段 → 默认推荐改为「按业务零值填充(0)」
         if issue_type == IssueType.NULL:
-            _role = self._detect_semantic_role(column, column_stats)
+            _role = cls._detect_semantic_role(column, column_stats)
             if _role == "amount_zero_heavy":
                 # 零值主导（代偿/担保/押金…）：空值 = 未发生 → 填业务零值 0
                 for o in opts:
