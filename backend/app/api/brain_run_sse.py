@@ -930,56 +930,77 @@ async def brain_run_pipeline(
                 s3_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S3", {
                     "theme": theme_tag, "fields": fields, "goals": goals
                 }), "S3")
+                # ===== 阶段2 子任务1：规则引擎升为主链路（night48）=====
+                # 旧链路：LLM 主生成 → 超时回退规则兜底
+                # 新链路：规则引擎先跑出全量候选池 → LLM 从候选池选/增强/重排 → 规则兜底
+                from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
+                engine = S3ChartEngine(derived_metrics=derived_metrics)
+                candidate_pool = engine.generate_all_candidates(
+                    fields=fields, grain=grain, theme=theme_tag, goals=goals,
+                    sample_data=dataset_info.get("sample_data"),
+                    derived_metrics=derived_metrics
+                )
+                candidates = candidate_pool.get("candidates", [])
+                print(f"[Brain] S3 规则引擎候选池产出 {len(candidates)} 个候选（主链路先行）")
+
                 if llm_offline or user_accepted_rule_fallback:
-                    # LLM 不可达，或用户已在探针阶段明确选择「规则兜底」：跳过 LLM 调用，
-                    # 直接走规则引擎兜底（省去 ~125s 超时等待）。B4（night42）：原仅判 llm_offline，
-                    # 用户选过 rule_fallback 但 llm_offline 仍为 False 时会白白尝试 LLM。
-                    print("[Brain] LLM 不可达或用户已选规则兜底：S3 直接走规则引擎兜底，标记 s3_ai_failed 交还用户选择")
-                    from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
-                    engine = S3ChartEngine(derived_metrics=derived_metrics)
-                    engine_cfg = engine.generate_dashboard_config(
-                        fields=fields, grain=grain, derived_metrics=derived_metrics
-                    )
+                    # 规则兜底：从候选池按规则挑 top_n + 叙事重排（省去 LLM 超时等待）
+                    chosen = engine._select_from_candidates(candidates, top_n=7)
                     s3_result = {
-                        "charts": engine_cfg.get("charts", []),
+                        "charts": chosen,
                         "generated_by": "rule_engine",
-                        "fallback_reason": "LLM 不可达，规则引擎兜底"
+                        "candidate_count": len(candidates),
+                        "selected_count": len(chosen),
+                        "fallback_reason": "LLM 不可达/用户选规则兜底，规则引擎从候选池选图",
                     }
-                    s3_ai_failed = True
-                    s3_ai_reason = "AI 探测失败（模型限流/不可达），已用规则引擎兜底生成基础看板"
                 else:
                     try:
-                        s3_result = await asyncio.wait_for(
-                            generate_charts_with_llm(
-                                db=db,
-                                theme=theme_tag,
-                                fields=fields,
-                                goals=goals,
-                                grain=grain,
+                        from app.core.brain_modules.s3_llm_enhancer import select_charts_from_candidates
+                        llm_sel = await asyncio.wait_for(
+                            select_charts_from_candidates(
+                                db=db, theme=theme_tag, fields=fields, goals=goals,
+                                grain=grain, candidate_pool=candidate_pool,
                                 derived_metrics=derived_metrics,
-                                field_profiles=field_profiles,
-                                table_name=_s3_table,
+                                field_profiles=field_profiles, table_name=_s3_table,
                             ),
                             timeout=settings.BRAIN_S3_LLM_TIMEOUT,
                         )
+                        if llm_sel and llm_sel.get("charts"):
+                            # LLM 选中 → 规则引擎统一强制叙事顺序（KPI 在前 / 风险殿后）
+                            llm_sel["charts"] = engine._enforce_narrative_order_dicts(llm_sel["charts"])
+                            s3_result = {
+                                "charts": llm_sel["charts"],
+                                "generated_by": "llm",
+                                "candidate_count": len(candidates),
+                                "selected_count": len(llm_sel["charts"]),
+                                "llm_used": True,
+                                "selected_from_pool": True,
+                            }
+                        else:
+                            raise RuntimeError("LLM 未从候选池返回有效选择")
                     except asyncio.TimeoutError:
-                        # S3 LLM 调用在硬超时内未返回：规则引擎兜底。
-                        # 问题1修复：标记 s3_ai_failed（不再仅靠 llm_offline 吞掉提示），
-                        # 让用户在看板完成前被明确告知并可选「等待 AI 恢复重试」。
-                        print(f"[Brain] S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，按规则引擎兜底，标记 s3_ai_failed")
-                        from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
-                        engine = S3ChartEngine(derived_metrics=derived_metrics)
-                        engine_cfg = engine.generate_dashboard_config(
-                            fields=fields, grain=grain, derived_metrics=derived_metrics
-                        )
+                        # S3 LLM 候选选择超时：规则引擎从候选池兜底。
+                        # 问题1修复：标记 s3_ai_failed，交还用户选择「等待 AI 恢复重试」。
+                        print(f"[Brain] S3 LLM 候选选择超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，规则引擎从候选池兜底")
+                        chosen = engine._select_from_candidates(candidates, top_n=7)
                         s3_result = {
-                            "charts": engine_cfg.get("charts", []),
-                            "generated_by": "rule_engine",
+                            "charts": chosen, "generated_by": "rule_engine",
+                            "candidate_count": len(candidates), "selected_count": len(chosen),
                             "fallback_reason": f"S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，规则引擎兜底",
                         }
                         s3_ai_failed = True
                         s3_ai_reason = f"S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，已用规则引擎兜底"
                         llm_offline = True
+                    except Exception as e:
+                        print(f"[Brain] S3 LLM 候选选择异常，规则引擎从候选池兜底: {e}")
+                        chosen = engine._select_from_candidates(candidates, top_n=7)
+                        s3_result = {
+                            "charts": chosen, "generated_by": "rule_engine",
+                            "candidate_count": len(candidates), "selected_count": len(chosen),
+                            "fallback_reason": f"S3 LLM 异常: {_short_err(e)}",
+                        }
+                        s3_ai_failed = True
+                        s3_ai_reason = f"AI 图表生成异常: {_short_err(e)}"
                 await _safe_trace(db, BrainTraceManager.complete_stage(db, s3_trace_id, {"result": s3_result}), "S3")
                 # P1-1 累计 S3 消耗并触发 80% 告警（仅一次）
                 budget.add(json.dumps(s3_result, ensure_ascii=False))

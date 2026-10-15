@@ -756,6 +756,94 @@ async def generate_charts_with_llm(
     )
 
 
+async def select_charts_from_candidates(
+    db: AsyncSession,
+    theme: str,
+    fields: List[str],
+    goals: List[Dict],
+    grain: str = "detail",
+    candidate_pool: Optional[Dict[str, Any]] = None,
+    derived_metrics: Optional[Dict[str, Any]] = None,
+    field_profiles: Optional[List[Dict[str, Any]]] = None,
+    table_name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """阶段2 子任务1：LLM 从规则引擎产出的候选池里「选 + 增强 + 重排」。
+
+    输入：规则引擎 generate_all_candidates 产出的 candidate_pool（含 candidates 列表）。
+    输出：{"charts":[...], "generated_by":"llm", ...}；失败（含不可达/超时/解析失败）返回 None，
+         由调用方回退到规则引擎从候选池选图。
+    """
+    if not candidate_pool or not candidate_pool.get("candidates"):
+        return None
+    candidates = candidate_pool["candidates"]
+    cand_lines = []
+    for c in candidates[:40]:
+        cand_lines.append(
+            f"- id={c.get('candidate_id')} | {c.get('chart_type')} | {c.get('title')} | "
+            f"x={c.get('x_field')} cat={c.get('category_field')} val={c.get('value_field')} "
+            f"agg={c.get('aggregation')} | {c.get('reason')}"
+        )
+    cand_text = "\n".join(cand_lines)
+
+    prompt = f"""你是 BI 图表架构师。规则引擎已为数据集生成候选图表池，请从池中选出 5-8 张最优图表，
+并允许增强（仅可改 title/config，不可改 chart_type 与字段），最后按「总规模→趋势→对比→分布→其他→风险」重排。
+
+【数据主题】{theme}
+【字段列表】{fields}
+【分析目标】{json.dumps(goals, ensure_ascii=False)[:1500]}
+
+【候选图表池】
+{cand_text}
+
+【要求】
+1. 只从候选池中选择，不得新增候选池外的新图（严禁臆造字段）。
+2. 选 5-8 张，覆盖不同分析维度，优先保证「总规模 KPI」「时间趋势」「风险分布」都在。
+3. 可对所选图增强：改 title（更贴合业务，≤20字）、改 config（如 decimals/prefix），但 chart_type 与字段必须保持原样。
+4. 输出按叙事顺序：KPI(总规模)→line(趋势)→bar(对比)→pie(分布)→其他→风险(殿后)。
+
+【输出格式】仅输出 JSON：
+{{"charts":[{{"candidate_id":"Cxxx","chart_type":"kpi","title":"总担保金额","x_field":null,"y_field":"担保金额","category_field":null,"value_field":"担保金额","config":{{}},"reason":"..."}}]}}"""
+
+    try:
+        response = await llm_chat(prompt=prompt, json_mode=True, user_id="s3_llm_selector", timeout=60)
+    except Exception as e:
+        print(f"[S3-LLM-select] LLM 调用异常: {e}")
+        return None
+    if response.fallback_used or not response.success or not response.response_json:
+        print(f"[S3-LLM-select] LLM 失败: {response.error}")
+        return None
+    out = response.response_json
+    sel = out.get("charts")
+    if not isinstance(sel, list) or not sel:
+        return None
+    by_id = {c.get("candidate_id"): c for c in candidates}
+    chosen = []
+    for s in sel:
+        base = by_id.get(s.get("candidate_id"))
+        if not base:
+            continue
+        merged = dict(base)
+        if s.get("title"):
+            merged["title"] = str(s["title"])[:20]
+        if isinstance(s.get("config"), dict):
+            merged["config"] = {**base.get("config", {}), **s["config"]}
+        merged["reason"] = s.get("reason") or base.get("reason")
+        chosen.append(merged)
+    if not chosen:
+        return None
+    return {
+        "success": True,
+        "charts": chosen,
+        "generated_by": "llm",
+        "llm_used": True,
+        "selected_from_pool": True,
+        "candidate_count": len(candidates),
+        "selected_count": len(chosen),
+        "derived_metrics": derived_metrics or {},
+        "note": "阶段2-子任务1：LLM 从规则候选池选择/增强",
+    }
+
+
 def validate_chart_grain(chart_config: Dict, grain: str) -> Tuple[bool, str]:
     """便捷函数：校验图表粒度"""
     return GrainChecker.check_chart_grain(chart_config, grain)

@@ -839,6 +839,218 @@ class S3ChartEngine:
             "note": "v2：仅输出字段真实可填的图表，不强制补齐类型；满足 S3≥6 且全可解析",
         }
 
+    # ===================== 阶段2 子任务1：规则引擎升为主链路（night48） =====================
+    _STD_CHART_KEYS = ("chart_type", "title", "x_field", "y_field",
+                       "category_field", "value_field", "config",
+                       "priority", "rule_name", "reason", "narrative_order")
+
+    @classmethod
+    def _clean_chart_dict(cls, c: Dict[str, Any]) -> Dict[str, Any]:
+        """只保留看板 config 标准字段，去掉候选池特有的 candidate_id/dimensions 等辅助键。"""
+        out = {k: c.get(k) for k in cls._STD_CHART_KEYS}
+        out["config"] = out.get("config") or {}
+        return out
+
+    def generate_all_candidates(
+        self, fields: List[str], grain: str = "detail",
+        theme: str = "", goals: Optional[List[Dict]] = None,
+        sample_data: Optional[List[Dict]] = None,
+        derived_metrics: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """规则引擎主链路第一步：对数据集产出「全量候选图表池」（不裁剪）。
+
+        与 generate_dashboard_config（每类只选最优 1 个）不同，这里把每个分析目标
+        （总规模/趋势/对比/分布/风险/明细）展开成多个候选，覆盖不同 chart_type、
+        不同维度组合、不同聚合口径（金额→sum、比率/时长→avg），供下游 LLM 从中
+        「选 + 增强 + 重排」。这是 night48 子任务1 的核心：规则先跑出候选池，
+        LLM 不再从零生成最终 config。
+        """
+        if derived_metrics is not None:
+            self.derived_metrics = derived_metrics
+        field_types = FieldAnalyzer.analyze_fields(fields, sample_data)
+        cardinality = FieldAnalyzer.analyze_cardinality(fields, sample_data)
+        num_f = [f for f, t in field_types.items() if t == FieldType.NUMBER]
+        cat_f = [f for f, t in field_types.items() if t in (FieldType.CATEGORY, FieldType.GEO)]
+        date_f = [f for f, t in field_types.items() if t == FieldType.DATE]
+
+        def _agg(m: str) -> str:
+            role = _metric_role(m)
+            if role in ("amount", "count"):
+                return "sum"
+            if role in ("duration", "rate", "age"):
+                return "avg"
+            return "sum"
+
+        cands: List[Dict[str, Any]] = []
+        cid = [0]
+
+        def _add(chart_type, title, goal, x=None, y=None, cat=None, val=None, agg=None, reason="", card=None):
+            cid[0] += 1
+            cfg: Dict[str, Any] = {}
+            if agg:
+                cfg["aggregation"] = agg
+            if val and val in self.derived_metrics:
+                cfg = {**cfg, **self._derived_metric_config(val)}
+            cands.append({
+                "candidate_id": f"C{cid[0]:03d}",
+                "chart_type": chart_type,
+                "title": title,
+                "x_field": x,
+                "y_field": y,
+                "category_field": cat,
+                "value_field": val if val is not None else y,
+                "dimensions": [d for d in (x, cat) if d],
+                "measures": [m for m in (y, val) if m],
+                "aggregation": agg or cfg.get("aggregation", "sum"),
+                "config": cfg,
+                "priority": 0,
+                "rule_name": goal,
+                "reason": reason,
+                "reasoning": reason,
+                "narrative_order": 0,
+                "dim_cardinality": card,
+            })
+
+        # 目标1：总规模 KPI（每个数值字段一张，聚合按语义角色）
+        for m in num_f:
+            a = _agg(m)
+            _add("kpi", f"总{m}" if a == "sum" else f"平均{m}", "总规模KPI",
+                 y=m, val=m, agg=a, reason=f"数值字段「{m}」可作{_metric_role(m) or 'number'}型总规模指标")
+        # 目标2：时间趋势（每个日期字段 × 前3数值 → 折线候选，不同维度组合）
+        for d in date_f:
+            for m in num_f[:3]:
+                a = _agg(m)
+                _add("line", f"{m}趋势（按{d}）", "时间趋势",
+                     x=d, y=m, val=m, agg=a, reason=f"时间序列图：横轴{d} × 指标{m}")
+        # 目标3：维度对比（每个分类/地区维度 × 数值 → 柱候选；任意基数都适合做对比）
+        for c in cat_f:
+            card = cardinality.get(c, 0)
+            for m in num_f[:2]:
+                a = _agg(m)
+                _add("bar", f"{c}对比（{m}）", "维度对比", cat=c, val=m, agg=a,
+                     reason=f"维度{c}(基数{card or '未知'})做对比", card=card)
+        # 目标4：占比结构（低基数分类 × 数值 → 饼候选；高基数饼图不可读，仅基数已知且<=8时产出）
+        for c in cat_f:
+            card = cardinality.get(c, 0)
+            if 2 <= card <= 8:
+                for m in num_f[:2]:
+                    a = _agg(m)
+                    _add("pie", f"{c}占比（{m}）", "占比结构", cat=c, val=m, agg=a,
+                         reason=f"低基数维度{c}({card})做占比", card=card)
+        # 目标5：风险分布（含风险关键词的数值字段按维度分布，殿后）
+        for m in num_f:
+            if any(k in m for k in self._NARRATIVE_RISK_KW):
+                _dim = cat_f[0] if cat_f else None
+                _add("bar", f"{m}风险分布", "风险分布", cat=_dim, val=m, agg="sum",
+                     reason=f"风险指标「{m}」按维度{cat_f[0] if cat_f else '全局'}分布")
+        # 目标6：明细表（仅明细粒度）
+        if grain == "detail":
+            _add("table", "数据明细", "明细", reason="明细数据全字段表")
+
+        # 去重：同 (chart_type + 同字段集合) 只保留一条（保留不同维度/聚合变体）
+        seen = set()
+        uniq = []
+        for c in cands:
+            key = (c["chart_type"], frozenset(
+                x for x in (c["x_field"], c["category_field"], c["value_field"]) if x))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(c)
+
+        _type_pri = {"kpi": 100, "line": 95, "bar": 90, "pie": 85, "scatter": 70, "table": 50}
+        for c in uniq:
+            c["priority"] = _type_pri.get(c["chart_type"], 60)
+
+        return {
+            "success": True,
+            "grain": grain,
+            "theme": theme,
+            "field_count": len(fields),
+            "candidate_count": len(uniq),
+            "candidates": uniq,
+            "generated_by": "rule_engine_v2_candidates",
+            "llm_used": False,
+            "note": "阶段2-子任务1：规则引擎先行产出全量候选池，供 LLM 选/增强/重排",
+        }
+
+    def _select_from_candidates(self, candidates: List[Dict[str, Any]], top_n: int = 7) -> List[Dict[str, Any]]:
+        """规则兜底：从候选池按「覆盖式」挑图并强制叙事顺序。
+
+        用于 LLM 不可达/超时/失败时，保证 demo 仍能产出 5-8 张结构完整的看板：
+        - 必含 总规模KPI / 趋势 / 对比 / 占比 各至少 1 张（覆盖主要分析视角）
+        - 风险图（含风险关键词）必含且殿后
+        - 其余按规则优先级补齐到 top_n，再统一叙事重排（KPI 在前 / 风险殿后）
+        """
+        pool = list(candidates or [])
+        _type_pri = {"kpi": 100, "line": 95, "bar": 90, "pie": 85, "scatter": 70, "table": 50}
+        _max_pie_slices = 8
+        # 高基数维度饼图不可读：基数已知且超上限的饼候选直接丢弃
+        _filtered = []
+        for c in pool:
+            if c.get("chart_type") == "pie" and isinstance(c.get("dim_cardinality"), int) \
+                    and c["dim_cardinality"] > _max_pie_slices:
+                continue
+            _filtered.append(c)
+        pool = _filtered
+        seen = set()
+        scored = []
+        for c in pool:
+            key = (c.get("chart_type"), frozenset(
+                x for x in (c.get("x_field"), c.get("category_field"), c.get("value_field")) if x))
+            if key in seen:
+                continue
+            seen.add(key)
+            cc = dict(c)
+            cc["priority"] = _type_pri.get(c.get("chart_type"), 60)
+            scored.append(cc)
+        scored.sort(key=lambda c: -c["priority"])
+
+        # 覆盖式选择：保证每类至少 1 张，风险必含
+        by_type: Dict[str, List[Dict]] = {}
+        for c in scored:
+            by_type.setdefault(c["chart_type"], []).append(c)
+        chosen: List[Dict] = []
+        for t in ("kpi", "line", "bar", "pie"):
+            if by_type.get(t):
+                chosen.append(by_type[t][0])
+        # 风险图必含（标题含风险关键词的候选）
+        for c in scored:
+            if any(k in str(c.get("title") or "") for k in self._NARRATIVE_RISK_KW) and c not in chosen:
+                chosen.append(c)
+        # 其余按优先级补齐到 top_n
+        for c in scored:
+            if c not in chosen:
+                chosen.append(c)
+            if len(chosen) >= top_n:
+                break
+        ordered = self._enforce_narrative_order_dicts(chosen)
+        return [self._clean_chart_dict(c) for c in ordered[:top_n]]
+
+    @classmethod
+    def _enforce_narrative_order_dicts(cls, charts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """dict 版叙事顺序重排（与 _enforce_narrative_order 同口径）：KPI→趋势→对比→分布→其他→风险。"""
+        for c in charts:
+            c["narrative_order"] = cls._narrative_rank_dict(c)
+        return sorted(charts, key=lambda c: c["narrative_order"])
+
+    @classmethod
+    def _narrative_rank_dict(cls, c: Dict[str, Any]) -> int:
+        """给 dict 图表定叙事位次（1=KPI 2=趋势 3=对比 4=分布 5=其他 6=风险）。"""
+        title = str(c.get("title") or "")
+        ctype = str(c.get("chart_type") or "")
+        if any(k in title for k in cls._NARRATIVE_RISK_KW):
+            return 6
+        if ctype == "kpi":
+            return 1
+        if ctype == "line":
+            return 2
+        if ctype == "bar":
+            return 3
+        if ctype == "pie":
+            return 4
+        return 5
+
     @staticmethod
     def _max_achievable_charts(
         fields: List[str], grain: str,
