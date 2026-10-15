@@ -208,6 +208,23 @@ async def generate_intent_response(intent_type: IntentType, analysis: Dict, cont
             },
             "suggested_followups": ["查看修复结果", "重新质检", "继续加工指标"]
         },
+        # 阶段2 子任务3（night48）：改聚合口径 / 重新清洗 两个清洗相关动作
+        IntentType.CHANGE_AGGREGATION: {
+            "message": f"正在把图表「{analysis.get('extracted_params', {}).get('chart_title', analysis.get('extracted_params', {}).get('title', ''))}」的聚合口径改为 {analysis.get('extracted_params', {}).get('new_agg', 'avg')}...",
+            "action": {
+                "type": "change_aggregation",
+                "params": analysis.get("extracted_params", {})
+            },
+            "suggested_followups": ["同步修改标题", "调整其他图", "查看重算结果"]
+        },
+        IntentType.RECLEAN: {
+            "message": "正在重新执行数据清洗（重建清洗层并触发下游重算）...",
+            "action": {
+                "type": "reclean",
+                "params": analysis.get("extracted_params", {})
+            },
+            "suggested_followups": ["查看清洗结果", "重新质检", "刷新看板"]
+        },
         IntentType.UNKNOWN: {
             "message": "我不太理解您的意思，您可以尝试：",
             "suggestions": [
@@ -432,6 +449,20 @@ async def generate_llm_natural_response(
         f"用户消息: {user_message}\n\n"
         "请直接回复用户（纯文本，不要JSON）。"
     )
+
+    # 阶段2 子任务2（night48）：注入六层血缘上下文，让 AI 不再盲聊，能引用真实数值
+    try:
+        _dsid = (context or {}).get("dataset_id")
+        if _dsid:
+            from app.core.brain_modules.ai_context_builder import (
+                AIContextBuilder, format_lineage_section,
+            )
+            _ctx = AIContextBuilder().build_context(_dsid, dashboard_config=current_config)
+            _lineage = format_lineage_section(_ctx)
+            if _lineage:
+                default_prompt += "\n" + _lineage + "\n\n"
+    except Exception as _le:  # 血缘注入失败绝不影响主回复
+        print(f"[Chat] 血缘上下文注入失败（已跳过）: {_le}")
 
     system_prompt = load_prompt(
         "ai_assistant_spec",

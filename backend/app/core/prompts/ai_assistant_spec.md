@@ -51,6 +51,25 @@ AI在对话时加载以下上下文：
 4. 规则矩阵：可用的图表类型和触发条件
 ```
 
+### 2.4 对话实时注入的六层血缘上下文（night48 子任务2）
+
+`chat.py` 在生成自然语言回复前，会调用 `AIContextBuilder.build_context(dataset_id)` 把
+**真实数据血缘**注入 LLM 提示词（只读，不触发任何写入）。AI 必须基于其中真实数值回答，
+严禁编造。注入结构（`format_lineage_section` 渲染为「【六层血缘上下文】」段）：
+
+```
+L0 原始层：行数 × 字段数（来自 ds_{dataset_id}）
+L1 清洗层：原始行数 → 清洗后行数（去重行数、重复率，来自 ds_{dataset_id}_cleaned）
+L2 加工层：派生指标列表（来自数据集配置，只读引用）
+L3 聚合层：真实 DuckDB 聚合数值（SUM/AVG/COUNT，核心真实数据）
+L4 图表层：当前看板每张图的 标题/类型/字段/聚合口径
+L5 质检层：质量修复次数与最近一次修复记录（来自看板 quality_fix_log）
+```
+
+注入实现：`app/core/brain_modules/ai_context_builder.py`；
+注入点：`chat.py::generate_llm_natural_response`（UNKNOWN/闲聊轮，AI 真聊路径）。
+红线：只读 SELECT，不写/不删/不建表。
+
 ---
 
 ## 三、自然语言对话调整图表完整流程
