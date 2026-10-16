@@ -90,6 +90,7 @@ class AIContextBuilder:
         dataset_id: str,
         dashboard_config: Optional[Dict[str, Any]] = None,
         db: Any = None,
+        score_detail: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """构建 L0-L5 每层摘要，返回结构化 dict。
 
@@ -111,6 +112,7 @@ class AIContextBuilder:
             "L3_aggregated": self._build_aggregated_summary(dataset_id, _db),
             "L4_charts": self._build_chart_summary(dataset_id, dashboard_config),
             "L5_findings": self._build_findings_summary(dataset_id, dashboard_config),
+            "L5b_score": self._build_score_detail(score_detail),
         }
 
     # ── 内部工具 ──────────────────────────────────────────────
@@ -241,6 +243,20 @@ class AIContextBuilder:
             "note": "质检发现来自看板质量修复记录" if log else "暂无质检问题记录",
         }
 
+    # ── L5b 评分详情层（阶段2 P1 任务1d：让 AI 知道看板为何被否决）─────────────
+    def _build_score_detail(self, score_detail: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """把 S5 评分详情（含 LLM 自评 critique）归一化为 L5b 结构，供 AI 消费。
+
+        复用 s4_orchestrator.build_s5_detail 的归一化逻辑；若未传入则为不可用。
+        """
+        if not score_detail:
+            return {"available": False, "note": "无 S5 评分详情"}
+        try:
+            from app.core.brain_modules.s4_orchestrator import build_s5_detail
+            return build_s5_detail(score_detail)
+        except Exception as e:
+            return {"available": False, "note": f"S5 评分详情解析失败: {e}"}
+
 
 def format_lineage_section(ctx: Dict[str, Any]) -> str:
     """把六层血缘上下文渲染成喂给 LLM 的精简中文段（≤500 字）。"""
@@ -279,4 +295,14 @@ def format_lineage_section(ctx: Dict[str, Any]) -> str:
     l5 = ctx.get("L5_findings", {})
     if l5.get("available"):
         lines.append(f"- L5 质检层：质量修复 {l5.get('quality_fix_count')} 次，{l5.get('note')}")
+    l5b = ctx.get("L5b_score", {})
+    if l5b.get("available"):
+        dims = l5b.get("dimension_scores", {}) or {}
+        _dims_txt = "、".join(f"{k}={v}" for k, v in dims.items()) if dims else "—"
+        _crit = f"；自评: {l5b['critique']}" if l5b.get("critique") else ""
+        lines.append(
+            f"- L5b 评分详情：总分 {l5b.get('overall_score')}（{'通过' if l5b.get('passed') else '未通过'}），"
+            f"维度[{_dims_txt}]；处置={l5b.get('disposal', {}).get('grade')}；"
+            f"改进：{('；'.join(l5b.get('improvement_suggestions', [])[:3]) or '无')}{_crit}"
+        )
     return "\n".join(lines)

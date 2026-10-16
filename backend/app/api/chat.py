@@ -557,7 +557,10 @@ async def generate_llm_natural_response(
             from app.core.brain_modules.ai_context_builder import (
                 AIContextBuilder, format_lineage_section,
             )
-            _ctx = AIContextBuilder().build_context(_dsid, dashboard_config=current_config)
+            _ctx = AIContextBuilder().build_context(
+                _dsid, dashboard_config=current_config,
+                score_detail=current_config.get("score") if current_config else None,
+            )
             _lineage = format_lineage_section(_ctx)
             if _lineage:
                 default_prompt += "\n" + _lineage + "\n\n"
@@ -946,7 +949,10 @@ async def send_message_stream(
         # 链路对应位置局部调整 or 整链重生。
         try:
             from app.core.brain_modules.ai_context_builder import AIContextBuilder
-            context["lineage"] = AIContextBuilder().build_context(dataset_id or "", current_config)
+            context["lineage"] = AIContextBuilder().build_context(
+                dataset_id or "", current_config,
+                score_detail=current_config.get("score") if current_config else None,
+            )
         except Exception as _le:
             print(f"[Chat] 血缘上下文构建失败(忽略): {_le}")
             context["lineage"] = {}

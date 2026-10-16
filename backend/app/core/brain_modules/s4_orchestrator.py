@@ -594,6 +594,9 @@ async def orchestrate_and_score(
     layers = orchestrator.organize_narrative(final_charts)
     narrative_flow = orchestrator._build_narrative_flow(layers, final_charts)
 
+    # 阶段2 P1 任务1：S5 分级处置（night50，赋予 S5 真正否决权）
+    disposal = grade_s5_disposal(score.overall_score)
+
     return {
         "success": True,
         "charts": final_charts,
@@ -605,5 +608,89 @@ async def orchestrate_and_score(
         "improvement_suggestions": score.improvement_suggestions,
         "layers": layers,
         "narrative_flow": narrative_flow,
-        "score": score.to_dict()
+        "score": score.to_dict(),
+        "disposal": disposal,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 阶段2 P1 任务1：S5 分级处置（night50）
+# 把 S5 评分映射为四级处置，赋予 S5 真正的「否决权」：
+#   ≥70   通过，正常出看板
+#   50-69 降级——重新生成（补图/重排）
+#   30-49 降级——仅保留 KPI + 简单趋势图（minimal）
+#   <30   否决——弹选择框让用户决策
+# 注：30-49 的「minimal」以对最终图表的后置过滤实现（保留 KPI+line），
+#     等价于给图表引擎加 minimal=True 的用户可见效果，且不改动 s3_chart_engine 主生成路径（更低风险）。
+# ──────────────────────────────────────────────────────────────────────
+
+def grade_s5_disposal(score: float) -> Dict[str, Any]:
+    """把 S5 总分映射为处置等级。
+
+    Returns:
+        {
+          "grade": "pass" | "degrade_regenerate" | "degrade_minimal" | "veto",
+          "level": 1..4,
+          "action": "none" | "regenerate" | "minimal" | "veto",
+          "message": 人类可读说明
+        }
+    """
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        s = 0.0
+    if s >= 70:
+        return {"grade": "pass", "level": 1, "action": "none",
+                "message": f"评分通过({s:.0f}≥70)，正常出看板"}
+    if s >= 50:
+        return {"grade": "degrade_regenerate", "level": 2, "action": "regenerate",
+                "message": f"评分{s:.0f}（50-69）：降级，重新生成看板（补图/重排）"}
+    if s >= 30:
+        return {"grade": "degrade_minimal", "level": 3, "action": "minimal",
+                "message": f"评分{s:.0f}（30-49）：降级，仅保留 KPI + 简单趋势图"}
+    return {"grade": "veto", "level": 4, "action": "veto",
+            "message": f"评分{s:.0f}（<30）：否决，交用户选择规则兜底/重生成/手动调整"}
+
+
+# 简单趋势图类型（30-49 降级保留的最小集合）
+_MINIMAL_KEEP_TYPES = ("kpi", "line")
+
+
+def apply_s5_minimal(charts: List[Dict]) -> List[Dict]:
+    """30-49 降级：只保留 KPI + 简单趋势(line)，跳过复杂图(pie/bar/scatter/table/...)。
+
+    若过滤后无图（极端情况），回退保留原始图，避免空看板。
+    """
+    if not charts:
+        return charts
+    kept = [c for c in charts if c.get("chart_type") in _MINIMAL_KEEP_TYPES]
+    return kept if kept else charts
+
+
+def build_s5_detail(score_dict: Optional[Dict[str, Any]], critique: Optional[str] = None) -> Dict[str, Any]:
+    """构造喂给 AI 的 L5b 评分详情（各项评分 + 扣分原因 + LLM 自评 critique）。
+
+    兼容 orchestrate_and_score 返回的 `score`(DashboardScore.to_dict())，
+    也兼容看板 config 中持久化的 `score`(含 overall/passed/dimensions)。
+    """
+    if not score_dict:
+        return {"available": False, "note": "无 S5 评分详情"}
+    dims_raw = score_dict.get("dimension_scores") or score_dict.get("dimensions") or {}
+    overall = score_dict.get("overall_score")
+    if overall is None:
+        overall = score_dict.get("overall")
+    if "passed" in score_dict:
+        passed = bool(score_dict.get("passed"))
+    else:
+        passed = (overall or 0) >= 70
+    suggestions = score_dict.get("improvement_suggestions") or []
+    disposal = grade_s5_disposal(overall if overall is not None else 0)
+    return {
+        "available": True,
+        "overall_score": overall,
+        "passed": passed,
+        "dimension_scores": dims_raw,
+        "improvement_suggestions": suggestions,
+        "critique": critique,
+        "disposal": disposal,
     }
