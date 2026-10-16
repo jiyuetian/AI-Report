@@ -212,6 +212,38 @@ def _resume_run_choice(run_id: str, choice: str) -> bool:
     return False
 
 
+async def _s5_regenerate(
+    db, dataset_id: str, fields, grain: str, theme_tag: str, goals, derived_metrics
+) -> Optional[Dict[str, Any]]:
+    """S5 50-69 降级 / <30 否决重生：复用 S3 规则引擎主链路重新生成候选并编排评分。
+
+    忠实复用 night48 主链路（generate_all_candidates）→ night49 规则选图（_select_from_candidates）
+    → orchestrate_and_score 评分。LLM 不可达时由 _select_from_candidates 规则兜底，不崩。
+    返回与 orchestrate_and_score 同构的 dict（含 charts / overall_score / passed / disposal）。
+    """
+    try:
+        from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
+        from app.core.brain_modules.s4_orchestrator import orchestrate_and_score
+        engine = S3ChartEngine(derived_metrics=derived_metrics)
+        pool = engine.generate_all_candidates(
+            fields=fields, grain=grain, theme=theme_tag, goals=goals,
+            derived_metrics=derived_metrics,
+        )
+        candidates = pool.get("candidates", [])
+        chosen = engine._select_from_candidates(candidates, top_n=7)
+        chosen = engine._enforce_narrative_order_dicts(chosen)
+        res = await orchestrate_and_score(db=db, charts=chosen, dataset_id=dataset_id)
+        res["disposal"] = res.get("disposal") or (
+            __import__("app.core.brain_modules.s4_orchestrator", fromlist=["grade_s5_disposal"])
+            .grade_s5_disposal(res.get("overall_score", 0))
+        )
+        print(f"[Brain] S5 重生: {len(res.get('charts', []))} 张图, 评分 {res.get('overall_score')}")
+        return res
+    except Exception as e:
+        print(f"[Brain] S5 重生失败(保留原图): {e}")
+        return None
+
+
 async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
                             max_rounds: int = 3, derived_metrics=None, field_profiles=None,
                             table_name: str = None):
@@ -1041,6 +1073,43 @@ async def brain_run_pipeline(
 
             charts = s3_result.get("charts", [])
             generated_by = s3_result.get("generated_by", "rule_engine")
+
+            # ===== 阶段2 P1 任务2：LIDA 四阶段骨架（Self-Eval + Self-Repair，night50）=====
+            # 复用本块已产出的 candidate_pool / charts，调 LIDAPipeline 跑 Phase3/4 自评估与自愈。
+            # Phase1(Task Planning) 复用 S2 goals；Phase2(Chart Generation) 复用本块已选 charts。
+            try:
+                from app.core.brain_modules.s3_lida_pipeline import LIDAPipeline
+                lida = LIDAPipeline(derived_metrics=derived_metrics)
+                progress.current_stage = "S3"
+                progress.stage_status = "running"
+                progress.progress = 55
+                progress.message = "LIDA 自评估看板质量..."
+                yield progress.to_event()
+                lida_res = await lida.run(
+                    db=db, dataset_id=dataset_id, fields=fields, grain=grain,
+                    theme_tag=theme_tag, goals=goals, llm_offline=llm_offline,
+                    sample_data=dataset_info.get("sample_data"),
+                    field_profiles=field_profiles, table_name=_s3_table,
+                    candidate_pool=candidate_pool, charts=charts,
+                )
+                if lida_res.get("charts"):
+                    charts = lida_res["charts"]
+                    s3_result["charts"] = charts
+                s3_result["lida"] = lida_res
+                progress.message = (
+                    f"LIDA 自评 {lida_res.get('self_eval', {}).get('score')} 分，"
+                    f"自愈 {lida_res.get('self_repair', {}).get('rounds')} 轮"
+                )
+                progress.detail = {
+                    **(progress.detail or {}),
+                    "lida": {
+                        "self_eval": lida_res.get("self_eval"),
+                        "self_repair": lida_res.get("self_repair"),
+                    },
+                }
+                yield progress.to_event()
+            except Exception as le:
+                print(f"[Brain] LIDA 自评估失败(不影响主链路): {le}")
             # 若最终仍非 AI（规则兜底），确保 charts 存在；缺失则再兜底一次引擎默认
             if not charts:
                 print("[Brain] S3图表为空（AI失败+规则兜底为空），回退到引擎默认图表")
@@ -1098,6 +1167,62 @@ async def brain_run_pipeline(
             overall_score = s4_s5_result.get("overall_score", 0)
             passed = s4_s5_result.get("passed", False)
 
+            # ===== 阶段2 P1 任务1：S5 分级处置（night50，赋予 S5 真正否决权）=====
+            from app.core.brain_modules.s4_orchestrator import grade_s5_disposal, apply_s5_minimal
+            disposal = s4_s5_result.get("disposal") or grade_s5_disposal(overall_score)
+            s5_veto_user_choice = None
+            s5_manual_override = False
+
+            if disposal["grade"] == "degrade_regenerate":
+                # 50-69：降级——重新生成（补图/重排）
+                progress.message = f"S5 评分{overall_score:.0f}分: 降级重新生成看板（补图/重排）"
+                progress.detail = {**(progress.detail or {}), "s5_disposal": disposal}
+                yield progress.to_event()
+                regen = await _s5_regenerate(db, dataset_id, fields, grain, theme_tag, goals, derived_metrics)
+                if regen:
+                    s4_s5_result = regen
+                    final_charts = regen.get("charts", final_charts)
+                    overall_score = regen.get("overall_score", overall_score)
+                    passed = regen.get("passed", passed)
+                    disposal = regen.get("disposal") or grade_s5_disposal(overall_score)
+                # 重生后仍<30 则落入下方否决分支
+
+            if disposal["grade"] == "degrade_minimal":
+                # 30-49：降级——仅保留 KPI + 简单趋势图
+                final_charts = apply_s5_minimal(charts)
+                progress.message = f"S5 评分{overall_score:.0f}分: 降级仅保留 KPI+趋势图"
+                progress.detail = {**(progress.detail or {}), "s5_disposal": disposal, "charts_after": len(final_charts)}
+                yield progress.to_event()
+
+            if disposal["grade"] == "veto":
+                # <30：否决——弹选择框让用户决策（复用 S3 选择框机制，前端已有对应 modal）
+                _veto_payload = {
+                    "stage": "S5",
+                    "type": "veto",
+                    "options": ["rule_fallback", "regenerate", "manual"],
+                    "score": overall_score,
+                    "disposal": disposal,
+                    "reason": "；".join(s4_s5_result.get("improvement_suggestions") or [])
+                              or "看板评分过低(<30)，AI 评估质量不可接受",
+                    "message": f"看板评分仅 {overall_score:.0f} 分（低于 30 否决线）。请选择：规则兜底生成 / 重新生成 / 手动调整。",
+                }
+                choice = await _request_user_choice(run_id, _veto_payload)
+                s5_veto_user_choice = choice
+                if choice == "regenerate":
+                    regen = await _s5_regenerate(db, dataset_id, fields, grain, theme_tag, goals, derived_metrics)
+                    if regen:
+                        s4_s5_result = regen
+                        final_charts = regen.get("charts", final_charts)
+                        overall_score = regen.get("overall_score", overall_score)
+                        passed = regen.get("passed", passed)
+                elif choice == "manual":
+                    s5_manual_override = True
+                else:  # rule_fallback
+                    final_charts = apply_s5_minimal(charts) if charts else charts
+                progress.message = f"S5 否决已处理（用户选择: {choice}）"
+                progress.detail = {**(progress.detail or {}), "s5_disposal": disposal, "veto_choice": choice}
+                yield progress.to_event()
+
             progress.current_stage = "S5"
             progress.stage_status = "running"
             progress.progress = 85
@@ -1141,9 +1266,20 @@ async def brain_run_pipeline(
             except Exception as e:
                 print(f"[Brain] S5多模态抽检失败(不阻断): {e}")
 
+            # 把 S5 分级处置结果写回，供持久化/前端/审计一致消费
+            s4_s5_result["disposal"] = disposal
+            s4_s5_result["s5_veto_user_choice"] = s5_veto_user_choice
+            s4_s5_result["s5_manual_override"] = s5_manual_override
+
             progress.stage_status = "completed"
             progress.progress = 90
-            progress.message = f"评分{'通过' if passed else '未通过'}: {overall_score}分"
+            progress.message = f"评分{overall_score:.0f}分 · 处置:{disposal['grade']}"
+            progress.detail = {
+                **s4_s5_result,
+                "s5_disposal": disposal,
+                "s5_veto_user_choice": s5_veto_user_choice,
+                "s5_manual_override": s5_manual_override,
+            }
             yield progress.to_event()
             
             print(f"[Brain] S4+S5完成: score={overall_score}, passed={passed}")
