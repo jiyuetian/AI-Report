@@ -594,6 +594,34 @@ try:
 except Exception as e:
     bad("run_context:bridge", f"异常 {e}\n{traceback.format_exc()}")
 
+# 跨重启闭环（债B 关键修复验证）：run_context 持久化后，重启仍恢复签名→
+# feedback 写回读路径认的键(FLYWHEEL_DOMAIN+derive_signature)→同形态 S2 读回，闭环闭合。
+try:
+    _tmp_rc = os.path.join(_tempfile.gettempdir(), f"rc_verify_{os.getpid()}.json")
+    _tmp_exp2 = os.path.join(_tempfile.gettempdir(), f"exp_verify2_{os.getpid()}.json")
+    import app.core.run_context as _rc_mod
+    with _patch("app.core.run_context._STORE_PATH", _tmp_rc), \
+         _patch("app.core.brain_modules.experience_store._STORE_PATH", _tmp_exp2):
+        _rid = "run_restart_1"
+        set_run_context(_rid, FLY_FIELDS, "detail", "担保风控", FLY_SIG, dataset_id="ds_x")
+        # 模拟后端重启：清空内存态（磁盘文件仍在）
+        _rc_mod._RUN_CONTEXT.clear()
+        rec = get_run_context(_rid)  # 应从磁盘恢复
+        assert rec is not None and rec.get("signature") == FLY_SIG, f"重启后未恢复: {rec}"
+        # 复刻 brain_v2.submit_run_feedback 正常分支的写路径
+        record_experience(FLYWHEEL_DOMAIN, rec["signature"], f"theme:{rec['theme']}", "good")
+        # 读路径：未来同形态 S2 应读回该经验 → 闭环闭合
+        ctx2 = build_flywheel_context_from_fields(FLY_FIELDS, "detail")
+        assert "担保风控" in ctx2, f"闭环断裂，读不到经验: {ctx2}"
+        ok("flywheel:cross_restart", f"重启后恢复签名={rec['signature']!r}，反馈写回并被同形态 S2 读回（ctx 含「担保风控」）")
+    try:
+        if os.path.exists(_tmp_rc): os.remove(_tmp_rc)
+        if os.path.exists(_tmp_exp2): os.remove(_tmp_exp2)
+    except Exception:
+        pass
+except Exception as e:
+    bad("flywheel:cross_restart", f"异常 {e}\n{traceback.format_exc()}")
+
 
 # ───────────────────────── 汇总 ─────────────────────────
 section("【汇总】")
