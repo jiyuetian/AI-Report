@@ -22,6 +22,12 @@ from app.core.brain_config_manager import BrainTraceManager
 from app.core.duckdb_manager import get_duckdb
 from app.core.config import settings
 from app.core.ai_fail_reason import classify_ai_fail_reason
+from app.core.brain_modules.step_reasoning import (
+    build_step_reasoning, contract_reasons_to_log, extract_self_corrections
+)
+from app.core.ai_action_log import log_contract_reasons
+from app.core.flywheel import build_flywheel_context_from_fields, derive_signature
+from app.core.brain_modules.s3_llm_enhancer import S3LLMEnhancer, select_charts_from_candidates
 from app.core.brain_modules import (
     detect_theme, generate_analysis_goals, generate_charts_with_llm,
     orchestrate_and_score
@@ -683,6 +689,109 @@ def _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason):
     if not s3_ai_failed:
         return "rule_only"
     return classify_ai_fail_reason(s3_ai_reason or "")
+
+
+async def _dispatch_s3_ai_primary(
+    *,
+    db, engine, enhancer, select_fn, candidates, candidate_pool,
+    theme_tag, fields, goals, grain, _s3_table, field_profiles, timeout,
+    derived_metrics=None,
+) -> tuple:
+    """A2 翻转（可单测）：AI 作为每步主执行者——先「在框架内自由生成」图表，失败退化为候选选择 / 规则兜底。
+
+    返回 (s3_result, s3_ai_failed, s3_ai_reason)：
+    - AI 主执行成功 → generated_by='llm', ai_primary=True，s3_ai_failed=False；
+    - AI 内部降级（带 fallback_reason）→ 规则引擎兜底，s3_ai_failed=True；
+    - AI 未返回 → 试「候选池选择」兜底（仍是 llm），再失败 → RuntimeError（由外层转规则兜底/询问用户）；
+    - 超时 / 异常 → 规则引擎兜底，s3_ai_failed=True，最坏退化链始终零崩溃。
+    """
+    s3_ai_failed = False
+    s3_ai_reason = None
+    llm_offline = False
+    try:
+        _ai_res = await asyncio.wait_for(
+            enhancer.generate_with_self_healing(
+                db=db, theme=theme_tag, fields=fields, goals=goals, grain=grain,
+                semantics=None, derived_metrics=derived_metrics,
+                table_name=_s3_table, field_profiles=field_profiles,
+            ),
+            timeout=timeout,
+        )
+        if _ai_res and _ai_res.get("generated_by") == "llm" and _ai_res.get("charts"):
+            # AI 主执行成功 → 规则引擎统一强制叙事顺序（KPI 在前 / 风险殿后）
+            _ai_res["charts"] = engine._enforce_narrative_order_dicts(_ai_res["charts"])
+            s3_result = {
+                "charts": _ai_res["charts"],
+                "generated_by": "llm",
+                "llm_used": True,
+                "ai_primary": True,  # A2 标记：AI 主执行（在框架内生成，非候选选择器）
+                "self_healed": _ai_res.get("self_healed", False),
+                "retry_count": _ai_res.get("retry_count", 0),
+            }
+        elif _ai_res and _ai_res.get("fallback_reason"):
+            # AI 主执行已因 LLM 不可达/失败内部降级 → 直接规则兜底，避免重复 LLM 调用
+            print(f"[Brain] A2 AI 主执行因 LLM 失败已降级({_ai_res.get('fallback_reason')})，直接规则兜底")
+            chosen = engine._select_from_candidates(candidates, top_n=7)
+            s3_result = {
+                "charts": chosen, "generated_by": "rule_engine",
+                "candidate_count": len(candidates), "selected_count": len(chosen),
+                "fallback_reason": _ai_res.get("fallback_reason"),
+                "flywheel_context": build_flywheel_context_from_fields(fields, grain),
+            }
+            s3_ai_failed = True
+            s3_ai_reason = _ai_res.get("fallback_reason")
+        else:
+            # 退化：AI 主执行未返回结果 → 试「从候选池选/增强」兜底（保持既有增强能力）
+            print("[Brain] A2 AI 主执行未返回结果，退化为候选选择兜底")
+            fly_ctx = build_flywheel_context_from_fields(fields, grain)
+            llm_sel = await asyncio.wait_for(
+                select_fn(
+                    db=db, theme=theme_tag, fields=fields, goals=goals,
+                    grain=grain, candidate_pool=candidate_pool,
+                    derived_metrics=derived_metrics,
+                    field_profiles=field_profiles, table_name=_s3_table,
+                    flywheel_context=fly_ctx or None,
+                ),
+                timeout=timeout,
+            )
+            if llm_sel and llm_sel.get("charts"):
+                llm_sel["charts"] = engine._enforce_narrative_order_dicts(llm_sel["charts"])
+                s3_result = {
+                    "charts": llm_sel["charts"],
+                    "generated_by": "llm",
+                    "candidate_count": len(candidates),
+                    "selected_count": len(llm_sel["charts"]),
+                    "llm_used": True,
+                    "selected_from_pool": True,
+                    "flywheel_context": fly_ctx,
+                }
+            else:
+                raise RuntimeError("AI 主执行与候选选择均未返回有效图表")
+    except asyncio.TimeoutError:
+        # S3 LLM 主生成/候选选择超时：规则引擎从候选池兜底。
+        print(f"[Brain] S3 LLM 超时({timeout}s)，规则引擎从候选池兜底")
+        chosen = engine._select_from_candidates(candidates, top_n=7)
+        s3_result = {
+            "charts": chosen, "generated_by": "rule_engine",
+            "candidate_count": len(candidates), "selected_count": len(chosen),
+            "fallback_reason": f"S3 LLM 调用超时({timeout}s)，规则引擎兜底",
+        }
+        s3_ai_failed = True
+        s3_ai_reason = f"S3 LLM 调用超时({timeout}s)，已用规则引擎兜底"
+        llm_offline = True
+    except Exception as e:
+        print(f"[Brain] S3 LLM 主执行异常，规则引擎从候选池兜底: {e}")
+        chosen = engine._select_from_candidates(candidates, top_n=7)
+        s3_result = {
+            "charts": chosen, "generated_by": "rule_engine",
+            "candidate_count": len(candidates), "selected_count": len(chosen),
+            "fallback_reason": f"S3 LLM 异常: {_short_err(e)}",
+        }
+        s3_ai_failed = True
+        s3_ai_reason = f"AI 图表生成异常: {_short_err(e)}"
+    return s3_result, s3_ai_failed, s3_ai_reason, llm_offline
+
+
 async def brain_run_pipeline(
     run_id: str,
     dataset_id: str,
@@ -844,14 +953,27 @@ async def brain_run_pipeline(
             theme_tag = "通用分析"  # 失败降级默认值
             try:
                 s1_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S1", {"fields": fields}), "S1")
-                s1_result = await _exec_skill(
-                    "understand:theme", ctx,
-                    lambda: detect_theme(
-                        db=db, fields=fields, sample_data=sample_data,
-                        dataset_name=dataset_name, use_llm=not llm_offline,
-                    ),
+                # 债A（2026-10-29）：S1 翻转为 AI 主执行 + 词典护栏兜底（三态 s1_source 可查）
+                from app.core.brain_modules.threshold_config import resolve_thresholds as _resolve_thr_s12
+                from app.core.brain_modules.s12_ai_orchestrator import dispatch_s1_ai_primary
+                _thr_s12 = await _resolve_thr_s12(db)
+                s1_result = await dispatch_s1_ai_primary(
+                    db=db, fields=fields, sample_data=sample_data,
+                    dataset_name=dataset_name, thresholds=_thr_s12,
+                    llm_offline=llm_offline, run_id=run_id,
                 )
-                await _safe_trace(db, BrainTraceManager.complete_stage(db, s1_trace_id, {"result": s1_result}), "S1")
+                await _safe_trace(db, BrainTraceManager.complete_stage(
+                    db, s1_trace_id, {"result": s1_result},
+                    reasoning=build_step_reasoning(
+                        "S1",
+                        input_summary=f"数据集字段数={len(fields or [])}",
+                        ai_decision=f"识别主题={s1_result.get('theme_tag', theme_tag)}",
+                        ai_reason="AI 主执行识别主题；词典作护栏底座（高置信命中且 AI 偏离时纠正）；来源=" + str(s1_result.get("source")),
+                        rules_applied=["主题词典匹配", "未知主题回落"],
+                        fallback_used=False,
+                        output_ref={"theme_tag": s1_result.get("theme_tag", theme_tag)},
+                    ),
+                ), "S1")
                 theme_tag = s1_result.get("theme_tag", "通用分析")
                 # 兜底：主题识别为空或「未知」时统一用默认主题，避免看板标题显示「未知」
                 if not theme_tag or theme_tag == "未知":
@@ -895,27 +1017,46 @@ async def brain_run_pipeline(
                 s2_field_profiles = _compute_field_profiles(
                     get_duckdb(), _s2_table, fields, dataset_info.get("sample_data")
                 )
-                goals = await _exec_skill(
-                    "understand:goal", ctx,
-                    lambda: generate_analysis_goals(
-                        db=db,
-                        theme=theme_tag,
-                        fields=fields,
-                        grain=grain,
-                        use_llm=bool(settings.BRAIN_S2_USE_LLM) and not llm_offline,  # PRD 4.8：默认规则引擎降本，可开 LLM；与 skill 主路径(brain_skills.py:77)守卫一致
-                        field_profiles=s2_field_profiles
-                    ),
+                # 债A（2026-10-29）：S2 翻转为 AI 主执行 + 规则护栏兜底（三态 s2_source 可查）
+                from app.core.brain_modules.threshold_config import resolve_thresholds as _resolve_thr_s12
+                from app.core.brain_modules.s12_ai_orchestrator import dispatch_s2_ai_primary
+                from app.core.run_context import set_run_context
+                _thr_s12 = await _resolve_thr_s12(db)
+                s2_res = await dispatch_s2_ai_primary(
+                    db=db, fields=fields, grain=grain, theme=theme_tag,
+                    thresholds=_thr_s12, llm_offline=llm_offline, run_id=run_id,
+                    field_profiles=s2_field_profiles,
                 )
+                goals = s2_res.get("goals", [])
+                s2_source = s2_res.get("source", "rule")
+                s2_generated_by = s2_res.get("generated_by", "rule")
                 ctx.shared["goals"] = goals
-                # 2.3-B：标记 S2 目标生成是否由 LLM 参与（对齐 S3 的 ai_participated）
-                s2_generated_by = "llm" if any(g.get("generated_by") == "llm" for g in goals) else "rule"
                 ctx.shared["s2_generated_by"] = s2_generated_by
+                ctx.shared["s2_source"] = s2_source
                 # 3.2c：S2 一结束就能判定本次生成方式，提前写入状态缓存，
                 # 让前端在 S3-S5（AI 阶段）加载中即可显示「AI 增强生成中 / 规则引擎生成中」，
                 # 不必等到完成态。与最终 payload 的 generation_mode 同源。
-                _RUN_STATUS.setdefault(run_id, {})["generation_mode"] = "ai" if s2_generated_by == "llm" else "rule"
+                _RUN_STATUS.setdefault(run_id, {})["generation_mode"] = (
+                    "ai" if s2_source in ("ai", "ai_guarded") else "rule"
+                )
+                # 债B 闭环【写路径暂存】：记录字段形态签名，供反馈端点回写经验库影响未来同形态生成
+                set_run_context(
+                    run_id, fields, grain, theme_tag,
+                    derive_signature(fields, grain), dataset_id=dataset_id,
+                )
                 print(f"[Brain] S2 生成方式: {s2_generated_by}（{len(goals)} 个目标）")
-                await _safe_trace(db, BrainTraceManager.complete_stage(db, s2_trace_id, {"goals": goals, "generated_by": s2_generated_by}), "S2")
+                await _safe_trace(db, BrainTraceManager.complete_stage(
+                    db, s2_trace_id, {"goals": goals, "generated_by": s2_generated_by},
+                    reasoning=build_step_reasoning(
+                        "S2",
+                        input_summary=f"主题={theme_tag}, 字段数={len(fields or [])}, 目标数={len(goals or [])}",
+                        ai_decision=f"生成目标数={len(goals or [])}, 生成方式={s2_generated_by}",
+                        ai_reason="AI 主执行生成分析目标；规则 base_goals 作事实底座，护栏约束数量/类型/合法性；来源=" + str(s2_source),
+                        rules_applied=["目标模板匹配", "字段画像特征匹配(不绑列名)"],
+                        fallback_used=(s2_generated_by != "llm"),
+                        output_ref={"goal_count": len(goals or []), "generated_by": s2_generated_by},
+                    ),
+                ), "S2")
                 goals_count = len(goals)
                 progress.stage_status = "completed"
                 progress.progress = 40
@@ -986,54 +1127,33 @@ async def brain_run_pipeline(
                         "fallback_reason": "LLM 不可达/用户选规则兜底，规则引擎从候选池选图",
                     }
                 else:
-                    try:
-                        from app.core.brain_modules.s3_llm_enhancer import select_charts_from_candidates
-                        llm_sel = await asyncio.wait_for(
-                            select_charts_from_candidates(
-                                db=db, theme=theme_tag, fields=fields, goals=goals,
-                                grain=grain, candidate_pool=candidate_pool,
-                                derived_metrics=derived_metrics,
-                                field_profiles=field_profiles, table_name=_s3_table,
-                            ),
-                            timeout=settings.BRAIN_S3_LLM_TIMEOUT,
-                        )
-                        if llm_sel and llm_sel.get("charts"):
-                            # LLM 选中 → 规则引擎统一强制叙事顺序（KPI 在前 / 风险殿后）
-                            llm_sel["charts"] = engine._enforce_narrative_order_dicts(llm_sel["charts"])
-                            s3_result = {
-                                "charts": llm_sel["charts"],
-                                "generated_by": "llm",
-                                "candidate_count": len(candidates),
-                                "selected_count": len(llm_sel["charts"]),
-                                "llm_used": True,
-                                "selected_from_pool": True,
-                            }
-                        else:
-                            raise RuntimeError("LLM 未从候选池返回有效选择")
-                    except asyncio.TimeoutError:
-                        # S3 LLM 候选选择超时：规则引擎从候选池兜底。
-                        # 问题1修复：标记 s3_ai_failed，交还用户选择「等待 AI 恢复重试」。
-                        print(f"[Brain] S3 LLM 候选选择超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，规则引擎从候选池兜底")
-                        chosen = engine._select_from_candidates(candidates, top_n=7)
-                        s3_result = {
-                            "charts": chosen, "generated_by": "rule_engine",
-                            "candidate_count": len(candidates), "selected_count": len(chosen),
-                            "fallback_reason": f"S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，规则引擎兜底",
-                        }
-                        s3_ai_failed = True
-                        s3_ai_reason = f"S3 LLM 调用超时({settings.BRAIN_S3_LLM_TIMEOUT}s)，已用规则引擎兜底"
-                        llm_offline = True
-                    except Exception as e:
-                        print(f"[Brain] S3 LLM 候选选择异常，规则引擎从候选池兜底: {e}")
-                        chosen = engine._select_from_candidates(candidates, top_n=7)
-                        s3_result = {
-                            "charts": chosen, "generated_by": "rule_engine",
-                            "candidate_count": len(candidates), "selected_count": len(chosen),
-                            "fallback_reason": f"S3 LLM 异常: {_short_err(e)}",
-                        }
-                        s3_ai_failed = True
-                        s3_ai_reason = f"AI 图表生成异常: {_short_err(e)}"
-                await _safe_trace(db, BrainTraceManager.complete_stage(db, s3_trace_id, {"result": s3_result}), "S3")
+                    from app.core.brain_modules.s3_llm_enhancer import (
+                        S3LLMEnhancer, select_charts_from_candidates,
+                    )
+                    _enhancer = S3LLMEnhancer()
+                    # A2 翻转：AI 作为每步主执行者，先「在框架内自由生成」图表，失败退化为候选选择/规则兜底。
+                    # 抽取为 _dispatch_s3_ai_primary（见本文件上方）以便白盒单测，不依赖真实 LLM 网络。
+                    s3_result, s3_ai_failed, s3_ai_reason, llm_offline = await _dispatch_s3_ai_primary(
+                        db=db, engine=engine, enhancer=_enhancer,
+                        select_fn=select_charts_from_candidates,
+                        candidates=candidates, candidate_pool=candidate_pool,
+                        theme_tag=theme_tag, fields=fields, goals=goals, grain=grain,
+                        _s3_table=_s3_table, field_profiles=field_profiles,
+                        timeout=settings.BRAIN_S3_LLM_TIMEOUT,
+                        derived_metrics=derived_metrics,
+                    )
+                await _safe_trace(db, BrainTraceManager.complete_stage(
+                    db, s3_trace_id, {"result": s3_result},
+                    reasoning=build_step_reasoning(
+                        "S3",
+                        input_summary=f"目标数={len(goals or [])}, 候选池已生成, 生成方式={s3_result.get('generated_by')}",
+                        ai_decision=f"推荐图表数={len(s3_result.get('charts', []))}, 生成方式={s3_result.get('generated_by')}",
+                        ai_reason=s3_result.get("fallback_reason") or "AI 主执行(LIDA 四阶段)从候选池选择图表；失败则规则引擎兜底",
+                        rules_applied=["LIDA 四阶段(规划/生成/自评估/自愈)", "候选池兜底选择"],
+                        fallback_used=(s3_result.get("generated_by") != "llm"),
+                        output_ref={"chart_count": len(s3_result.get("charts", [])), "generated_by": s3_result.get("generated_by")},
+                    ),
+                ), "S3")
                 # P1-1 累计 S3 消耗并触发 80% 告警（仅一次）
                 budget.add(json.dumps(s3_result, ensure_ascii=False))
                 if budget.should_warn() and not token_cut:
@@ -1073,6 +1193,89 @@ async def brain_run_pipeline(
 
             charts = s3_result.get("charts", [])
             generated_by = s3_result.get("generated_by", "rule_engine")
+
+            # ===== A2：AI 主执行契约护栏 + 每步原因日志 =====
+            # 对 S3 产出的所有图表（无论 AI 主执行还是规则兜底）做白盒校验(R1-R5)与框架内自修，
+            # 并产出可追溯 reasons（需求 4：每步处理方案与原因可查）。纯增量、零侵入、绝不阻断主链路。
+            try:
+                from app.core.brain_modules.s3_ai_contract import build_framework_ctx, run_contract
+                from app.core.brain_modules.domain_playbook_loader import get_playbook
+                _pb = get_playbook(theme_tag)
+                _ctx = build_framework_ctx(
+                    domain=theme_tag, field_profiles=field_profiles,
+                    derived_metrics=derived_metrics, grain=grain,
+                    available_fields=fields, playbook=_pb,
+                )
+                _report = run_contract(charts, _ctx)
+                if _report["charts"] != charts:
+                    charts = _report["charts"]
+                    s3_result["charts"] = charts
+                s3_result["contract_report"] = _report
+                s3_result["ai_contract_passed"] = _report["passed"]
+                # === C1(O10-2) & C2(O10-3)：契约 reasons 落 reasoning + ai_action_log + 经验库 ===
+                try:
+                    _s3_contract_reasons = _report.get("reasons") or []
+                    if _s3_contract_reasons:
+                        await _safe_trace(db, BrainTraceManager.append_stage_reasoning(
+                            db, s3_trace_id, contract_reasons_to_log(_s3_contract_reasons)), "S3-contract")
+                        # O10-3 飞轮强信号：抽取「AI 原想 X，规则改成 Y」自纠事件，沉淀经验库反向优化 prompt
+                        _self_corrections = extract_self_corrections(_s3_contract_reasons)
+                        if _self_corrections:
+                            try:
+                                from app.core.brain_modules.experience_store import record_experience
+                                for _sc in _self_corrections:
+                                    record_experience(
+                                        domain=theme_tag, data_signature=_sc["signature"],
+                                        decision=_sc["decision"], outcome="edited")
+                            except Exception as _e:
+                                print(f"[Brain] S3 自纠事件沉淀经验库失败(忽略): {_e}")
+                    # O10-2：契约 reasons 写入 ai_action_log，可按 run_id 查三级留痕（不阻塞主流程）
+                    asyncio.create_task(log_contract_reasons(
+                        run_id=run_id, user_id=user_id, dashboard_id=None,
+                        reasons=_s3_contract_reasons))
+                except Exception as _ce:
+                    print(f"[Brain] C1/C2 S3 契约原因落库失败(忽略): {_ce}")
+                print(f"[Brain] A2 契约护栏: passed={_report['passed']}, "
+                      f"violations={_report['violation_count']}, repairs={_report['repair_count']}")
+            except Exception as e:
+                print(f"[Brain] A2 契约护栏失败(忽略): {e}")
+
+            # ===== A0-3 + G2/G4：离线专业规划 & 洞察层（AI 主链路与规则兜底分支都要算）=====
+            # 纯增量：AI/规则引擎已选好 charts，这里再挂 ai_board_plan/insight_cards 作专业增强，
+            # 渲染器忽略未知键，对主链路零侵入；任何抽取失败都优雅跳过。见《白盒规则说明》§2.5。
+            # G2/G4 修正：原先仅 rule_engine 分支计算洞察，且 offline_pro_board 因扁平导入
+            # 在生产链路 ImportError 被吞 → 洞察卡从未真正产出。现在两条分支都算，且洞察
+            # 由「规则事实底座(s3_insight_layer) + AI 分析师解读(insight_ai_enhancer)」组成。
+            insight_cards = None
+            try:
+                from app.core.brain_modules.offline_pro_board import (
+                    build_offline_pro_plan, build_data_summary,
+                )
+                from app.core.brain_modules.domain_playbook_loader import get_playbook
+                from app.core.brain_modules.insight_ai_enhancer import enhance_insights_with_ai
+                from app.core.brain_modules.threshold_config import resolve_thresholds
+                _pro = build_offline_pro_plan(
+                    theme_tag, fields,
+                    field_profiles=field_profiles, derived_metrics=derived_metrics,
+                )
+                _ds = build_data_summary(derived_metrics, field_profiles or [])
+                _pb = get_playbook(theme_tag)
+                _thr = await resolve_thresholds(db)
+                insight_cards = await enhance_insights_with_ai(
+                    _pro["insights"], _ds, theme=theme_tag, goals=goals,
+                    playbook=_pb, thresholds=_thr, llm_offline=llm_offline,
+                )
+                s3_result["ai_board_plan"] = _pro["board_plan"]
+                s3_result["insight_cards"] = insight_cards
+                s3_result["experience_hints"] = _pro.get("experience_hints", [])
+                s3_result["offline_professional"] = True
+                _src = (insight_cards or {}).get("meta", {}).get("source", "rule")
+                print(f"[Brain] A0-3/G2 离线专业规划已挂载（domain={_pro['playbook_domain']}，"
+                      f"source={_src}，KPI={len(_pro['board_plan']['kpis'])}，"
+                      f"预警={len(insight_cards.get('threshold_breach', []))+len(insight_cards.get('outliers', []))}，"
+                      f"建议={len(insight_cards.get('recommendation', []))}）")
+            except Exception as e:
+                print(f"[Brain] A0-3/G2 离线专业规划失败(不影响主链路): {e}")
 
             # ===== 阶段2 P1 任务2：LIDA 四阶段骨架（Self-Eval + Self-Repair，night50）=====
             # 复用本块已产出的 candidate_pool / charts，调 LIDAPipeline 跑 Phase3/4 自评估与自愈。
@@ -1148,12 +1351,38 @@ async def brain_run_pipeline(
                 s4_trace_id = await _safe_trace(db, BrainTraceManager.start_stage(db, run_id, dataset_id, "S4", {
                     "charts": charts
                 }), "S4")
+                # G1（2026-10-29）：S4 编排 + S5 验收改为「AI 主执行」，
+                # 规则结果作为事实底座与护栏交给 AI；AI 失败/超时自动退化规则链路。
                 s4_s5_result = await orchestrate_and_score(
                     db=db,
                     charts=charts,
-                    dataset_id=dataset_id
+                    dataset_id=dataset_id,
+                    theme=theme_tag,
+                    goals=goals,
+                    insights=insight_cards,
+                    llm_offline=llm_offline,
+                    run_id=run_id,
                 )
-                await _safe_trace(db, BrainTraceManager.complete_stage(db, s4_trace_id, {"result": s4_s5_result}), "S4")
+                await _safe_trace(db, BrainTraceManager.complete_stage(
+                    db, s4_trace_id, {"result": s4_s5_result},
+                    reasoning=build_step_reasoning(
+                        "S4",
+                        input_summary=f"图表数={len(charts)}, 洞察卡={bool(insight_cards)}",
+                        ai_decision=(f"编排者={s4_s5_result.get('s4_source')}, "
+                                     f"裁判={s4_s5_result.get('s5_source')}, "
+                                     f"编排后图表数={len(s4_s5_result.get('charts', []))}, "
+                                     f"评分={s4_s5_result.get('overall_score')}"),
+                        ai_reason=(s4_s5_result.get("s4_reasoning")
+                                   or "编排优化看板布局与图表顺序；S5 评分验证"),
+                        rules_applied=(["编排优化", "S5 评分卡"]
+                                       + (s4_s5_result.get("s4_guardrail") or [])),
+                        fallback_used=(s4_s5_result.get("s4_source") == "rule"),
+                        output_ref={"chart_count": len(s4_s5_result.get("charts", [])),
+                                    "overall_score": s4_s5_result.get("overall_score"),
+                                    "s4_source": s4_s5_result.get("s4_source"),
+                                    "s5_source": s4_s5_result.get("s5_source")},
+                    ),
+                ), "S4")
             except Exception as e:
                 msg = f"第4步 看板编排优化失败：{_short_err(e)}。已使用原始图表配置继续。"
                 progress.current_stage = "S4"
@@ -1236,7 +1465,19 @@ async def brain_run_pipeline(
                     "passed": passed,
                     "chart_count": len(charts)
                 }), "S5")
-                await _safe_trace(db, BrainTraceManager.complete_stage(db, s5_trace_id, {"result": s4_s5_result}), "S5")
+                await _safe_trace(db, BrainTraceManager.complete_stage(
+                    db, s5_trace_id, {"result": s4_s5_result},
+                    reasoning=build_step_reasoning(
+                        "S5",
+                        input_summary=f"评分={s4_s5_result.get('overall_score')}, 通过={s4_s5_result.get('passed')}",
+                        ai_decision=f"处置等级={disposal.get('grade') if 'disposal' in dir() else 'n/a'}, 最终通过={s4_s5_result.get('passed')}",
+                        ai_reason=f"S5 分级处置: {disposal.get('grade') if 'disposal' in dir() else 'n/a'}"
+                                  f"{('; 用户选择:' + str(s5_veto_user_choice)) if s5_veto_user_choice else ''}",
+                        rules_applied=["S5 分级处置(否决/降级重生成/降级最小化)"],
+                        fallback_used=(s4_s5_result.get("passed") is False),
+                        output_ref={"overall_score": s4_s5_result.get("overall_score"), "passed": s4_s5_result.get("passed")},
+                    ),
+                ), "S5")
             except Exception as e:
                 msg = f"第5步 评分验证失败：{_short_err(e)}。已跳过评分，看板照常生成。"
                 progress.stage_status = "failed"

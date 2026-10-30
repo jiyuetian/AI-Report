@@ -65,7 +65,10 @@ class BrainTrace(Base):
     stage_output = Column(JSON, comment="阶段输出")
     stage_metrics = Column(JSON, comment="阶段指标，如耗时/token使用量")
     error_info = Column(JSON, comment="错误信息")
-    
+
+    # 每步结构化推理日志（C1：O10-1/O10-2，对应改造方案 §7.2）
+    reasoning = Column(JSON, comment="每步推理日志(结构化: step/input_summary/ai_decision/ai_reason/rules_applied/fallback_used/output_ref)")
+
     # 时间戳
     started_at = Column(DateTime, default=func.now(), comment="阶段开始时间")
     completed_at = Column(DateTime, comment="阶段完成时间")
@@ -91,6 +94,7 @@ class BrainTrace(Base):
             "stage_output": self.stage_output,
             "stage_metrics": self.stage_metrics,
             "error_info": self.error_info,
+            "reasoning": self.reasoning,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None
@@ -150,5 +154,4 @@ class BrainTraceSummary(Base):
             "passed": self.passed,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log, chart_templates, metrics, recalc_queue, usage_stats, integration
+from app.api import health, upload, auth, datasets, quality, brain, brain_v2, llm, s1, s2, s3, s4_s5, brain_run_sse, dashboards, chat, tokens, token_applications, lineage, versions, share, exports, exceptions, golden, loadtest, admin, admin_prompts, reports, skills, ai_action_log, chart_templates, metrics, recalc_queue, usage_stats, integration, data_query, ai_crud
 
 
 def _ensure_dataset_owner(sync_conn):
@@ -42,6 +42,66 @@ def _ensure_report_columns(sync_conn):
         if col not in existing:
             sync_conn.execute(text(f"ALTER TABLE brain_trace_summaries ADD COLUMN {col} {coltype}"))
             print(f"  + 新增列 brain_trace_summaries.{col}")
+
+
+def _ensure_brain_trace_reasoning(sync_conn):
+    """增量迁移：brain_traces 新增每步结构化推理日志列（C1：O10-1/O10-2）。"""
+    from sqlalchemy import text, inspect
+    insp = inspect(sync_conn)
+    if "brain_traces" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("brain_traces")}
+    if "reasoning" not in existing:
+        sync_conn.execute(text("ALTER TABLE brain_traces ADD COLUMN reasoning JSON"))
+        print("🔧 brain_traces.reasoning 已新增（每步推理日志）")
+
+
+def _ensure_ai_action_log_run_id(sync_conn):
+    """增量迁移：ai_action_log 新增 run_id 归属列（C1：O10-2 按 run_id 查三级留痕）。"""
+    from sqlalchemy import text, inspect
+    insp = inspect(sync_conn)
+    if "ai_action_log" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("ai_action_log")}
+    if "run_id" not in existing:
+        sync_conn.execute(text("ALTER TABLE ai_action_log ADD COLUMN run_id VARCHAR(64)"))
+        print("🔧 ai_action_log.run_id 已新增（运行级三级留痕）")
+
+
+def _ensure_template_review_columns(sync_conn):
+    """增量迁移：A4-①/②/③ 审核流——analysis_template 补审核态列 + 新建 chart_pattern 独立表。
+
+    - chart_patterns(JSON)/status/reviewer/reviewed_at/reject_reason 加在已存在的
+      analysis_template 上（ALTER ADD COLUMN，仅新增可空列，不破坏存量数据）；
+    - chart_pattern 为本次新增表，用 create_all 补齐（DEBUG 关闭的生产环境也会建）。
+    适配 SQLite 与 PostgreSQL（inspect 判定存在性，幂等可重跑）。
+    """
+    from sqlalchemy import text, inspect
+    from app.models.base import Base
+    from app.models.chart_pattern import ChartPattern
+
+    insp = inspect(sync_conn)
+
+    # 1) 新建 chart_pattern 表（若不存在）
+    if "chart_pattern" not in insp.get_table_names():
+        Base.metadata.create_all(sync_conn, tables=[ChartPattern.__table__])
+        print("🔧 chart_pattern 表已创建（图表级套路独立表，A4-②）")
+
+    # 2) analysis_template 补审核流列
+    if "analysis_template" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("analysis_template")}
+    migrations = [
+        ("chart_patterns", "JSON"),
+        ("status", "VARCHAR(20)"),
+        ("reviewer", "VARCHAR(64)"),
+        ("reviewed_at", "TIMESTAMP"),
+        ("reject_reason", "TEXT"),
+    ]
+    for col, coltype in migrations:
+        if col not in existing:
+            sync_conn.execute(text(f"ALTER TABLE analysis_template ADD COLUMN {col} {coltype}"))
+            print(f"  + 新增列 analysis_template.{col}")
 
 
 def _ensure_dataset_nullable_table(sync_conn):
@@ -109,7 +169,8 @@ async def lifespan(app: FastAPI):
         from app.models import (
             User, File, Dataset, QualityIssue, CleanRule,
             Chart, Dashboard, ChatSession, ChatMessage, TokenQuota, TokenApplication,
-            AuditLog, Prompt, TokenBlacklist, AnalysisTemplate, AiActionLog, ChartTemplate
+            AuditLog, Prompt, TokenBlacklist, AnalysisTemplate, AiActionLog, ChartTemplate,
+            ChartPattern
         )
         
         # 迁移：datasets.duckdb_table 放宽为可空（文档型数据集不建表）
@@ -136,6 +197,18 @@ async def lifespan(app: FastAPI):
         # 增量迁移：datasets 新增 created_by 归属列（G2.1 横向越权修复）
         async with engine.begin() as conn:
             await conn.run_sync(_ensure_dataset_owner)
+
+        # 增量迁移：brain_traces 新增每步推理日志列（C1：O10-1/O10-2）
+        async with engine.begin() as conn:
+            await conn.run_sync(_ensure_brain_trace_reasoning)
+
+        # 增量迁移：ai_action_log 新增 run_id 列（C1：O10-2 按 run_id 查三级留痕）
+        async with engine.begin() as conn:
+            await conn.run_sync(_ensure_ai_action_log_run_id)
+
+        # 增量迁移：analysis_template 补审核流列 + 新建 chart_pattern 表（A4-①/②/③）
+        async with engine.begin() as conn:
+            await conn.run_sync(_ensure_template_review_columns)
 
         print("✅ 报告扩展列已就绪")
 
@@ -230,6 +303,8 @@ app.include_router(recalc_queue.router, prefix="/api/v1/recalc")
 app.include_router(usage_stats.router, prefix="/api/v1")
 # night17 Task K（全链路联调）：离线集成测试运行器 / 报告
 app.include_router(integration.router, prefix="/api/v1")
+app.include_router(data_query.router, prefix="/api/v1")
+app.include_router(ai_crud.router, prefix="/api/v1")
 
 # 1.9：导出文件静态服务（PDF 真实生成后落盘于 data/exports，经此路由下载）
 _EXPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "exports")

@@ -151,6 +151,16 @@ class UsageStats:
                 "success_rate": stats["success"] / stats["count"] if stats["count"] > 0 else 0,
             }
         
+        # 时间趋势（按小时分桶）：供 /usage-stats/trends 使用。
+        # 空数据时返回空列表，避免端点 KeyError('trends')。
+        trend_buckets: Dict[str, Dict[str, int]] = defaultdict(lambda: {"total": 0, "success": 0})
+        for event in filtered_events:
+            bucket = datetime.fromtimestamp(event["timestamp"]).strftime("%Y-%m-%d %H:00")
+            trend_buckets[bucket]["total"] += 1
+            if event["success"]:
+                trend_buckets[bucket]["success"] += 1
+        trends = [{"bucket": b, **v} for b, v in sorted(trend_buckets.items())]
+
         result = {
             "overview": {
                 "total_events": total_events,
@@ -163,6 +173,7 @@ class UsageStats:
             "by_action": detailed_action_stats,
             "time_range": time_range,
             "filtered_count": len(filtered_events),
+            "trends": trends,
         }
         
         # 缓存结果
@@ -198,7 +209,7 @@ class UsageStats:
             hour = datetime.fromtimestamp(event["timestamp"]).hour
             hourly_usage[hour] += 1
         
-        peak_hour = max(hourly_usage.items(), key=lambda x: x[1])[0]
+        peak_hour = max(hourly_usage.items(), key=lambda x: x[1])[0] if hourly_usage else None
         
         # 模型偏好
         model_preference = defaultdict(lambda: {"count": 0, "success": 0})

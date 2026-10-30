@@ -12,6 +12,7 @@ from app.core.brain_config_manager import BrainConfigManager
 from app.core.llm_gateway import llm_chat
 from app.core.prompt_loader import load_prompt
 from app.models.analysis_template import AnalysisTemplate
+from app.models.chart_pattern import ChartPattern
 
 
 @dataclass
@@ -539,6 +540,10 @@ def _score_template(match_features: Dict[str, Any], profile: Dict[str, Any]) -> 
     return score
 
 
+# A4-5（2026-10-26）：AI 自动沉淀开关的 brain_configs key，默认关闭
+_AUTO_PROPOSE_CFG_KEY = "s2_auto_template_propose"
+
+
 async def match_templates(db, profile: Dict[str, Any]) -> List["AnalysisTemplate"]:
     """
     2.6 P0：匹配分析模板。
@@ -569,19 +574,103 @@ async def match_templates(db, profile: Dict[str, Any]) -> List["AnalysisTemplate
     return [t for _, t in scored]
 
 
+async def _auto_propose_enabled(db) -> bool:
+    """A4-5：是否允许 AI 在 S2 之后**自动写库**沉淀候选（默认 False = 关闭）。
+
+    用户 2026-10-26 拍板：AI 生成的看板**不许自动沉淀**成资产，
+    必须「AI 提议 → 人工审核 → 才入库」。开关仅为灰度/批量沉淀留口，日常必须关闭。
+    """
+    try:
+        from app.core.brain_config_manager import BrainConfigManager
+        cfg = await BrainConfigManager.get_config(db, _AUTO_PROPOSE_CFG_KEY, use_cache=True)
+        if not cfg:
+            return False
+        val = cfg.get("config_value")
+        if isinstance(val, dict):
+            val = val.get("enabled")
+        return str(val).lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
+def extract_chart_patterns(
+    goals: List[Dict[str, Any]],
+    field_profiles: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """A4-1 粒度下沉：把「看板级目标集合」拆成**图表级可复用套路**。
+
+    最小沉淀单元 = 单张图（图型 + 字段角色 + 聚合口径 + 语义标签），
+    而不是把整个看板的 6 个目标打包成一个模板 —— 后者粒度太粗、换数据即失效。
+
+    pattern = {
+        chart_type, role_hint, aggregation, title_hint, expected_field_count, source_goal
+    }
+    """
+    _ROLE_HINT = (
+        ("比率", "ratio"), ("率", "ratio"), ("占比", "ratio"), ("比重", "ratio"),
+        ("金额", "amount"), ("余额", "amount"), ("收入", "amount"), ("成本", "amount"),
+        ("笔数", "count"), ("数量", "count"), ("户数", "count"), ("人数", "count"),
+        ("日期", "time"), ("月份", "time"), ("时间", "time"), ("趋势", "time"),
+    )
+    patterns: List[Dict[str, Any]] = []
+    seen = set()
+    for g in goals or []:
+        if not isinstance(g, dict):
+            continue
+        for ct in (g.get("expected_charts") or []):
+            if not ct or ct == "分析":
+                continue
+            title = str(g.get("title") or "")
+            role = "metric"
+            for kw, rl in _ROLE_HINT:
+                if kw in title:
+                    role = rl
+                    break
+            agg = "mean" if role == "ratio" else ("sum" if ct in ("kpi", "bar", "pie", "line") else "none")
+            key = (ct, role, agg)
+            if key in seen:
+                continue
+            seen.add(key)
+            patterns.append({
+                "chart_type": ct,
+                "role_hint": role,
+                "aggregation": agg,
+                "title_hint": title[:40],
+                "expected_field_count": 2 if ct in ("line", "bar", "pie", "scatter") else 1,
+                "source_goal": {"type": g.get("type"), "title": title},
+            })
+    return patterns
+
+
 async def propose_template_candidate(
     db,
     theme: str,
     fields: List[str],
     field_profiles: Optional[List[Dict[str, Any]]],
     goals: List[Dict[str, Any]],
+    auto_persist: Optional[bool] = None,
+    quality_gate: Optional[Dict[str, Any]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+    persist_to_pool: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """2.6 P1：AI 自动沉淀候选模板。
+    """2.6 P1 / A4 重构：AI **提议**候选模板 + 图表级套路，**默认不入库**。
 
-    - 从本次 dataset profile + S2 goals 提炼可复用模板
-    - approved=False（待管理后台确认，防污染）
-    - 去重：相同 match_features 签名（任意来源）不重复写入
-    - 任何异常忽略，不影响主链路（S2 之后的可选增强）
+    2026-10-26 用户拍板改造原因（真实痛点）：
+      - 旧行为：每跑一次 S2 就 `db.add` 一条「XX分析模板候选」，管理后台被垃圾数据淹没；
+      - 数据不对：沉淀的 base_goals 直接抄 AI 生成的目标，**无任何质量门禁**；
+      - 粒度错误：整个看板的目标集合打包成一个模板，换份数据就失效（应为图表级套路）。
+
+    新行为：
+      1. 总是返回候选 dict（含 **图表级 chart_patterns** + 溯源 evidence），**不自动写库**；
+      2. 仅当 `auto_persist=True` **或** `persist_to_pool=True` **或**
+         brain_configs `s2_auto_template_propose.enabled=true` 且通过 `quality_gate`
+         （契约护栏/S5 达标）时才写入 `status='pending_review'` 的候选（不自动批准）；
+      3. 落库时同时：把 chart_patterns 落到 AnalysisTemplate.chart_patterns 字段
+         **且**逐条写入独立表 chart_pattern（A4-② 独立表）；
+      4. 任何异常忽略，绝不影响主链路（S2 之后的可选增强）。
+
+    quality_gate 形如 {"passed": True, "violation_count": 0, "score": 82}
+    evidence 形如 {"run_id": "...", "dashboard_id": "...", "dataset_id": "..."}
     """
     try:
         if not goals or len(goals) < 3:
@@ -594,11 +683,52 @@ async def propose_template_candidate(
         }
         if not mf["theme_hint"]:
             mf.pop("theme_hint", None)
-        sig = json.dumps(mf, sort_keys=True, ensure_ascii=False)
+
+        base_goals = [g for g in goals[:6]]
+        goal_skeleton = [{"type": g.get("type"), "title": g.get("title")} for g in base_goals]
+        chart_patterns = extract_chart_patterns(base_goals, field_profiles)
+
+        candidate = {
+            "name": f"{(theme or '通用')}分析模板候选",
+            "description": f"由 S2 提议（theme={theme}, {len(base_goals)} 个目标），待人工审核后入库",
+            "match_features": mf,
+            "base_goals": base_goals,
+            "goal_skeleton": goal_skeleton,
+            # A4-1：最小复用单元下沉到图表级套路
+            "chart_patterns": chart_patterns,
+            "pattern_count": len(chart_patterns),
+            # A4-2：溯源证据（谁在什么时候从哪来）
+            "evidence": evidence or {
+                "theme": theme,
+                "field_count": len(fields or []),
+                "goals_count": len(goals),
+                "source_stage": "S2",
+            },
+            "quality_gate": quality_gate or {},
+            "approved": False,
+            "source": "ai",
+            # A4-3：审核状态机（pending → approved/rejected）
+            "status": "pending_review",
+            "persisted": False,
+        }
+
+        # A4-5：默认不落库；除非显式开关/入池标记打开（入池 = 进审核池待人工审核，仍不自动批准）
+        enabled = bool(auto_persist) or bool(persist_to_pool) or await _auto_propose_enabled(db)
+        if not enabled:
+            print(f"[S2] 模板候选已提议（未入库，待人工审核）："
+                  f"{candidate['name']} / {candidate['pattern_count']} 个图表套路")
+            return candidate
+
+        # A4-2：质量门禁——未过护栏/评分不达标，不许沉淀（宁缺毋滥）
+        gate = quality_gate or {}
+        if not gate.get("passed", False):
+            print(f"[S2] 模板候选未通过质量门禁，拒绝沉淀: {gate}")
+            return None
 
         # 去重：同 match_features 签名（任意来源）已存在则跳过
         from sqlalchemy import select as _select
         existing = (await db.execute(_select(AnalysisTemplate))).scalars().all()
+        sig = json.dumps(mf, sort_keys=True, ensure_ascii=False)
         for t in existing:
             tf = t.match_features
             if isinstance(tf, str):
@@ -609,20 +739,40 @@ async def propose_template_candidate(
             if json.dumps(tf, sort_keys=True, ensure_ascii=False) == sig:
                 return None
 
-        base_goals = [g for g in goals[:6]]
-        goal_skeleton = [{"type": g.get("type"), "title": g.get("title")} for g in base_goals]
+        # A4-②/③：落库为待审核候选（approved=False + status=pending_review）
+        #           并同步 chart_patterns 到独立表 chart_pattern（每条套路一条记录）
         tpl = AnalysisTemplate(
-            name=f"{(theme or '通用')}分析模板候选",
-            description=f"由 S2 自动沉淀（theme={theme}, {len(base_goals)} 个目标，待确认）",
+            name=candidate["name"],
+            description=candidate["description"],
             match_features=mf,
             base_goals=base_goals,
             goal_skeleton=goal_skeleton,
+            chart_patterns=chart_patterns,
             approved=False,
+            status="pending_review",
             source="ai",
         )
         db.add(tpl)
+        await db.flush()  # 取 tpl.id 供 chart_pattern.template_id 关联
+        _evi = candidate["evidence"]
+        for p in (chart_patterns or []):
+            db.add(ChartPattern(
+                template_id=tpl.id,
+                source="ai",
+                chart_type=p.get("chart_type"),
+                role_hint=p.get("role_hint"),
+                aggregation=p.get("aggregation"),
+                title_hint=p.get("title_hint"),
+                expected_field_count=p.get("expected_field_count", 1),
+                source_goal_type=(p.get("source_goal") or {}).get("type"),
+                evidence=_evi,
+                approved=False,
+                status="pending_review",
+            ))
         await db.commit()
-        print(f"[S2] 模板沉淀候选已写入（source=ai, approved=False）：{tpl.name}")
+        await db.refresh(tpl)
+        print(f"[S2] 模板候选已入审核池（source=ai, status=pending_review, "
+              f"{len(chart_patterns)} 个图表套路）：{tpl.name}")
         return tpl.to_dict()
     except Exception as e:
         print(f"[S2] 模板沉淀异常(忽略): {e}")

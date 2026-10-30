@@ -14,12 +14,46 @@ LIDA 四阶段骨架（night50 任务2：Self-Evaluation + Self-Repair）
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Dict, List, Optional
 
 from app.core.brain_modules.s4_orchestrator import (
     S5ScoreCard,
     grade_s5_disposal,
+    decide_pass,
+    DEFAULT_SCORE_WEIGHTS,
 )
+
+
+# H7（v4 阶段1）：自评 prompt 外置到 prompts/lida_self_eval.md，支持大脑配置覆盖、文件缺失时回退内联默认。
+_PROMPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts", "lida_self_eval.md")
+_DEFAULT_SELF_EVAL_PROMPT = (
+    "你是资深数据看板评审。请基于主题与目标，从五个维度评估这组图表构成的数据看板：\n"
+    "coverage(覆盖度:是否覆盖KPI/趋势/对比/分布)、narrative(叙事性:结论→佐证→明细结构)、"
+    "redundancy(去冗余:是否重复)、accuracy(数据准确性:字段/聚合/口径是否合理)、"
+    "readability(可读性:标题/数量/KPI数)。\n"
+    "主题：{theme}\n目标：\n{goals}\n当前图表：\n{charts}\n"
+    '只输出 JSON：{"dims": {"coverage":<0-100>, "narrative":<0-100>, "redundancy":<0-100>, '
+    '"accuracy":<0-100>, "readability":<0-100>}, "critique": "<改进点>"}'
+)
+
+
+def load_lida_self_eval_prompt(theme_tag: str, goals_desc: str, chart_desc: str) -> str:
+    """加载 LIDA 自评 prompt：优先读外部文件，缺失/异常时回退内联默认。
+
+    模板占位符：<<THEME>> / <<GOALS>> / <<CHARTS>>（避免在 .md 内写花括号 JSON 与 str.format 冲突）。
+    """
+    try:
+        with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
+            tpl = f.read()
+    except Exception:
+        tpl = _DEFAULT_SELF_EVAL_PROMPT
+        return tpl.replace("{theme}", str(theme_tag)).replace("{goals}", str(goals_desc)).replace("{charts}", str(chart_desc))
+    return (
+        tpl.replace("<<THEME>>", str(theme_tag))
+        .replace("<<GOALS>>", str(goals_desc))
+        .replace("<<CHARTS>>", str(chart_desc))
+    )
 
 
 class LIDAPipeline:
@@ -104,18 +138,21 @@ class LIDAPipeline:
             "chart_count": len(charts), "reused": charts is not None,
         })
 
-        # ── Phase 3: Self-Evaluation（LLM 自评 0-100 + critique）──
+        # ── Phase 3: Self-Evaluation（A3 五维 + pass）──
         critique = await self._self_evaluate(db, theme_tag, goals, charts, llm_offline)
         result["self_eval"] = critique
         result["stages"].append({
             "phase": 3, "name": "Self-Evaluation", "status": "ok",
-            "score": critique.get("score"), "source": critique.get("source"),
+            "score": critique.get("score"), "overall": critique.get("overall"),
+            "pass": critique.get("pass"), "dims": critique.get("dims"),
+            "source": critique.get("source"),
             "critique": critique.get("critique"),
         })
 
-        # ── Phase 4: Self-Repair（自评<70 据 critique 重生成≤2次）──
+        # ── Phase 4: Self-Repair（pass=False 时据 critique 重生成≤2次）──
+        # A3：触发条件由原始 LLM 分改为 decide_pass 综合判定，避免"分高但数据错"漏修。
         repair_rounds = 0
-        while critique.get("score", 100) < 70 and repair_rounds < 2:
+        while not critique.get("pass", False) and repair_rounds < 2:
             repair_rounds += 1
             from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
             engine = S3ChartEngine(derived_metrics=self.derived_metrics)
@@ -133,12 +170,16 @@ class LIDAPipeline:
             critique = await self._self_evaluate(db, theme_tag, goals, repaired, llm_offline)
             result["stages"].append({
                 "phase": 4, "name": "Self-Repair", "round": repair_rounds, "status": "ok",
-                "score": critique.get("score"), "source": critique.get("source"),
+                "score": critique.get("score"), "overall": critique.get("overall"),
+                "pass": critique.get("pass"), "dims": critique.get("dims"),
+                "source": critique.get("source"),
                 "critique": critique.get("critique"),
             })
         result["self_repair"] = {
             "rounds": repair_rounds,
             "final_score": critique.get("score"),
+            "final_overall": critique.get("overall"),
+            "final_pass": critique.get("pass"),
             "final_source": critique.get("source"),
         }
         return result
@@ -147,43 +188,68 @@ class LIDAPipeline:
         self, db, theme_tag: str, goals: List[Dict[str, Any]], charts: List[Dict[str, Any]],
         llm_offline: bool,
     ) -> Dict[str, Any]:
-        """LLM 自评看板质量 0-100 + critique；llm_offline 或失败则 S5ScoreCard 规则兜底。"""
-        if not llm_offline:
-            try:
-                from app.core.llm_gateway import llm_chat
-                chart_desc = "\n".join(
-                    f"- [{c.get('chart_type')}] {c.get('title')}" for c in charts[:8]
-                )
-                goals_desc = "\n".join(f"- {g.get('goal', '')}" for g in goals[:5]) or "无"
-                prompt = (
-                    "你是资深数据看板评审。请基于主题与目标评估下面这组图表构成的数据看板的质量，\n"
-                    "给出 0-100 的评分（覆盖度/叙事性/是否存在冗余），并指出主要改进点。\n"
-                    f"主题：{theme_tag}\n目标：\n{goals_desc}\n当前图表：\n{chart_desc}\n"
-                    '只输出 JSON：{"score": <int 0-100>, "critique": "<改进点>"}'
-                )
-                resp = await llm_chat(prompt=prompt, json_mode=True, user_id="lida_self_eval", timeout=30)
-                rj = getattr(resp, "response_json", None)
-                if rj and isinstance(rj, dict):
-                    sc = rj.get("score")
-                    if isinstance(sc, (int, float)):
-                        return {
-                            "score": float(sc),
-                            "critique": str(rj.get("critique", "")),
-                            "source": "llm",
-                        }
-            except Exception as e:
-                print(f"[LIDA] 自评 LLM 失败(规则兜底): {e}")
-        return self._rule_self_eval(charts)
+        """
+        A3 多维自评（五维：coverage/narrative/redundancy/accuracy/readability）+ pass 解耦 LLM 分。
+
+        H4（PRD §7.3 规则校验前置）：先跑规则自评（毫秒级、离线安全）作为硬门禁；
+        仅当规则判定通过时，再调用 LLM 做精修（带 ≤10s 超时兜底），且 LLM 不得推翻规则门禁
+        （pass 沿用规则判定，避免「分高但数据错」被 LLM 低分放行，反之亦然）。
+        H7：自评 prompt 已外置 prompts/lida_self_eval.md。
+        """
+        weights = dict(DEFAULT_SCORE_WEIGHTS)
+
+        # 1) 规则自评先行（权威门禁，离线安全）
+        rule_res = self._rule_self_eval(charts)
+        if llm_offline or not rule_res.get("pass", False):
+            # 规则已拦下违规，或离线：规则结果即最终门禁，跳过 LLM。
+            return rule_res
+
+        # 2) 规则通过 → LLM 精修 critique / dims（短超时，失败回退规则）
+        try:
+            from app.core.llm_gateway import llm_chat
+            from app.core.brain_modules.threshold_config import DEFAULT_THRESHOLDS
+            chart_desc = "\n".join(
+                f"- [{c.get('chart_type')}] {c.get('title')}" for c in charts[:8]
+            )
+            goals_desc = "\n".join(f"- {g.get('goal', '')}" for g in goals[:5]) or "无"
+            prompt = load_lida_self_eval_prompt(theme_tag, goals_desc, chart_desc)
+            timeout = int(DEFAULT_THRESHOLDS.get("r4_llm_refine_timeout", 10))
+            resp = await llm_chat(prompt=prompt, json_mode=True, user_id="lida_self_eval", timeout=timeout)
+            rj = getattr(resp, "response_json", None)
+            if rj and isinstance(rj, dict):
+                dims = rj.get("dims")
+                if isinstance(dims, dict) and all(k in dims for k in weights):
+                    vals = {k: float(dims.get(k, 0)) for k in weights}
+                    overall = sum(vals[k] * weights[k] for k in weights)
+                    # 规则门禁不可被 LLM 推翻：pass 沿用规则判定
+                    return {
+                        "score": overall,            # 兼容旧字段
+                        "overall": overall,
+                        "dims": vals,
+                        "pass": rule_res["pass"],
+                        "critique": str(rj.get("critique", "")) or rule_res.get("critique", ""),
+                        "source": "llm_refined",
+                    }
+        except Exception as e:
+            print(f"[LIDA] 自评 LLM 精修失败(回退规则): {e}")
+        return rule_res
 
     @staticmethod
     def _rule_self_eval(charts: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """规则兜底自评：用 S5 评分卡近似 LLM 自评，保证不崩。"""
+        """规则兜底自评：S5ScoreCard 五维评分，结构同 LLM 路径。"""
         try:
-            sc = S5ScoreCard().score_dashboard(charts)
+            card = S5ScoreCard()
+            sc = card.score_dashboard(charts)
+            dims = sc.dimension_scores
+            overall = sc.overall_score
             return {
-                "score": sc.overall_score,
+                "score": overall,
+                "overall": overall,
+                "dims": dims,
+                "pass": decide_pass(dims, DEFAULT_SCORE_WEIGHTS, card.pass_threshold, {"accuracy": 50.0}),
                 "critique": "；".join(sc.improvement_suggestions) or "规则兜底自评",
                 "source": "rule",
             }
         except Exception:
-            return {"score": 60.0, "critique": "自评不可用(LLM与规则均失败)，默认放行", "source": "default"}
+            return {"score": 60.0, "overall": 60.0, "dims": {}, "pass": True,
+                    "critique": "自评不可用(LLM与规则均失败)，默认放行", "source": "default"}

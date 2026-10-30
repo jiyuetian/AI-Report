@@ -503,10 +503,19 @@ class S3LLMEnhancer:
             error_section=error_section,
             derived_rule=derived_rule,
         )
-        # 全局护栏：Prompt 中心「system（全局系统提示）」+「accuracy（数据准确性红线）」作为前缀，始终生效
-        # 管理员在管理中心编辑这两块即可实时影响图表生成遵守的红线，无需重启
-        global_guard = load_prompt("system", "你是一名资深 BI 数据分析师。") \
+        # 全局护栏：Prompt 中心「system（全局系统提示）」+「accuracy（数据准确性红线）」
+        # +「产品风格护栏（ui_style / icon_arrangement / industry_metrics）」作为前缀，始终生效。
+        # 管理员在管理中心编辑这几块即可实时影响图表生成遵守的红线与产品风格，无需重启。
+        global_guard = (
+            load_prompt("system", "你是一名资深 BI 数据分析师。")
             + "\n\n" + load_prompt("accuracy", "所有字段必须来自给定字段列表，严禁臆造。")
+            + "\n\n【产品视觉风格护栏】\n"
+            + load_prompt("ui_style", "产品视觉风格规范：红涨绿跌、风险三档色（红>橙>黄）、AntD 风格、标题直接说明内容禁用大屏式前缀、金额按万/亿单位。")
+            + "\n\n【图标与图例编排护栏】\n"
+            + load_prompt("icon_arrangement", "KPI 配图标需语义明确；趋势用↑/↓箭头；风险用红>橙>黄三档，禁用灰阶表达风险；图例与分类取值一一对应。")
+            + "\n\n【行业指标处理护栏】\n"
+            + load_prompt("industry_metrics", "风控指标用逾期率/不良率/代偿率等标准口径（分子分母同源同期）；财务看收支结构；通用指标明确环比/同比口径与单位换算；比率类禁 sum，只能 avg。")
+        )
 
         # night37-B1：注入「数据事实包」——让 LLM 基于真实分布/趋势/相关性选图与写理由，
         # 而非仅看字段名。表中无数据/构建失败则静默跳过（回退现状，不阻断生成）。
@@ -766,6 +775,7 @@ async def select_charts_from_candidates(
     derived_metrics: Optional[Dict[str, Any]] = None,
     field_profiles: Optional[List[Dict[str, Any]]] = None,
     table_name: Optional[str] = None,
+    flywheel_context: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """阶段2 子任务1：LLM 从规则引擎产出的候选池里「选 + 增强 + 重排」。
 
@@ -785,6 +795,12 @@ async def select_charts_from_candidates(
         )
     cand_text = "\n".join(cand_lines)
 
+    # 飞轮闭环（#653 基础）：把历史经验（被采纳/被改决策）作为软偏好注入 LLM 选图，
+    # 不覆盖硬约束（候选池外禁臆造等），仅作参考提示。
+    flywheel_block = ""
+    if flywheel_context:
+        flywheel_block = f"\n【历史经验提示（飞轮，仅供参考，不覆盖硬约束）】{flywheel_context}\n"
+
     prompt = f"""你是 BI 图表架构师。规则引擎已为数据集生成候选图表池，请从池中选出 5-8 张最优图表，
 并允许增强（仅可改 title/config，不可改 chart_type 与字段），最后按「总规模→趋势→对比→分布→其他→风险」重排。
 
@@ -794,7 +810,7 @@ async def select_charts_from_candidates(
 
 【候选图表池】
 {cand_text}
-
+{flywheel_block}
 【要求】
 1. 只从候选池中选择，不得新增候选池外的新图（严禁臆造字段）。
 2. 选 5-8 张，覆盖不同分析维度，优先保证「总规模 KPI」「时间趋势」「风险分布」都在。

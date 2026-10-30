@@ -16,7 +16,8 @@ from app.core.prompt_loader import _read_prompt_file
 # --------------------------------------------------------------------------
 # 板块元数据：按「基础→治理→分析→表达→安全」分层（参考《Prompt 中心策略手册》），
 # key = 对应 prompts/*.md 的文件前缀（即 load_prompt 的 slug），与真实数据加工步骤一一对应。
-# 所有板块均有对应提示词文件且被 AI 节点消费（system/accuracy 作为全局护栏注入 S3 图表生成）。
+# 所有板块均有对应提示词文件且被 AI 节点消费（system/accuracy/ui_style/icon_arrangement/industry_metrics
+# 作为全局护栏注入 S3 图表生成；后三者为「产品风格护栏」，对应个人中心「看板风格/图标标注/行业口径」设置）。
 # --------------------------------------------------------------------------
 PROMPT_GROUPS: list = [
     # ── 层1 基础 · 始终生效（全局护栏，最高优先级） ──
@@ -69,6 +70,40 @@ PROMPT_GROUPS: list = [
         "title": "图表生成 · 规则补充",
         "category": "分析 · S3",
         "description": "S3：对多分类/多指标场景做规则化补充，确保图表均匀分布、避免拥挤在一对维度上。",
+    },
+    # ── 层3.5 表达 · 产品风格（全局护栏，与 system/accuracy 同级注入 S3） ──
+    {
+        "key": "ui_style",
+        "title": "产品视觉风格护栏",
+        "category": "表达 · 产品风格 · 全局护栏",
+        "description": "约束 AI 生成看板/图表/卡片的视觉表达：红涨绿跌、风险三档色、AntD 风格、标题直述禁用大屏式前缀、金额按万/亿单位。",
+        "purpose": "让 AI 产出契合中国商务与公司风格的前端表达，避免通用化/大屏化。",
+        "bound_step": "S3(图表生成)/表达层",
+        "version": "1.0",
+        "owner": "ai-report-agent",
+        "last_reviewed": "2026-10-26",
+    },
+    {
+        "key": "icon_arrangement",
+        "title": "图标与图例编排护栏",
+        "category": "表达 · 产品风格 · 全局护栏",
+        "description": "规范 KPI 图标语义、趋势箭头（↑/↓ 与红涨绿跌）、图例一一对应、风险用色三档（红>橙>黄），禁用灰阶表达风险。",
+        "purpose": "让 AI 选用语义明确、克制一致的图标与图例，不喧宾夺主。",
+        "bound_step": "S3(图表生成)/表达层",
+        "version": "1.0",
+        "owner": "ai-report-agent",
+        "last_reviewed": "2026-10-26",
+    },
+    {
+        "key": "industry_metrics",
+        "title": "行业指标处理护栏",
+        "category": "表达 · 产品风格 · 全局护栏",
+        "description": "行业指标口径与处理注意点（风控逾期率/不良率/代偿率、财务收支结构、通用环比/同比与单位换算），避免口径错配与比率误聚合。",
+        "purpose": "让 AI 在选指标/写标题/做聚合时遵守行业口径与单位规范，杜绝臆造分母分子。",
+        "bound_step": "S2(目标)/S3(图表生成)",
+        "version": "1.0",
+        "owner": "ai-report-agent",
+        "last_reviewed": "2026-10-26",
     },
     # ── 层4 表达 · 对话交互 ──
     {

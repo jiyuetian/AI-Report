@@ -21,6 +21,7 @@ class AiActionLog(Base):
     session_id = Column(String(64), nullable=True, index=True, comment="会话ID")
     dashboard_id = Column(String(64), nullable=True, index=True, comment="看板ID")
     user_id = Column(String(64), nullable=True, index=True, comment="用户ID")
+    run_id = Column(String(64), nullable=True, index=True, comment="关联 brain.run_id，按运行追溯三级留痕")
     intent = Column(String(64), nullable=True, index=True, comment="意图分类")
     action_type = Column(String(32), nullable=True, index=True, comment="动作类型")
     params_summary = Column(JSON, nullable=True, comment="参数摘要(JSON)")
@@ -28,3 +29,21 @@ class AiActionLog(Base):
     error_msg = Column(Text, nullable=True, comment="失败/拒绝原因")
     llm_layer = Column(String(32), nullable=True, comment="命中第几层模型")
     latency_ms = Column(Integer, nullable=True, comment="耗时毫秒")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "dashboard_id": self.dashboard_id,
+            "user_id": self.user_id,
+            "run_id": self.run_id,
+            "intent": self.intent,
+            "action_type": self.action_type,
+            "params_summary": self.params_summary,
+            "result_status": self.result_status,
+            "error_msg": self.error_msg,
+            "llm_layer": self.llm_layer,
+            "latency_ms": self.latency_ms,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

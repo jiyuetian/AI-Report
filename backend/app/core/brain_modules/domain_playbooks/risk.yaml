@@ -1,0 +1,62 @@
+# 领域分析范式 · 风控 / 担保 / 信贷
+# 白盒可扩展：专家可直接编辑本文件，新增领域 = 加一个 <domain>.yaml，无需改码。
+# 这是"离线专业分析师"的 K1 行业成熟建议库（见《白盒规则说明》§2.5）。
+domain: risk
+display_name: 风控 / 担保 / 信贷
+description: 住房担保、信贷、代偿、不良等风险类数据集的成熟分析范式
+
+must_have_metrics:
+  - key: 在保余额
+    kind: sum
+    keywords: [余额, 在保, 敞口, 担保额, 本金, balance, exposure]
+  - key: 逾期率
+    kind: derived_rate
+    numerator_keywords: [逾期, 违约, overdue]
+    denominator_keywords: [在保, 余额, 笔数, 总额]
+    benchmark: 0.05
+  - key: 不良率
+    kind: derived_rate
+    numerator_keywords: [不良, 坏账, 核销, npl]
+    denominator_keywords: [在保, 余额, 笔数]
+    benchmark: 0.03
+  - key: 代偿金额
+    kind: sum
+    keywords: [代偿, 赔付, 补偿]
+
+narrative:
+  - 结论预警
+  - 趋势
+  - 对比
+  - 分布
+  - 明细
+
+anomaly_rules:
+  - metric: 逾期率
+    op: ">"
+    threshold: 0.05
+    action: 预警
+    message: 逾期率突破 5% 警戒线
+  - metric: 不良率
+    op: ">"
+    threshold: 0.03
+    action: 预警
+    message: 不良率突破 3% 警戒线
+  - metric: 单渠道占比
+    op: ">"
+    threshold: 0.4
+    action: 关注
+    message: 单一渠道占比过高，存在集中度风险
+
+insight_patterns:
+  - top_contributor
+  - mom_yoy_delta
+  - threshold_breach
+
+benchmark:
+  逾期率: 0.05
+  不良率: 0.03
+
+chart_recommendations:
+  趋势: [在保余额, 逾期率]
+  对比: [各渠道逾期率, 各产品不良率]
+  分布: [区域/行业分布, 期限分布]

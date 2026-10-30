@@ -93,6 +93,14 @@ class BaseMetric:
                 "name": self.name_zh,
                 "error": f"计算「{self.name_zh}」结果非法（None/NaN/Inf），无法返回",
             }
+        # 口径约定（P1-1 修复单位双轨）：
+        #   - 比率类(aggregation="ratio")：`value` 一律为「百分比数值（已×100，如 25.0）」，
+        #     与 `unit="%"` 拼出 "25.0%" 是正确的人类可读展示；
+        #     `ratio` 为同一口径的「小数（0~1，如 0.25）」，供需要小数契约的下游（如前端
+        #     metricFormat 约定比率以小数传入再 ×100）使用。**二者不可再被重复 ×100**。
+        #   - 非比率类：`value` 为原值，`ratio` 为 None。
+        # 统一展示请走 `format_metric_value(result)`，禁止各处自拼 `value+unit`。
+        is_pct = self.aggregation == "ratio"
         return {
             "success": True,
             "metric": self.key,
@@ -100,6 +108,8 @@ class BaseMetric:
             "category": self.category,
             "value": round(val, 2),
             "raw_value": val,
+            "ratio": round(val / 100.0, 6) if is_pct else None,
+            "value_is_percentage": is_pct,
             "unit": self.unit,
             "formula": self.formula_zh,
             "formula_expr": self.formula_expr,
@@ -138,6 +148,39 @@ class BaseMetric:
 
 def _is_finite(x: float) -> bool:
     return x == x and x not in (float("inf"), float("-inf"))
+
+
+def format_metric_value(result: Dict[str, Any]) -> str:
+    """统一展示格式化（P1-1 单一真相源）。
+
+    规则：
+    - 失败结果返回 error 文案；
+    - 比率类：无论传入 value(百分点) 还是 ratio(小数)，都统一渲染为 "xx.xx%"；
+    - 金额/计数类：千分位 + 单位（如 "1,200.00 元"）。
+
+    任何需要把指标值呈现给用户的代码都必须走这里，禁止 `str(value)+unit` 自拼，
+    以根除「内部存小数 / 展示再×100」双轨导致的 100 倍误差。
+    """
+    if not isinstance(result, dict):
+        return ""
+    if not result.get("success"):
+        return result.get("error", "计算失败")
+    unit = result.get("unit", "")
+    val = result.get("value")
+    if val is None:
+        return result.get("error", "")
+    if result.get("value_is_percentage"):
+        # 统一按小数口径渲染百分比，避免重复 ×100
+        ratio = result.get("ratio")
+        pct = (ratio * 100.0) if ratio is not None else float(val)
+        return f"{pct:.2f}%"
+    # 非比率：千分位 + 单位（单位与数字间留一空格，避免 "5,000.00元" 粘连）
+    try:
+        num = float(val)
+        num_str = f"{num:,.2f}"
+    except (TypeError, ValueError):
+        num_str = str(val)
+    return f"{num_str} {unit}".rstrip()
 
 
 # =========================================================================
@@ -489,6 +532,8 @@ class MetricRegistry:
     def __init__(self):
         self._metrics: Dict[str, BaseMetric] = {}
         self._alias_map: Dict[str, str] = {}   # 小写别名/键 → 规范 key
+        self._field_alias_index: Dict[str, List[str]] = {}  # 小写别名 → [规范字段名]
+        self._alias_conflicts: List[Dict[str, Any]] = []     # P1-2：别名误匹配风险登记
         for _m in (
             ROIMetric(), ROEMetric(), GrossMarginMetric(), NetMarginMetric(), EbitdaMarginMetric(),
             NonPerformingRateMetric(), ProvisionCoverageMetric(), CapitalAdequacyMetric(), LiquidityRatioMetric(),
@@ -500,10 +545,46 @@ class MetricRegistry:
             self._alias_map[_m.name_zh.lower()] = _m.key
             for _f in _m.required_fields:
                 self._alias_map[_f.lower()] = _m.key
+                self._field_alias_index.setdefault(_f.lower(), []).append(_f)
             for _al in _m.field_aliases.values():
                 for _a in _al:
-                    self._alias_map[_a.lower()] = _m.key
+                    la = _a.lower()
+                    self._alias_map[la] = _m.key
+                    # 同一别名若被多个「不同规范字段」占用，且指向不同指标 → 误匹配风险
+                    self._field_alias_index.setdefault(la, [])
+                    if la not in [x.lower() for x in _m.field_aliases.get(_f, [])]:
+                        pass
+            # 记录「别名 → 该指标内哪些规范字段共享此别名」
+            for _f, _als in _m.field_aliases.items():
+                for _a in _als:
+                    la = _a.lower()
+                    self._field_alias_index.setdefault(la, [])
+                    if _f not in self._field_alias_index[la]:
+                        self._field_alias_index[la].append(_f)
+        # 跨指标别名冲突检测：同一别名被 ≥2 个「不同规范字段」占用（且分属不同指标）时告警。
+        # 注意：同一规范字段（如 revenue）被多个指标共用同一别名（如「收入」）属正常复用，不算冲突。
+        for _la, _fields in self._field_alias_index.items():
+            _distinct = sorted(set(_fields))
+            if len(_distinct) < 2:
+                continue
+            _owners = set()
+            for _m in self._metrics.values():
+                for _f in _m.required_fields:
+                    if _f in _distinct:
+                        _owners.add(_m.key)
+            if len(_owners) >= 2:
+                self._alias_conflicts.append({
+                    "alias": _la,
+                    "fields": _distinct,
+                    "owner_metrics": sorted(_owners),
+                    "note": "同一字段别名被多个指标的不同规范字段复用，数据含混时可能错配；"
+                            "调用方需显式传规范字段名（如 revenue/cost）而非别名。",
+                })
         self._cache: Dict[str, Any] = {}
+
+    def list_conflicts(self) -> List[Dict[str, Any]]:
+        """返回别名误匹配风险清单（P1-2 验收用）。"""
+        return self._alias_conflicts
 
     # ---- 解析 ----
     def resolve_key(self, name: str) -> Optional[str]:

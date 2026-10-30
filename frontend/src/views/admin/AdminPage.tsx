@@ -809,6 +809,117 @@ const TemplatesTab: React.FC = () => {
   );
 };
 
+// A4-① 候选审核池 Tab：AI 提议 / 用户手存 / 专家沉淀 走同一审核流（pending_review → approved/rejected）
+const ReviewPoolTab: React.FC = () => {
+  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<any[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string>('pending_review');
+  const [sourceFilter, setSourceFilter] = useState<string>('');
+  const [acting, setActing] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (statusFilter) params.set('status', statusFilter);
+    if (sourceFilter) params.set('source', sourceFilter);
+    http.get<any>(`/admin/review-pool?${params.toString()}`)
+      .then((d) => setItems(d.proposals || []))
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  }, [statusFilter, sourceFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const decide = async (id: string, action: 'approve' | 'reject') => {
+    setActing(id);
+    try {
+      await http.post(`/admin/review-pool/${id}/${action}`);
+      message.success(action === 'approve' ? '已通过并生效（含图表套路）' : '已驳回');
+      load();
+    } catch (err: any) {
+      message.error(`操作失败: ${err?.message || '网络错误'}`);
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const rejectWithConfirm = (t: any) => {
+    Modal.confirm({
+      title: '确认驳回该候选？',
+      content: `将把「${t.name}」及其图表套路标记为 rejected，不再参与套用。`,
+      okText: '驳回', okType: 'danger',
+      onOk: () => decide(t.id, 'reject'),
+    });
+  };
+
+  return (
+    <Card>
+      <Alert type="info" showIcon style={{ marginBottom: 12 }}
+        message="候选审核池：AI 提议 / 用户存为模板 / 专家沉淀 走同一审核流。逐项查看图表级套路与证据后通过或驳回，通过后方可被命中套用。" />
+      <div className="tab-toolbar">
+        <span>状态：</span>
+        <Select value={statusFilter} onChange={setStatusFilter} style={{ width: 150 }}
+          options={[
+            { value: 'pending_review', label: '待审核' },
+            { value: 'approved', label: '已通过' },
+            { value: 'rejected', label: '已驳回' },
+            { value: '', label: '全部' },
+          ]} />
+        <span style={{ marginLeft: 12 }}>来源：</span>
+        <Select value={sourceFilter} onChange={setSourceFilter} allowClear placeholder="全部来源" style={{ width: 150 }}
+          options={[
+            { value: 'ai', label: 'AI 提议' },
+            { value: 'user', label: '用户模板' },
+            { value: 'expert', label: '专家沉淀' },
+          ]} />
+        <Button icon={<ReloadOutlined />} onClick={load} style={{ marginLeft: 12 }}>刷新</Button>
+      </div>
+      {loading ? <Spin tip="加载审核池..." /> : (
+        items.length === 0 ? <Empty description="暂无候选" />
+          : <List
+              dataSource={items}
+              renderItem={(t: any) => (
+                <List.Item>
+                  <Card size="small" style={{ width: '100%' }}
+                    title={
+                      <span>
+                        {t.name}{' '}
+                        <Tag color={t.source === 'ai' ? 'purple' : t.source === 'expert' ? 'gold' : 'cyan'}>{t.source}</Tag>
+                        <Tag color={t.status === 'approved' ? 'green' : t.status === 'rejected' ? 'red' : 'orange'}>{t.status}</Tag>
+                        {t.reviewer && <span style={{ fontSize: 12, color: '#888' }}>（{t.status === 'rejected' ? '驳回' : '审核'}人：{t.reviewer}）</span>}
+                      </span>
+                    }
+                    extra={<span style={{ fontSize: 12, color: '#888' }}>{(t.patterns?.length || t.chart_patterns?.length || 0)} 个图表套路</span>}>
+                    <p style={{ color: '#666', fontSize: 13 }}>{t.description || '-'}</p>
+                    {(t.chart_patterns?.length > 0) && (
+                      <Table
+                        size="small" pagination={false}
+                        dataSource={t.chart_patterns}
+                        rowKey={(_: any, i: number) => String(i)}
+                        columns={[
+                          { title: '图表类型', dataIndex: 'chart_type', key: 'chart_type', render: (v: string) => v || '-' },
+                          { title: '角色', dataIndex: 'role_hint', key: 'role_hint', render: (v: string) => v || '-' },
+                          { title: '聚合', dataIndex: 'aggregation', key: 'aggregation', render: (v: string) => v || '-' },
+                          { title: '标题提示', dataIndex: 'title_hint', key: 'title_hint', ellipsis: true, render: (v: string) => v || '-' },
+                          { title: '来源目标', key: 'sg', render: (_: any, p: any) => (p.source_goal?.type || p.source_goal?.title || '-') },
+                        ]}
+                      />
+                    )}
+                    {t.status === 'pending_review' && (
+                      <div style={{ marginTop: 10 }}>
+                        <Button size="small" type="primary" loading={acting === t.id} onClick={() => decide(t.id, 'approve')} style={{ marginRight: 8 }}>通过</Button>
+                        <Button size="small" danger disabled={acting === t.id} onClick={() => rejectWithConfirm(t)}>驳回</Button>
+                      </div>
+                    )}
+                  </Card>
+                </List.Item>
+              )}
+            />
+      )}
+    </Card>
+  );
+};
+
 // 主页面
 const VALID_TAB_KEYS = ['overview','users','roles','quota','audit','prompts','templates','settings','ai-log','metrics','recalc','usage-stats','e2e'];
 
@@ -837,6 +948,7 @@ const AdminPage: React.FC = () => {
           { key: 'audit', label: <span><FileTextOutlined /> 审计</span>, children: <AuditTab /> },
           { key: 'prompts', label: <span><ThunderboltOutlined /> Prompt 中心</span>, children: <PromptCenter /> },
           { key: 'templates', label: <span><ProfileOutlined /> 分析模板</span>, children: <TemplatesTab /> },
+          { key: 'review-pool', label: <span><CheckCircleOutlined /> 候选审核池</span>, children: <ReviewPoolTab /> },
           { key: 'settings', label: <span><SettingOutlined /> 设置</span>, children: <SettingsTab /> },
           { key: 'ai-log', label: <span><FileSearchOutlined /> AI 操作日志</span>, children: <AiLogPage /> },
           { key: 'metrics', label: <span><BarChartOutlined /> 派生指标</span>, children: <MetricPage /> },

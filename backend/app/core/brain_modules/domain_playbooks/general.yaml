@@ -1,0 +1,40 @@
+# 领域分析范式 · 通用（兜底）
+# 白盒可扩展：无明确行业标签时按字段类型自动选核心指标。
+domain: general
+display_name: 通用
+description: 无明确行业标签时的兜底范式，按字段类型自动选核心指标
+
+must_have_metrics:
+  - key: 核心总量
+    kind: auto_sum
+    keywords: [数量, 金额, 总额, 总数, count, amount, total]
+  - key: 均值
+    kind: auto_mean
+    keywords: [得分, 价格, 时长, 平均值, avg, score]
+
+narrative:
+  - 概览
+  - 趋势
+  - 对比
+  - 分布
+  - 明细
+
+anomaly_rules:
+  - metric: 离群值
+    op: ">"
+    threshold: 3
+    unit: sigma
+    action: 关注
+    message: 存在超过 3 倍标准差的离群值
+
+insight_patterns:
+  - top_contributor
+  - mom_yoy_delta
+  - threshold_breach
+
+benchmark: {}
+
+chart_recommendations:
+  趋势: [核心指标随时间]
+  对比: [分组对比]
+  分布: [类别分布]

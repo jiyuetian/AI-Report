@@ -1,0 +1,26 @@
+{
+  "0aa3771f-0caa-40f3-8068-aadec9ff0725::5188e1a5ea09": {
+    "domain": "0aa3771f-0caa-40f3-8068-aadec9ff0725",
+    "signature": "run:iso-run-fb312e63",
+    "decisions": {
+      "feedback:like": 2
+    },
+    "good": 2,
+    "edited": 0,
+    "count": 2,
+    "last_outcome": "good",
+    "last_seen": "2026-10-28T14:46:45"
+  },
+  "d::03c7c0ace395": {
+    "domain": "d",
+    "signature": "s",
+    "decisions": {
+      "决策A": 1
+    },
+    "good": 1,
+    "edited": 0,
+    "count": 1,
+    "last_outcome": "good",
+    "last_seen": "2026-10-28T15:53:01"
+  }
+}

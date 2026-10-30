@@ -21,7 +21,9 @@ from app.models.export import ExportTask
 from app.models.brain import BrainTraceSummary
 from pydantic import BaseModel, Field
 from app.models.analysis_template import AnalysisTemplate
-from app.core.brain_modules.s2_goal_generator import _build_dataset_profile
+from app.models.chart_pattern import ChartPattern
+from app.core.brain_modules.s2_goal_generator import _build_dataset_profile, extract_chart_patterns
+from datetime import datetime
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -231,6 +233,7 @@ class SaveTemplateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     description: str = ""
     approved: bool = False  # 用户保存默认 False（防污染，待管理后台确认）
+    source: str = "user"   # A4-③：同审核流支持 user / expert / ai（前端手存默认为 user）
 
 
 @router.post("/templates")
@@ -305,16 +308,41 @@ async def admin_create_template(
         })
         goal_skeleton.append({"type": ctype, "title": title})
 
+    # A4-①/②：图表级套路下沉 + 独立表落库
+    chart_patterns = extract_chart_patterns(base_goals, columns)
+
+    # A4-③：统一审核流——未批准的候选进入 pending_review（与 AI 提议同状态机）
+    status_val = "approved" if payload.approved else "pending_review"
+    src = payload.source if payload.source in ("user", "expert", "ai", "system") else "user"
+
     tpl = AnalysisTemplate(
         name=payload.name,
         description=payload.description or f"由看板「{dash.name}」保存（共 {len(charts)} 个图表）",
         match_features=match_features,
         base_goals=base_goals,
         goal_skeleton=goal_skeleton,
+        chart_patterns=chart_patterns,
         approved=payload.approved,
-        source="user",
+        status=status_val,
+        source=src,
     )
     db.add(tpl)
+    await db.flush()  # 取 tpl.id 供 chart_pattern 关联
+    for p in (chart_patterns or []):
+        db.add(ChartPattern(
+            template_id=tpl.id,
+            source=src,
+            chart_type=p.get("chart_type"),
+            role_hint=p.get("role_hint"),
+            aggregation=p.get("aggregation"),
+            title_hint=p.get("title_hint"),
+            expected_field_count=p.get("expected_field_count", 1),
+            source_goal_type=(p.get("source_goal") or {}).get("type"),
+            evidence={"theme": theme, "field_count": len(fields or []),
+                      "source_stage": "user_save_template"},
+            approved=payload.approved,
+            status=status_val,
+        ))
     await db.commit()
     await db.refresh(tpl)
     return {"success": True, "template": tpl.to_dict()}
@@ -351,6 +379,15 @@ async def admin_update_template(
         raise HTTPException(status_code=404, detail="模板不存在")
     if "approved" in payload and isinstance(payload["approved"], bool):
         tpl.approved = payload["approved"]
+        # A4-③：与审核状态机同步
+        if payload["approved"]:
+            tpl.status = "approved"
+            tpl.reviewer = current_user.get("username") or current_user.get("user_id")
+            tpl.reviewed_at = datetime.now()
+        else:
+            tpl.status = "pending_review"
+            tpl.reviewer = None
+            tpl.reviewed_at = None
     if "name" in payload and isinstance(payload["name"], str):
         tpl.name = payload["name"]
     if "description" in payload and isinstance(payload["description"], str):
@@ -375,3 +412,119 @@ async def admin_delete_template(
     await db.delete(tpl)
     await db.commit()
     return {"success": True}
+
+
+# ============================================================================
+# A4-①/③（2026-10-28）：候选审核池——AI 提议 / 用户存为模板 / 专家沉淀 走同一审核流
+# ============================================================================
+async def _sync_pattern_status(db, template_id, *, approved, status_val,
+                               reviewer, reviewed_at, reject_reason=None):
+    """审核后同步该模板下的图表套路（独立表 chart_pattern）状态。"""
+    res = await db.execute(
+        select(ChartPattern).where(ChartPattern.template_id == template_id)
+    )
+    for p in res.scalars().all():
+        p.approved = approved
+        p.status = status_val
+        p.reviewer = reviewer
+        p.reviewed_at = reviewed_at
+        p.reject_reason = reject_reason
+
+
+async def _audit(db, user, action, object_id, result="success", detail=None):
+    try:
+        db.add(AuditLog(
+            user=str(user), action=action, object_type="template_review",
+            object_id=str(object_id), result=result, ip="-",
+            detail_json=detail,
+        ))
+    except Exception:
+        pass  # 审计失败不阻塞主流程
+
+
+@router.get("/review-pool")
+async def admin_review_pool(
+    source: Optional[str] = Query(None, description="ai / user / expert / 空=全部"),
+    status: Optional[str] = Query("pending_review", description="pending_review/approved/rejected/空=全部"),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """候选审核池：列出待人工审核的模板提议（AI 提议 / 用户存为模板 / 专家沉淀 同源）。
+
+    返回每个候选的 chart_patterns（图表级套路）与证据，供审核人逐项查看后通过/驳回。
+    """
+    stmt = select(AnalysisTemplate).order_by(desc(AnalysisTemplate.created_at))
+    if source:
+        stmt = stmt.where(AnalysisTemplate.source == source)
+    if status:
+        stmt = stmt.where(AnalysisTemplate.status == status)
+    rows = (await db.execute(stmt)).scalars().all()
+
+    items = []
+    for t in rows:
+        d = t.to_dict()
+        # 附带该模板下的图表套路（独立表）明细
+        pres = await db.execute(
+            select(ChartPattern).where(ChartPattern.template_id == t.id)
+        )
+        d["patterns"] = [p.to_dict() for p in pres.scalars().all()]
+        items.append(d)
+    return {"total": len(items), "proposals": items}
+
+
+@router.post("/review-pool/{template_id}/approve")
+async def admin_review_approve(
+    template_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """审核通过：approved=True，状态机 → approved，同步图表套路生效。"""
+    res = await db.execute(select(AnalysisTemplate).where(AnalysisTemplate.id == template_id))
+    tpl = res.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    reviewer = current_user.get("username") or current_user.get("user_id")
+    now = datetime.now()
+    tpl.approved = True
+    tpl.status = "approved"
+    tpl.reviewer = reviewer
+    tpl.reviewed_at = now
+    await _sync_pattern_status(
+        db, tpl.id, approved=True, status_val="approved",
+        reviewer=reviewer, reviewed_at=now,
+    )
+    await _audit(db, reviewer, "review.approve", template_id,
+                 detail={"name": tpl.name, "source": tpl.source})
+    await db.commit()
+    await db.refresh(tpl)
+    return {"success": True, "template": tpl.to_dict()}
+
+
+@router.post("/review-pool/{template_id}/reject")
+async def admin_review_reject(
+    template_id: str,
+    reason: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(require_admin),
+):
+    """审核驳回：approved=False，状态机 → rejected，图表套路同步失效。"""
+    res = await db.execute(select(AnalysisTemplate).where(AnalysisTemplate.id == template_id))
+    tpl = res.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    reviewer = current_user.get("username") or current_user.get("user_id")
+    now = datetime.now()
+    tpl.approved = False
+    tpl.status = "rejected"
+    tpl.reviewer = reviewer
+    tpl.reviewed_at = now
+    tpl.reject_reason = reason
+    await _sync_pattern_status(
+        db, tpl.id, approved=False, status_val="rejected",
+        reviewer=reviewer, reviewed_at=now, reject_reason=reason,
+    )
+    await _audit(db, reviewer, "review.reject", template_id,
+                 detail={"name": tpl.name, "source": tpl.source, "reason": reason})
+    await db.commit()
+    await db.refresh(tpl)
+    return {"success": True, "template": tpl.to_dict()}

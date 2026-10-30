@@ -17,6 +17,49 @@ class ScoreDimension(Enum):
     REDUNDANCY = "redundancy"  # 冗余度
     COVERAGE = "coverage"      # 覆盖度
     NARRATIVE = "narrative"    # 叙事性
+    ACCURACY = "accuracy"      # 数据准确性（字段/聚合/口径）
+    READABILITY = "readability"  # 可读性（标题/数量/KPI 数）
+
+
+# A3（2026-10-26）：默认五维权重，和配置 score_weights 合并；缺失维度按 0 计。
+DEFAULT_SCORE_WEIGHTS = {
+    "coverage": 0.25,
+    "narrative": 0.20,
+    "redundancy": 0.20,
+    "accuracy": 0.20,
+    "readability": 0.15,
+}
+
+# 维度下限：任一维度低于该值即使总分够也判不通过（准确性最硬，防"分高但数据错"）。
+DEFAULT_DIM_MINS = {
+    "accuracy": 50.0,
+}
+
+
+def aggregate_score(dims: Dict[str, float], weights: Dict[str, float]) -> float:
+    """按权重聚合多维得分为 0-100 总分（权重和不强制为 1）。"""
+    if not weights:
+        return 0.0
+    known = {k: v for k, v in weights.items() if k in dims}
+    if not known:
+        return 0.0
+    wsum = sum(known.values())
+    if wsum <= 0:
+        return 0.0
+    return sum(dims[k] * w for k, w in known.items()) / wsum
+
+
+def decide_pass(dims: Dict[str, float], weights: Dict[str, float],
+                threshold: float, dim_mins: Dict[str, float] = None) -> bool:
+    """A3：`pass` 解耦自原始 LLM 分 —— 由【加权总分≥阈值】且【各维度≥下限】共同决定。"""
+    overall = aggregate_score(dims, weights)
+    if overall < threshold:
+        return False
+    if dim_mins:
+        for k, mn in dim_mins.items():
+            if dims.get(k, 0.0) < mn:
+                return False
+    return True
 
 
 @dataclass
@@ -89,11 +132,7 @@ class S4Orchestrator:
     }
     
     def __init__(self):
-        self.score_weights = {
-            "redundancy": 0.3,
-            "coverage": 0.4,
-            "narrative": 0.3
-        }
+        self.score_weights = dict(DEFAULT_SCORE_WEIGHTS)
         self.pass_threshold = 70
         self.max_retries = 3
     
@@ -102,7 +141,8 @@ class S4Orchestrator:
         config = await BrainConfigManager.get_config(db, "score_weights")
         if config and "content" in config:
             content = config["content"]
-            self.score_weights = content.get("weights", self.score_weights)
+            # A3：合并而非替换，避免旧 3 键配置覆盖新维度权重
+            self.score_weights = {**self.score_weights, **content.get("weights", {})}
             self.pass_threshold = content.get("pass_threshold", 70)
             self.max_retries = content.get("max_retries", 3)
     
@@ -281,23 +321,21 @@ class S4Orchestrator:
 
 class S5ScoreCard:
     """
-    S5 评分卡
+    S5 评分卡（A3 升级为五维）
     
-    评分维度：
-    1. 冗余度（30%）：图表是否重复/相似
-    2. 覆盖度（40%）：是否覆盖KPI/趋势/对比/分布
-    3. 叙事性（30%）：是否符合结论→佐证→明细结构
+    评分维度（权重读配置 score_weights，默认见 DEFAULT_SCORE_WEIGHTS）：
+    1. coverage      覆盖度：是否覆盖 KPI/趋势/对比/分布
+    2. narrative     叙事性：是否符合结论→佐证→明细结构
+    3. redundancy    去冗余：图表是否重复/相似
+    4. accuracy      数据准确性：字段/聚合/口径是否合理（可注入契约违规数）
+    5. readability   可读性：标题清晰度/图表数量适中/KPI 不超过 4
     
-    通过标准：≥70分
-    重排：不通过时最多重排3次
+    通过标准：加权总分 ≥ pass_threshold 且 各维度 ≥ 下限（decide_pass）
     """
     
     def __init__(self):
-        self.weights = {
-            "redundancy": 0.3,
-            "coverage": 0.4,
-            "narrative": 0.3
-        }
+        self.weights = dict(DEFAULT_SCORE_WEIGHTS)
+        self.dim_mins = dict(DEFAULT_DIM_MINS)
         self.pass_threshold = 70
         self.max_retries = 3
     
@@ -306,7 +344,8 @@ class S5ScoreCard:
         config = await BrainConfigManager.get_config(db, "score_weights")
         if config and "content" in config:
             content = config["content"]
-            self.weights = content.get("weights", self.weights)
+            # A3：合并而非替换，避免旧 3 键配置覆盖新维度权重
+            self.weights = {**self.weights, **content.get("weights", {})}
             self.pass_threshold = content.get("pass_threshold", 70)
             self.max_retries = content.get("max_retries", 3)
     
@@ -371,22 +410,55 @@ class S5ScoreCard:
         
         return sum(scores) / len(scores) if scores else 0.0
     
-    def score_dashboard(self, charts: List[Dict]) -> DashboardScore:
+    def calculate_accuracy_score(self, charts: List[Dict], violations: int = 0) -> float:
         """
-        看板评分
+        数据准确性维度（0-100，越高越准）。violations = 契约护栏检出的违规数；
+        无违规=100，每 1 处违规扣 25，下限 0。
         """
-        # 计算各维度分数
+        if violations <= 0:
+            return 100.0
+        return max(0.0, 100.0 - min(100.0, violations * 25.0))
+
+    def calculate_readability_score(self, charts: List[Dict]) -> float:
+        """
+        可读性维度（0-100）：标题清晰 + 图表数量适中(3-12) + KPI≤4。
+        """
+        if not charts:
+            return 0.0
+        kpi_count = sum(1 for c in charts if c.get("chart_type") == "kpi")
+        total = len(charts)
+        empty_title = sum(1 for c in charts if not str(c.get("title", "")).strip())
+        score = 100.0
+        if kpi_count > 4:
+            score -= (kpi_count - 4) * 10
+        if total < 3:
+            score -= (3 - total) * 10
+        if total > 12:
+            score -= (total - 12) * 5
+        score -= empty_title * 15
+        return max(0.0, score)
+
+    def score_dashboard(self, charts: List[Dict], accuracy_violations: int = 0) -> DashboardScore:
+        """
+        看板五维评分（A3）
+        """
         redundancy = self.calculate_redundancy_score(charts)
         coverage = self.calculate_coverage_score(charts)
         narrative = self.calculate_narrative_score(charts)
-        
-        # 加权总分
-        total = (
-            redundancy * self.weights["redundancy"] +
-            coverage * self.weights["coverage"] +
-            narrative * self.weights["narrative"]
-        )
-        
+        accuracy = self.calculate_accuracy_score(charts, accuracy_violations)
+        readability = self.calculate_readability_score(charts)
+
+        dims = {
+            "redundancy": redundancy,
+            "coverage": coverage,
+            "narrative": narrative,
+            "accuracy": accuracy,
+            "readability": readability,
+        }
+
+        # 加权总分（通用：遍历 self.weights，缺维度按 0 计）
+        total = sum(dims.get(k, 0.0) * w for k, w in self.weights.items())
+
         # 生成改进建议
         suggestions = []
         if redundancy < 80:
@@ -396,8 +468,12 @@ class S5ScoreCard:
             suggestions.append(f"缺少图表类型: {', '.join(missing)}")
         if narrative < 70:
             suggestions.append("叙事结构待优化，建议按KPI→趋势→明细排序")
-        
-        # 图表级评分
+        if accuracy < 60:
+            suggestions.append("存在数据准确性风险（字段/聚合/口径），建议核查")
+        if readability < 70:
+            suggestions.append("可读性待优化（标题/图表数量/KPI 数量）")
+
+        # 图表级评分（沿用 legacy 三维度字段）
         chart_scores = []
         for i, chart in enumerate(charts):
             chart_scores.append(ChartScore(
@@ -409,15 +485,11 @@ class S5ScoreCard:
                 narrative_score=narrative,
                 total_score=total
             ))
-        
+
         return DashboardScore(
             overall_score=total,
-            passed=total >= self.pass_threshold,
-            dimension_scores={
-                "redundancy": redundancy,
-                "coverage": coverage,
-                "narrative": narrative
-            },
+            passed=decide_pass(dims, self.weights, self.pass_threshold, self.dim_mins),
+            dimension_scores=dims,
             chart_scores=chart_scores,
             retry_count=0,
             improvement_suggestions=suggestions
@@ -503,7 +575,8 @@ class S5ScoreCard:
         db: AsyncSession,
         orchestrator: S4Orchestrator,
         raw_charts: List[Dict],
-        backup_charts: Optional[List[Dict]] = None
+        backup_charts: Optional[List[Dict]] = None,
+        respect_order: bool = False,
     ) -> Tuple[DashboardScore, List[Dict]]:
         """
         评分并可能重排 (R2返工: 修正重排策略)
@@ -512,6 +585,10 @@ class S5ScoreCard:
         - 第1次重排: 按叙事优先级重排 (kpi→line→bar→pie→table)
         - 第2次重排: 补充缺失类型 (从备选池取)
         - 第3次重排: 删除冗余相似图
+
+        G1（2026-10-29）：`respect_order=True` 时**不再用规则编排覆盖上游顺序**——
+        S4 已由 AI 完成编排（并过护栏），这里只做评分与必要的补/删，
+        否则规则 `orchestrator.orchestrate()` 会把 AI 的叙事成果洗掉，AI 形同虚设。
         """
         await self.load_config(db)
         
@@ -522,8 +599,12 @@ class S5ScoreCard:
         
         for retry in range(self.max_retries + 1):
             # 编排
-            orchestrated = orchestrator.orchestrate(current_charts)
-            charts = orchestrated["charts"]
+            if respect_order:
+                charts = current_charts
+                orchestrated = {"charts": charts}
+            else:
+                orchestrated = orchestrator.orchestrate(current_charts)
+                charts = orchestrated["charts"]
             
             # 评分
             score = self.score_dashboard(charts)
@@ -542,12 +623,18 @@ class S5ScoreCard:
                 best_charts = charts
             
             # R2返工: 新重排策略
+            # G1：respect_order 时跳过「按叙事优先级重排」——顺序是 AI 的判断产物，
+            #     规则重排会把 AI 编排成果洗掉，这里只允许补图/删冗余这类结构修复。
             if retry < self.max_retries:
                 if retry == 0:
-                    # 第1次重排: 按叙事优先级重排
-                    print(f"[S5] 第1次重排: 按叙事优先级")
-                    current_charts = self._reorder_by_narrative_priority(current_charts)
-                    reorder_log.append("-> 按叙事优先级重排")
+                    if respect_order:
+                        print("[S5] 第1次重排: 尊重AI编排顺序，跳过叙事重排")
+                        reorder_log.append("-> 尊重AI顺序，跳过叙事重排")
+                    else:
+                        # 第1次重排: 按叙事优先级重排
+                        print(f"[S5] 第1次重排: 按叙事优先级")
+                        current_charts = self._reorder_by_narrative_priority(current_charts)
+                        reorder_log.append("-> 按叙事优先级重排")
                     
                 elif retry == 1:
                     # 第2次重排: 补充缺失类型
@@ -570,32 +657,101 @@ class S5ScoreCard:
 async def orchestrate_and_score(
     db: AsyncSession,
     charts: List[Dict],
-    dataset_id: Optional[str] = None
+    dataset_id: Optional[str] = None,
+    *,
+    theme: Optional[str] = None,
+    goals: Optional[List[Any]] = None,
+    insights: Optional[Dict[str, Any]] = None,
+    llm_offline: bool = False,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    便捷函数：编排+评分
-    
+    便捷函数：编排+评分（G1 2026-10-29：AI 主执行，规则降为兜底 + 护栏）
+
+    执行链（三态可查，便于血缘追溯）：
+      1. S4 编排 → dispatch_s4_ai_primary（AI 重排/选 KPI/删冗余，护栏纠偏后出厂）
+         · AI 可用且过护栏   → s4_source = ai / ai_guarded
+         · AI 失败/超时/关闭 → 规则编排兜底，s4_source = rule
+      2. S5 评分 → score_with_retry（规则重排）→ dispatch_s5_ai_judge（AI 联合裁判）
+         · AI 返回五维       → s5_source = ai_joint，passed = 规则通过 AND AI 通过
+         · AI 失败/超时/关闭 → s5_source = rule，passed = 规则判定
+      3. 分级处置 → grade_s5_disposal（阈值读 threshold_config，可白盒调整）
+
     Args:
         db: 数据库会话
         charts: 主图表列表
         dataset_id: 数据集ID（可选，用于获取更多信息）
+        theme: 主题（喂给 AI 编排/裁判的上下文）
+        goals: S2 目标列表（喂给 AI 的上下文）
+        insights: 洞察卡（喂给 AI 编排的判断依据：异常/归因/预测）
+        llm_offline: True 时跳过全部 AI，纯规则链路（沙箱/离线/降级）
+        run_id: brain.run_id，用于 ai_action_log 三级留痕
     """
     orchestrator = S4Orchestrator()
     await orchestrator.load_score_config(db)
-    
+
+    # H1/B3：阈值统一从 threshold_config 解析（DB 不可达回退默认）
+    try:
+        from app.core.brain_modules.threshold_config import resolve_thresholds
+        _thresholds = await resolve_thresholds(db)
+    except Exception:
+        _thresholds = None
+    from app.core.brain_modules.threshold_config import DEFAULT_THRESHOLDS as _DT
+    _thresholds = dict(_thresholds or _DT)
+
+    # ── S4：AI 主执行编排（失败/超时 → 规则编排兜底）──
+    arranged = charts or []
+    s4_meta: Dict[str, Any] = {"source": "rule", "reasoning": "", "guardrail": [], "fallback_reason": None}
+    try:
+        from app.core.brain_modules.s45_ai_orchestrator import dispatch_s4_ai_primary
+        _arrangement, s4_meta = await dispatch_s4_ai_primary(
+            db=db, charts=arranged, theme=theme or "", goals=goals, insights=insights,
+            thresholds=_thresholds, llm_offline=llm_offline, run_id=run_id,
+        )
+        if _arrangement and _arrangement.get("charts"):
+            arranged = _arrangement["charts"]
+    except Exception as e:
+        print(f"[S4] AI 编排不可用，规则编排兜底: {e}")
+        s4_meta = {"source": "rule", "reasoning": "", "guardrail": [], "fallback_reason": str(e)[:300]}
+        arranged = charts or []
+
     scorer = S5ScoreCard()
     # 修复：备选池应包含更多图表候选（如S3生成的所有候选，不只是选中的）
     # 当前传入空列表，算法会在_fill_missing_types中自动生成缺失类型的默认图表
+    # G1：AI 编排成功时传 respect_order=True，避免规则编排把 AI 的叙事成果洗掉
+    _respect_order = s4_meta.get("source") in ("ai", "ai_guarded")
     score, final_charts = await scorer.score_with_retry(
-        db, orchestrator, charts, backup_charts=[]
+        db, orchestrator, arranged, backup_charts=[], respect_order=_respect_order,
     )
+
+    # ── S5：AI 联合裁判（规则为地基硬门禁，AI 补业务质量把关）──
+    s5_meta: Dict[str, Any] = {"s5_source": "rule", "fallback_reason": None}
+    try:
+        from app.core.brain_modules.s45_ai_orchestrator import dispatch_s5_ai_judge
+        score, s5_meta = await dispatch_s5_ai_judge(
+            db=db, charts=final_charts, theme=theme or "", goals=goals,
+            rule_score_obj=score, weights=scorer.weights,
+            thresholds=_thresholds, llm_offline=llm_offline, run_id=run_id,
+        )
+    except Exception as e:
+        print(f"[S5] AI 裁判不可用，规则评分卡兜底: {e}")
+        s5_meta = {"s5_source": "rule", "fallback_reason": str(e)[:300]}
 
     # 基于最终图表的真实分层生成叙述流
     layers = orchestrator.organize_narrative(final_charts)
-    narrative_flow = orchestrator._build_narrative_flow(layers, final_charts)
+    _ai_flow_used = False
+    if s4_meta.get("source") in ("ai", "ai_guarded"):
+        _ai_ids = [c.get("id") for c in arranged]
+        _fin_ids = [c.get("id") for c in final_charts]
+        _ai_flow = (s4_meta.get("ai_plan") or {}).get("narrative_flow") or s4_meta.get("narrative_flow")
+        if _ai_flow and _ai_ids == _fin_ids:
+            narrative_flow = str(_ai_flow)
+            _ai_flow_used = True
+    if not _ai_flow_used:
+        narrative_flow = orchestrator._build_narrative_flow(layers, final_charts)
 
-    # 阶段2 P1 任务1：S5 分级处置（night50，赋予 S5 真正否决权）
-    disposal = grade_s5_disposal(score.overall_score)
+    disposal = grade_s5_disposal(score.overall_score, _thresholds)
+    ai_participated = (s4_meta.get("source") in ("ai", "ai_guarded")) or (s5_meta.get("s5_source") == "ai_joint")
 
     return {
         "success": True,
@@ -610,6 +766,15 @@ async def orchestrate_and_score(
         "narrative_flow": narrative_flow,
         "score": score.to_dict(),
         "disposal": disposal,
+        # ── G1 白盒留痕 ──
+        "s4_source": s4_meta.get("source"),
+        "s4_reasoning": s4_meta.get("reasoning"),
+        "s4_guardrail": s4_meta.get("guardrail"),
+        "s4_drops": s4_meta.get("drops"),
+        "s5_source": s5_meta.get("s5_source"),
+        "s5_ai_dims": s5_meta.get("ai_dims"),
+        "s5_ai_verdict": s5_meta.get("ai_verdict"),
+        "ai_participated": bool(ai_participated),
     }
 
 
@@ -624,9 +789,14 @@ async def orchestrate_and_score(
 #     等价于给图表引擎加 minimal=True 的用户可见效果，且不改动 s3_chart_engine 主生成路径（更低风险）。
 # ──────────────────────────────────────────────────────────────────────
 
-def grade_s5_disposal(score: float) -> Dict[str, Any]:
+def grade_s5_disposal(score: float, thresholds: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """把 S5 总分映射为处置等级。
 
+    B3 阈值收口：cutoff 来自 threshold_config（可经 brain_configs 覆盖），不再硬编码 70/50/30。
+
+    Args:
+        score: S5 总分（0-100）
+        thresholds: 可选阈值覆盖（默认取 DEFAULT_THRESHOLDS）
     Returns:
         {
           "grade": "pass" | "degrade_regenerate" | "degrade_minimal" | "veto",
@@ -635,21 +805,26 @@ def grade_s5_disposal(score: float) -> Dict[str, Any]:
           "message": 人类可读说明
         }
     """
+    import app.core.brain_modules.threshold_config as _tc
+    t = thresholds or _tc.DEFAULT_THRESHOLDS
+    accept = float(t.get("r6_grade_accept", 70))
+    regen = float(t.get("r6_grade_regen", 50))
+    minimal = float(t.get("r6_grade_minimal", 30))
     try:
         s = float(score)
     except (TypeError, ValueError):
         s = 0.0
-    if s >= 70:
+    if s >= accept:
         return {"grade": "pass", "level": 1, "action": "none",
-                "message": f"评分通过({s:.0f}≥70)，正常出看板"}
-    if s >= 50:
+                "message": f"评分通过({s:.0f}≥{accept:.0f})，正常出看板"}
+    if s >= regen:
         return {"grade": "degrade_regenerate", "level": 2, "action": "regenerate",
-                "message": f"评分{s:.0f}（50-69）：降级，重新生成看板（补图/重排）"}
-    if s >= 30:
+                "message": f"评分{s:.0f}（{regen:.0f}-{accept:.0f}）：降级，重新生成看板（补图/重排）"}
+    if s >= minimal:
         return {"grade": "degrade_minimal", "level": 3, "action": "minimal",
-                "message": f"评分{s:.0f}（30-49）：降级，仅保留 KPI + 简单趋势图"}
+                "message": f"评分{s:.0f}（{minimal:.0f}-{regen:.0f}）：降级，仅保留 KPI + 简单趋势图"}
     return {"grade": "veto", "level": 4, "action": "veto",
-            "message": f"评分{s:.0f}（<30）：否决，交用户选择规则兜底/重生成/手动调整"}
+            "message": f"评分{s:.0f}（<{minimal:.0f}）：否决，交用户选择规则兜底/重生成/手动调整"}
 
 
 # 简单趋势图类型（30-49 降级保留的最小集合）

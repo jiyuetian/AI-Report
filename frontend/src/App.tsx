@@ -48,6 +48,7 @@ import DashboardListPage from './views/dashboard/DashboardListPage'
 import LineagePage from './views/lineage/LineagePage'
 import SharePage from './views/share/SharePage'
 import AdminPage from './views/admin/AdminPage'
+import ProfilePage from './views/profile/ProfilePage'
 import ReportPage from './views/report/ReportPage'
 import { Card, Button } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -127,6 +128,12 @@ function App() {
                   <Route path="/lineage" element={<LineagePage />} />
                   <Route path="/share" element={<SharePage />} />
                   <Route path="/report" element={<ReportPage />} />
+                  {/* 个人中心（运行记录单步展开看处理方案与原因，O10-5） */}
+                  <Route path="/profile" element={
+                    <ProtectedRoute>
+                      <ProfilePage />
+                    </ProtectedRoute>
+                  } />
                   {/* 2026-10-12：AI 监控/运维页并入管理后台页内 Tabs，旧路由重定向兼容深链接 */}
                   <Route path="/ai-log" element={<Navigate to="/admin?tab=ai-log" replace />} />
                   <Route path="/metrics" element={<Navigate to="/admin?tab=metrics" replace />} />

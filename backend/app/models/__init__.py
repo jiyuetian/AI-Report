@@ -18,6 +18,7 @@ from app.models.blacklist import TokenBlacklist
 from app.models.analysis_template import AnalysisTemplate
 from app.models.ai_action_log import AiActionLog
 from app.models.chart_template import ChartTemplate
+from app.models.chart_pattern import ChartPattern
 
 __all__ = [
     "Base",
@@ -39,4 +40,5 @@ __all__ = [
     "AnalysisTemplate",
     "AiActionLog",
     "ChartTemplate",
+    "ChartPattern",
 ]

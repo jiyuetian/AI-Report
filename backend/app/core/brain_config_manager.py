@@ -282,19 +282,46 @@ class BrainTraceManager:
         db: AsyncSession,
         trace_id: str,
         stage_output: Dict,
-        stage_metrics: Dict = None
+        stage_metrics: Dict = None,
+        reasoning: Any = None
     ):
-        """完成一个阶段"""
+        """完成一个阶段
+
+        reasoning：可选，C1（O10-1）每步结构化推理日志，直接落库到 BrainTrace.reasoning。
+        若提供则覆盖写入（S3 的契约 reasons 在 complete_stage 之后才产出，
+        需用 append_stage_reasoning 追加，不在此覆盖）。
+        """
         result = await db.execute(
             select(BrainTrace).where(BrainTrace.id == trace_id)
         )
         trace = result.scalar_one_or_none()
-        
+
         if trace:
             trace.stage_status = "success"
             trace.stage_output = stage_output
             trace.stage_metrics = stage_metrics or {}
+            if reasoning is not None:
+                trace.reasoning = reasoning
             trace.completed_at = datetime.now()
+            await db.commit()
+
+    @staticmethod
+    async def append_stage_reasoning(
+        db: AsyncSession,
+        trace_id: str,
+        fragment: Any
+    ):
+        """向已落库的某阶段 reasoning 追加片段（S3 契约 reasons 滞后写入用）。
+
+        使用 step_reasoning.merge_reasoning 做去重合并，避免重复写入。
+        """
+        from app.core.brain_modules.step_reasoning import merge_reasoning
+        result = await db.execute(
+            select(BrainTrace).where(BrainTrace.id == trace_id)
+        )
+        trace = result.scalar_one_or_none()
+        if trace:
+            trace.reasoning = merge_reasoning(trace.reasoning, fragment)
             await db.commit()
     
     @staticmethod
@@ -371,6 +398,31 @@ class BrainTraceManager:
         )
         traces = result.scalars().all()
         return [t.to_dict() for t in traces]
+
+    @staticmethod
+    async def get_run_traces_for_user(
+        db: AsyncSession, run_id: str, user_id: str, is_superuser: bool = False
+    ) -> Optional[List[Dict]]:
+        """按权限隔离获取一次运行的所有 trace（C3：O10-6）。
+
+        - 超管(is_superuser)：返回全量 trace（含 reasoning），无视归属。
+        - 普通用户：仅当该 run 的 BrainTraceSummary.user_id == 当前用户时才返回；
+          否则返回 None 表示越权不可见（调用方应转为 403/404）。
+        """
+        summary_res = await db.execute(
+            select(BrainTraceSummary).where(BrainTraceSummary.run_id == run_id)
+        )
+        summary = summary_res.scalar_one_or_none()
+        if summary is None:
+            return None
+        if not is_superuser and summary.user_id and summary.user_id != user_id:
+            # 越权：普通用户试图查看他人运行的 trace
+            return None
+        result = await db.execute(
+            select(BrainTrace).where(BrainTrace.run_id == run_id).order_by(BrainTrace.created_at)
+        )
+        traces = result.scalars().all()
+        return [t.to_dict() for t in traces]
     
     @staticmethod
     async def get_run_summary(db: AsyncSession, run_id: str) -> Optional[Dict]:
@@ -380,3 +432,30 @@ class BrainTraceManager:
         )
         summary = result.scalar_one_or_none()
         return summary.to_dict() if summary else None
+
+    @staticmethod
+    async def list_runs_for_user(
+        db: AsyncSession,
+        user_id: str,
+        is_superuser: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict]:
+        """C3 (O10-5 / O10-6) 列出运行记录。
+
+        - 超管(is_superuser)：返回全量运行记录。
+        - 普通用户：仅返回 user_id == 当前用户 的运行记录（权限隔离）。
+        返回每个 run 的汇总信息（含 user_id，便于前端判断归属）。
+        """
+        stmt = select(BrainTraceSummary).order_by(BrainTraceSummary.started_at.desc())
+        if not is_superuser and user_id:
+            stmt = stmt.where(BrainTraceSummary.user_id == user_id)
+        stmt = stmt.limit(limit).offset(offset)
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        out = []
+        for s in rows:
+            d = s.to_dict()
+            d["user_id"] = s.user_id
+            out.append(d)
+        return out

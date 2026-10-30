@@ -554,6 +554,111 @@ class GoldenRegressionTester:
 import asyncio
 
 
+# 引擎实际支持的图表类型（与 s3_chart_rules.yaml 对齐；离线自检用，避免 golden 校验沦为自证）
+SUPPORTED_CHART_TYPES = {
+    "kpi", "line", "bar", "pie", "scatter", "table", "area", "funnel", "histogram",
+}
+
+
+def _infer_chart_type(chart_name: str) -> Optional[str]:
+    """从期望图名推断图表类型（用于与引擎支持集 + 字段需求校验）。"""
+    n = (chart_name or "").lower()
+    if any(k in n for k in ("trend", "趋势", "line", "timeline")):
+        return "line"
+    if any(k in n for k in ("pie", "占比", "share")):
+        return "pie"
+    if any(k in n for k in ("histogram", "直方图", "分布", "distribution")):
+        return "histogram"
+    if any(k in n for k in ("funnel", "漏斗")):
+        return "funnel"
+    if any(k in n for k in ("bar", "对比", "comparison", "comparison", "rank", "排行")):
+        return "bar"
+    if any(k in n for k in ("kpi", "指标", "count", "总数", "总额")):
+        return "kpi"
+    # 含 rate/率/score/金额/余额/amount → 视为需数值的度量子图
+    if any(k in n for k in ("rate", "率", "score", "金额", "余额", "amount", "distribution")):
+        return "bar"
+    return "bar"  # 默认归为柱状类（最通用）
+
+
+def _schema_roles(schema: Dict[str, Any]) -> Dict[str, str]:
+    """推断数据集 schema 的语义角色覆盖（measure/time/category）。"""
+    roles: Dict[str, int] = {"measure": 0, "time": 0, "category": 0}
+    for fname, ftype in (schema or {}).items():
+        if ftype in ("datetime", "date", "timestamp"):
+            roles["time"] += 1
+        elif ftype in ("int", "float", "decimal", "double", "number", "integer"):
+            roles["measure"] += 1
+        else:
+            # 字符串/枚举：按名称再细分
+            ln = str(fname).lower()
+            if any(k in ln for k in ("date", "time", "month", "year", "day", "季度", "月份")):
+                roles["time"] += 1
+            else:
+                roles["category"] += 1
+    return roles
+
+
+def validate_baseline_integrity(ds: "GoldenDataset", supported: set = None) -> List[str]:
+    """P3 黄金基线完整性校验（确认期望值不是拍脑袋写入）。
+
+    检查：
+    1. expected_score ∈ [0,100]；
+    2. 每个期望图的类型落在引擎支持集；
+    3. 每个期望图所需字段类型在该数据集 schema 中确实存在
+       （line/趋势需时间字段；pie/占比需分类字段；kpi/bar/数值类需 measure 字段）；
+    4. expected_charts 非空且元素唯一。
+    返回错误列表（空=通过）。
+    """
+    supported = supported or SUPPORTED_CHART_TYPES
+    errs: List[str] = []
+    if not (0 <= float(ds.expected_score) <= 100):
+        errs.append(f"expected_score={ds.expected_score} 超出 [0,100]")
+    if not ds.expected_charts:
+        errs.append("expected_charts 为空")
+    elif len(ds.expected_charts) != len(set(ds.expected_charts)):
+        errs.append("expected_charts 存在重复项")
+
+    roles = _schema_roles(ds.schema)
+    for ch in ds.expected_charts:
+        ctype = _infer_chart_type(ch)
+        if ctype not in supported:
+            errs.append(f"期望图「{ch}」推断类型 {ctype} 不在引擎支持集 {sorted(supported)}")
+            continue
+        if ctype in ("line", "area"):
+            if roles["time"] == 0:
+                errs.append(f"期望图「{ch}」({ctype}) 需时间字段，但 schema 无 date/datetime/时间列")
+        elif ctype == "pie":
+            if roles["category"] == 0:
+                errs.append(f"期望图「{ch}」(pie) 需分类字段，但 schema 无 string/enum/分类列")
+        elif ctype in ("kpi", "bar", "histogram", "funnel"):
+            # 柱状/计数/KPI 类可由「数值度量」或「分类计数」构成，二者有其一即可
+            if roles["measure"] == 0 and roles["category"] == 0:
+                errs.append(f"期望图「{ch}」({ctype}) 需数值或分类字段，但 schema 无可聚合列")
+    return errs
+
+
+def run_baseline_integrity_check() -> Dict[str, Any]:
+    """对所有 golden 数据集跑完整性校验，返回报告（离线、无需 LLM/DB）。"""
+    tester = GoldenRegressionTester()
+    datasets = tester.get_all_datasets()
+    ids = [d.id for d in datasets]
+    dup_ids = sorted({i for i in ids if ids.count(i) > 1})
+    results = []
+    all_ok = True
+    for d in datasets:
+        errs = validate_baseline_integrity(d)
+        ok = len(errs) == 0
+        all_ok = all_ok and ok
+        results.append({"id": d.id, "name": d.name, "ok": ok, "errors": errs})
+    return {
+        "total": len(datasets),
+        "all_passed": all_ok and not dup_ids,
+        "duplicate_ids": dup_ids,
+        "results": results,
+    }
+
+
 # 便捷函数
 async def run_golden_regression_test() -> Dict[str, Any]:
     """

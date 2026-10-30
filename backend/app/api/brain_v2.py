@@ -3,13 +3,14 @@
 brain_configs: 配置存储+版本+热更新+回滚
 brain_traces: 五阶段全链路trace落库
 """
-from app.core.security import internal_endpoint_guard
+from app.core.security import internal_endpoint_guard, get_current_user
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.brain_config_manager import BrainConfigManager, BrainTraceManager
+from app.core.ai_action_log import log_ai_action
 from app.models.brain import BrainConfig, BrainTrace, BrainTraceSummary
 import uuid
 
@@ -328,6 +329,124 @@ async def get_run_summary(
         "success": True,
         "summary": summary
     }
+
+
+# ============== C3 权限隔离 / C2 飞轮反馈 API ==============
+
+class RunFeedbackRequest(BaseModel):
+    feedback: str = Field(..., pattern="^(like|dislike)$", description="like=👍, dislike=👎")
+    note: Optional[str] = Field(None, description="用户备注")
+
+
+@router.get("/runs/{run_id}/traces")
+async def get_run_traces_authed(
+    run_id: str,
+    current_user: Dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """C3 (O10-6) 权限隔离：按当前用户查询某次运行的 trace（含 reasoning）。
+
+    - 超管(is_superuser)：返回全量 trace，无视归属。
+    - 普通用户：仅当该运行的归属用户 == 当前用户时返回；否则返回 403 并留痕（越权拒绝）。
+    """
+    uid = current_user.get("user_id")
+    is_super = bool(current_user.get("is_superuser"))
+    traces = await BrainTraceManager.get_run_traces_for_user(db, run_id, uid, is_superuser=is_super)
+    if traces is None:
+        await log_ai_action(
+            run_id=run_id, user_id=uid, intent="view_run_traces",
+            action_type="access_denied", result_status="rejected",
+            error_msg="普通用户尝试访问非本人运行 trace" if not is_super else "运行不存在",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN if not is_super else status.HTTP_404_NOT_FOUND,
+            detail={"code": "ACCESS_DENIED", "message": "无权查看该运行记录"},
+        )
+    summary = await BrainTraceManager.get_run_summary(db, run_id)
+    return {"success": True, "run_id": run_id, "summary": summary, "traces": traces, "stage_count": len(traces)}
+
+
+@router.post("/runs/{run_id}/feedback")
+async def submit_run_feedback(
+    run_id: str,
+    request: RunFeedbackRequest,
+    current_user: Dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """C2 (O10-4) 看板级 👍/👎 评价落入经验库，直接影响 good/edited 计数。
+
+    - 仅运行归属用户或超管可评价（复用 O10-6 权限隔离）。
+    - like(👍) → outcome=good；dislike(👎) → outcome=edited（反向教材）。
+    - 同时写入 ai_action_log（可按 run_id 查三级留痕）。
+    """
+    uid = current_user.get("user_id")
+    is_super = bool(current_user.get("is_superuser"))
+    traces = await BrainTraceManager.get_run_traces_for_user(db, run_id, uid, is_superuser=is_super)
+    if traces is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "ACCESS_DENIED", "message": "无权评价该运行"},
+        )
+    summary = await BrainTraceManager.get_run_summary(db, run_id)
+    outcome = "good" if request.feedback == "like" else "edited"
+    exp_rec = None
+    try:
+        from app.core.brain_modules.experience_store import record_experience
+        from app.core.flywheel import FLYWHEEL_DOMAIN
+        from app.core.run_context import get_run_context
+        # 债B 闭环【写路径】：优先按「(主题, 数据形态签名)」写回，使未来同形态 S2 能读回历史经验
+        _rc = get_run_context(run_id)
+        if _rc:
+            _sig = _rc.get("signature")
+            _theme = _rc.get("theme") or (summary or {}).get("theme") or "通用分析"
+            _domain = FLYWHEEL_DOMAIN
+            _decision = f"theme:{_theme}"
+        else:
+            # 运行上下文已丢失（如后端重启）：退化为 run 级签名，至少不丢反馈
+            _sig = f"run:{run_id}"
+            _domain = (summary or {}).get("dataset_id") or "dashboard"
+            _decision = f"feedback:{request.feedback}"
+        exp_rec = record_experience(
+            domain=_domain,
+            data_signature=_sig,
+            decision=_decision,
+            outcome=outcome,
+        )
+    except Exception as e:
+        print(f"[Brain] 反馈沉淀经验库失败(忽略): {e}")
+    await log_ai_action(
+        run_id=run_id, user_id=uid, intent="dashboard_feedback",
+        action_type="dashboard_feedback",
+        params_summary={"feedback": request.feedback, "note": request.note},
+        result_status="success",
+    )
+    return {
+        "success": True,
+        "run_id": run_id,
+        "feedback": request.feedback,
+        "outcome": outcome,
+        "experience": exp_rec,
+    }
+
+
+@router.get("/runs")
+async def list_runs(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: Dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """C3 (O10-5) 列出运行记录（个人中心「运行记录」数据源）。
+
+    - 超管(is_superuser)：返回全量运行记录。
+    - 普通用户：仅返回自己归属的运行记录（权限隔离，与 O10-6 一致）。
+    """
+    uid = current_user.get("user_id")
+    is_super = bool(current_user.get("is_superuser"))
+    rows = await BrainTraceManager.list_runs_for_user(
+        db, uid, is_superuser=is_super, limit=limit, offset=offset
+    )
+    return {"success": True, "total": len(rows), "runs": rows}
 
 
 # ============== 初始化数据 ==============

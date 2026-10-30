@@ -480,9 +480,10 @@ async def list_duckdb_tables(current_user: Dict = Depends(require_admin)):
             "count": len(tables)
         }
     except Exception as e:
+        # DuckDB 未就绪/不可达属「服务不可用」而非「内部错误」，返回 503 更语义准确
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"message": str(e)}
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "DUCKDB_UNAVAILABLE", "message": str(e)}
         )
 
 

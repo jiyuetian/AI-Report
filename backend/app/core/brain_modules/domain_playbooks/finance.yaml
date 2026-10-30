@@ -1,0 +1,59 @@
+# 领域分析范式 · 财务 / 经营
+# 白盒可扩展：专家可直接编辑本文件，新增领域 = 加一个 <domain>.yaml，无需改码。
+domain: finance
+display_name: 财务 / 经营
+description: 收入、成本、利润、现金流等经营财务类数据集
+
+must_have_metrics:
+  - key: 总收入
+    kind: sum
+    keywords: [收入, 营收, 销售额, 营业额, revenue, income]
+  - key: 总成本
+    kind: sum
+    keywords: [成本, 支出, 费用, cost, expense]
+  - key: 净利润
+    kind: derived_sub
+    minuend_keywords: [收入, 营收]
+    subtrahend_keywords: [成本, 支出]
+  - key: 利润率
+    kind: derived_rate
+    numerator_keywords: [利润, 净利, profit]
+    denominator_keywords: [收入, 营收]
+    benchmark: 0.10
+
+narrative:
+  - 结论
+  - 结构
+  - 趋势
+  - 对比
+  - 明细
+
+anomaly_rules:
+  - metric: 利润率
+    op: "<"
+    threshold: 0
+    action: 预警
+    message: 利润率转负，经营亏损
+  - metric: 成本占比
+    op: ">"
+    threshold: 0.8
+    action: 关注
+    message: 成本占收入比超过 80%，盈利空间承压
+  - metric: 同比
+    op: "<"
+    threshold: -0.2
+    action: 预警
+    message: 关键指标同比下滑超 20%
+
+insight_patterns:
+  - structure
+  - mom_yoy_delta
+  - threshold_breach
+
+benchmark:
+  利润率: 0.10
+
+chart_recommendations:
+  结构: [收支结构, 成本构成]
+  趋势: [收入/利润按月]
+  对比: [各业务线利润对比]

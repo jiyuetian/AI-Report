@@ -14,7 +14,14 @@ import uuid
 
 
 class AnalysisTemplate(Base):
-    """分析模板表 - 跨数据集复用，命中 approved 模板即并入 S2 候选目标"""
+    """分析模板表 - 跨数据集复用，命中 approved 模板即并入 S2 候选目标
+
+    A4-②/③（2026-10-28 大改）：
+    - chart_patterns：图表级套路（独立于 base_goals，粒度下沉到单图），落库持久化。
+    - status：审核状态机 pending_review → approved / rejected；与 approved 同步。
+    - reviewer / reviewed_at / reject_reason：审核留痕。
+    - source 扩展为 system / user / expert / ai，四类提议走同一审核流。
+    """
 
     __tablename__ = "analysis_template"
 
@@ -34,9 +41,19 @@ class AnalysisTemplate(Base):
     # 预置目标：对齐 AnalysisGoal.to_dict() 结构，命中后并入 S2 候选
     base_goals = Column(JSON, comment="预置分析目标（对齐 AnalysisGoal）")
 
+    # A4-②：图表级套路（粒度下沉到单图），持久化落库（此前仅暂存于候选返回值）
+    chart_patterns = Column(JSON, comment="图表级套路列表（A4-② 独立字段，可落库持久化）")
+
+    # A4-③：审核状态机（与 approved 同步）。pending_review → approved / rejected
+    status = Column(String(20), default="pending_review",
+                    comment="审核状态：pending_review/approved/rejected")
+    reviewer = Column(String(100), nullable=True, comment="审核人（user_id/用户名）")
+    reviewed_at = Column(DateTime, nullable=True, comment="审核时间")
+    reject_reason = Column(Text, nullable=True, comment="驳回原因（驳回时填写）")
+
     approved = Column(Boolean, default=False, comment="须经用户确认才生效；未确认不套用")
     usage_count = Column(Integer, default=0, comment="被命中套用次数")
-    source = Column(String(10), default="system", comment="system / user / ai")
+    source = Column(String(10), default="system", comment="system / user / expert / ai")
 
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
@@ -49,6 +66,11 @@ class AnalysisTemplate(Base):
             "goal_skeleton": self.goal_skeleton,
             "match_features": self.match_features,
             "base_goals": self.base_goals,
+            "chart_patterns": self.chart_patterns,
+            "status": self.status,
+            "reviewer": self.reviewer,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "reject_reason": self.reject_reason,
             "approved": self.approved,
             "usage_count": self.usage_count,
             "source": self.source,

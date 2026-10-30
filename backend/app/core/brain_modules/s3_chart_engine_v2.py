@@ -275,6 +275,27 @@ def _is_date_named(name: str) -> bool:
 
 # ----------------------------- 引擎 -----------------------------
 
+# H5（v4 阶段2）：叙事硬排序豁免开关。
+# 默认开（保留「风险图殿后」底线）；管理员可在启动时 set_narrative_enforce(False) 全局关闭，
+# 或调用方逐次传入 enforce_narrative_order=False（如 AI 对话「不要强制排序」）实现单看板豁免。
+_NARRATIVE_ENFORCE_OVERRIDE: Optional[bool] = None
+
+
+def set_narrative_enforce(enabled: Optional[bool]) -> None:
+    """全局设置叙事硬排序开关（None=恢复默认开）。供应用启动时读 brain_configs 调用。"""
+    global _NARRATIVE_ENFORCE_OVERRIDE
+    _NARRATIVE_ENFORCE_OVERRIDE = enabled
+
+
+def _resolve_narrative_enforce(explicit: Optional[bool] = None) -> bool:
+    """解析是否强制叙事排序：显式参数 > 全局覆盖 > 默认开。"""
+    if explicit is not None:
+        return explicit
+    if _NARRATIVE_ENFORCE_OVERRIDE is not None:
+        return _NARRATIVE_ENFORCE_OVERRIDE
+    return True  # 默认硬排序（H5 设计预期，保留底线）
+
+
 class S3ChartEngine:
     def __init__(self, rules_file: Optional[str] = None,
                  derived_metrics: Optional[Dict[str, Dict[str, Any]]] = None):
@@ -301,7 +322,14 @@ class S3ChartEngine:
                 self.rules = data.get("rules", [])
                 self.fallback = data.get("fallback", {})
                 self.grain_constraints = data.get("grain_constraints", {})
-                self.chart_constraints = data.get("chart_constraints", {})
+                # B3 阈值收口：主路径同样以 threshold_config 为单一真相源，
+                # 覆盖 yaml 中的 chart_constraints（避免两处各持一份导致漂移）。
+                from app.core.brain_modules.threshold_config import DEFAULT_THRESHOLDS as _TC
+                self.chart_constraints = {
+                    "pie": {"max_slices": _TC["r2_pie_max_slices"]},
+                    "bar": {"max_bars": _TC["r2_bar_max_bars"], "horizontal_threshold": _TC["r2_bar_horizontal_threshold"]},
+                    "line": {"max_series": _TC["r2_line_max_series"]},
+                }
                 print(f"[S3-v2] 加载 {len(self.rules)} 条规则（来自 {os.path.basename(self.rules_file)}）")
                 return
             except Exception as e:
@@ -340,7 +368,13 @@ class S3ChartEngine:
             {"type": "table", "title": "数据明细"},
         ]}
         self.grain_constraints = {"macro": {"forbidden": ["table"]}, "aggregate": {"forbidden": []}, "detail": {"forbidden": []}}
-        self.chart_constraints = {"pie": {"max_slices": 8}, "bar": {"max_bars": 20, "horizontal_threshold": 10}, "line": {"max_series": 5}}
+        # B3 阈值收口：图表结构约束全部取自 threshold_config 单一真相源（不再散落硬编码）
+        from app.core.brain_modules.threshold_config import DEFAULT_THRESHOLDS as _TC
+        self.chart_constraints = {
+            "pie": {"max_slices": _TC["r2_pie_max_slices"]},
+            "bar": {"max_bars": _TC["r2_bar_max_bars"], "horizontal_threshold": _TC["r2_bar_horizontal_threshold"]},
+            "line": {"max_series": _TC["r2_line_max_series"]},
+        }
 
     # ---- 规则匹配（落实基数/粒度/聚合） ----
     def _match_rule(
@@ -783,7 +817,8 @@ class S3ChartEngine:
         self, fields: List[str], grain: str = "detail",
         sample_data: Optional[List[Dict]] = None,
         field_types_override: Optional[Dict[str, FieldType]] = None,
-        derived_metrics: Optional[Dict[str, Dict[str, Any]]] = None
+        derived_metrics: Optional[Dict[str, Dict[str, Any]]] = None,
+        enforce_narrative_order: Optional[bool] = None
     ) -> Dict[str, Any]:
         if derived_metrics is not None:
             self.derived_metrics = derived_metrics
@@ -817,7 +852,9 @@ class S3ChartEngine:
             if no_chartable else ""
         )
         # NARRATIVE-ORDER（2026-10-14）：产出最终 config 前统一强制叙事顺序
-        filtered = self._enforce_narrative_order(filtered)
+        # H5（v4 阶段2）：豁免开关——关掉则保留规则引擎原始顺序，允许 AI/用户自由排序。
+        if _resolve_narrative_enforce(enforce_narrative_order):
+            filtered = self._enforce_narrative_order(filtered)
         return {
             "success": True,
             "grain": grain,
@@ -974,7 +1011,8 @@ class S3ChartEngine:
             "note": "阶段2-子任务1：规则引擎先行产出全量候选池，供 LLM 选/增强/重排",
         }
 
-    def _select_from_candidates(self, candidates: List[Dict[str, Any]], top_n: int = 7) -> List[Dict[str, Any]]:
+    def _select_from_candidates(self, candidates: List[Dict[str, Any]], top_n: int = 7,
+                               enforce_narrative_order: Optional[bool] = None) -> List[Dict[str, Any]]:
         """规则兜底：从候选池按「覆盖式」挑图并强制叙事顺序。
 
         用于 LLM 不可达/超时/失败时，保证 demo 仍能产出 5-8 张结构完整的看板：
@@ -1024,7 +1062,8 @@ class S3ChartEngine:
                 chosen.append(c)
             if len(chosen) >= top_n:
                 break
-        ordered = self._enforce_narrative_order_dicts(chosen)
+        # H5（v4 阶段2）：豁免开关——关掉则保留覆盖式选择后的原始顺序。
+        ordered = self._enforce_narrative_order_dicts(chosen) if _resolve_narrative_enforce(enforce_narrative_order) else chosen
         return [self._clean_chart_dict(c) for c in ordered[:top_n]]
 
     @classmethod
