@@ -22,6 +22,8 @@ from app.core.action_executor import ActionExecutor, ActionType
 from app.core.version_manager import VersionManager
 from app.core.ai_action_log import log_ai_action
 from app.models.dashboard import Dashboard
+from app.core.brain_modules.threshold_config import resolve_thresholds
+from app.core.brain_modules.s6_ai_crud_agent import dispatch_ai_crud as _dispatch_ai_crud_agent
 
 router = APIRouter(prefix="/ai/crud", tags=["AICrud"])
 
@@ -180,6 +182,14 @@ class PermissionRequest(BaseModel):
     dashboard_id: Optional[str] = None
 
 
+class AgentCrudRequest(BaseModel):
+    directive: str
+    dashboard_id: Optional[str] = None
+    current_config: Optional[Dict[str, Any]] = None
+    run_id: Optional[str] = None
+    llm_offline: bool = False
+
+
 # --------------------------------------------------------------------------- #
 # 端点
 # --------------------------------------------------------------------------- #
@@ -323,3 +333,58 @@ async def manage_permission(
         ActionType.MANAGE_PERMISSIONS, params,
         dashboard_id=req.dashboard_id, current_user=current_user, db=db,
     )
+
+
+# --------------------------------------------------------------------------- #
+# S6：AI 自主 CRUD 端点（缺口闭环：AI 在框架内自主规划并执行增删改查）
+# --------------------------------------------------------------------------- #
+@router.post("/agent")
+async def agent_crud(
+    req: AgentCrudRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict = Depends(get_current_user),
+):
+    """AI 自主 CRUD 入口：给定自然语言指令，AI 规划一串 CRUD 动作并自主执行。
+
+    - 规划：AI 主执行（LLM）；离线/失败 → 规则兜底（与 S1/S2 同款三态）。
+    - 护栏：R15（动作数上限/禁批量/禁权限/改前快照），见 threshold_config。
+    - 留痕：每个动作写 ai_action_log（llm_layer="ai"，run_id 关联三级留痕）。
+    - 持久化：变更回写 Dashboard.config（与 chat 动作轮一致）。
+    """
+    thresholds = await resolve_thresholds(db)
+    cfg = req.current_config
+    dashboard = None
+    if cfg is None and req.dashboard_id:
+        res = await db.execute(select(Dashboard).where(Dashboard.id == req.dashboard_id))
+        dashboard = res.scalar_one_or_none()
+        cfg = (dashboard.config or {}) if dashboard else {}
+    if cfg is None:
+        cfg = {}
+
+    result = await _dispatch_ai_crud_agent(
+        directive=req.directive,
+        current_config=cfg,
+        db=db,
+        dashboard_id=req.dashboard_id,
+        user=current_user,
+        run_id=req.run_id,
+        thresholds=thresholds,
+        llm_offline=req.llm_offline,
+        is_admin=bool(current_user.get("is_superuser", False)),
+    )
+
+    # 持久化：把 AI 修改后的 config 回写看板（与 chat 动作轮一致）
+    if dashboard is not None and result.get("new_config") is not None:
+        try:
+            dashboard.config = result["new_config"]
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(dashboard, "config")
+            dashboard.updated_by = current_user
+            from datetime import datetime
+            dashboard.updated_at = datetime.utcnow()
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            result["persist_error"] = str(e)[:200]
+
+    return result

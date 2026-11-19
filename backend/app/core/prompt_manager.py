@@ -131,6 +131,43 @@ PROMPT_GROUPS: list = [
         "category": "表达 · 报告生成",
         "description": "文档型报告第2章执行摘要：仅基于源文件文本节选生成摘要，不得编造或推断。",
     },
+    # ── Task #712：对话改看板 AI 全节点治理（原内联 prompt，现接入提示词中心）──
+    {
+        "key": "ai_governor_system",
+        "title": "AI 全节点治理 · 系统人设",
+        "category": "治理 · AI 全节点",
+        "description": "对话改看板五节点治理的 system 人设：AI 拥有最高增删改查权限，规则引擎只是执行器与兜底。",
+    },
+    {
+        "key": "ai_governor_understand",
+        "title": "AI 全节点治理 · N1 理解",
+        "category": "治理 · AI 全节点",
+        "description": "N1：理解用户原话、拆解全部待办事项、把口语字段映射到真实字段，输出结构化 items。",
+    },
+    {
+        "key": "ai_governor_plan",
+        "title": "AI 全节点治理 · N2 规划",
+        "category": "治理 · AI 全节点",
+        "description": "N2：把每个事项规划成图表规格（图型/真实字段/聚合/标题），产出 patches。",
+    },
+    {
+        "key": "ai_governor_execute",
+        "title": "AI 全节点治理 · N3 签发",
+        "category": "治理 · AI 全节点",
+        "description": "N3：以最高 CRUD 权限复核并签发最终变更（add/update/delete/query），规则不审批。",
+    },
+    {
+        "key": "ai_governor_verify",
+        "title": "AI 全节点治理 · N4 自检",
+        "category": "治理 · AI 全节点",
+        "description": "N4：对照原话自检验收数量/字段真实性/空图/臆造标题/漏项，疑问写入 questions+fixes。",
+    },
+    {
+        "key": "ai_governor_revise",
+        "title": "AI 全节点治理 · N5 自校正",
+        "category": "治理 · AI 全节点",
+        "description": "N5：把自检疑问回灌，AI 自己重出完整最终版变更，最多 2 轮，无需问用户或规则批准。",
+    },
 ]
 
 _ORDER = [g["key"] for g in PROMPT_GROUPS]

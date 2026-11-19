@@ -73,6 +73,7 @@ class ChatMessageRequest(BaseModel):
     dataset_id: Optional[str] = Field(None, description="当前数据集ID")
     override: bool = Field(False, description="用户强制覆盖blocking级约束（用户优先级最高）")
     force_rule_fallback: bool = Field(False, description="AI智能回复不可用时，强制使用本地规则引导回复（不重试AI）")
+    retry_of: Optional[str] = Field(None, description="重试 AI：指向需要重做的助手消息 id，后端会先回滚该轮新增图表再重跑完整 AI 链路")
 
 
 class CreateSessionRequest(BaseModel):
@@ -819,6 +820,31 @@ async def send_message_stream(
         if dashboard:
             current_config = dashboard.config or {}
 
+        # 重试 AI（retry_of）：先回滚上一轮（retry_of 指向的助手消息）新增的图表，
+        # 避免重跑时重复加图；随后走完整 AI 链路（分类/抽取/执行均会在 LLM 可达时启用 AI）。
+        if getattr(request, "retry_of", None):
+            try:
+                _prev_q = await db.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.id == request.retry_of,
+                        ChatMessage.session_id == session_id,
+                        ChatMessage.role == "assistant",
+                    )
+                )
+                _prev = _prev_q.scalar_one_or_none()
+                if _prev and _prev.action_result:
+                    _ar = _prev.action_result if isinstance(_prev.action_result, dict) else {}
+                    for _ru in (_ar.get("render_updates") or []):
+                        if _ru.get("type") == "add_chart" and isinstance(_ru.get("chart"), dict):
+                            _cid = _ru["chart"].get("id")
+                            if _cid:
+                                current_config["charts"] = [
+                                    c for c in current_config.get("charts", [])
+                                    if c.get("id") != _cid
+                                ]
+            except Exception as _rb:
+                print(f"[Chat] 重试回滚失败(忽略): {_rb}")
+
     # 数据集解析：请求指定 > 会话绑定 > 看板主数据集 > 看板数据集列表首个
     # 会话未绑 dataset_id 时若不回退看板，field_profiles 为空，
     # AI 新增图会退化为"新增饼图"+空字段的旧兜底（多图提取被跳过）
@@ -958,7 +984,77 @@ async def send_message_stream(
             context["lineage"] = {}
 
         from app.core.action_planner import plan_actions, MAX_CLARIFY_ROUNDS
-        plan = plan_actions(request.message, context, override=bool(request.override))
+        # ── Task #701 / 权限矩阵 v2：AI 是每个节点的主控，规则引擎只做执行器与兜底 ──
+        # 五节点：understand → plan → execute(最高CRUD权) → verify → revise(有疑问随时调整)。
+        # 仅当 AI 全链不可用时才回退到旧规则链路，且必须显式标 by=rule_fallback + 失败原因。
+        try:
+            from app.core.ai_governor import govern as _ai_govern
+            _gov = await _ai_govern(
+                request.message, context,
+                session_id=session_id, dashboard_id=dashboard_id,
+                user_id=current_user,
+            )
+        except Exception as _ge:
+            from app.core.ai_budget import failed_result as _failed_result
+            _reason = "ai_governor 异常: %s" % str(_ge)[:160]
+            _gov = {"ok": False, "by": "rule_fallback",
+                    "governance": _failed_result("chat", _reason),
+                    "failure_reason": str(_ge)[:200], "run_id": None, "trace": []}
+            print(f"[Chat] AI 治理编排器异常，转规则兜底(显式标注): {_ge}")
+
+        if _gov.get("ok") and _gov.get("plan"):
+            plan = _gov["plan"]
+            context["ai_governance"] = _gov.get("governance") or {}
+            context["ai_govern_run_id"] = _gov.get("run_id")
+            # Task #706：plan 由 AI 全节点签发 → 规则可行性检查器不得再做语义审批/一票否决，
+            # 数据完整性硬护栏（字段白名单、图表上限）仍留在 ActionExecutor 执行层。
+            context["ai_govern_plan"] = True
+            # 护栏四件套之④：改前存回退点（AI 拥有最高 CRUD 权，改前必须可回退）
+            if _gov.get("rollback_point_required") and dashboard_id:
+                try:
+                    from app.core.version_manager import VersionManager
+                    from app.core.database import async_session_factory as _rb_factory
+                    async with _rb_factory() as _rb_db:
+                        await VersionManager.create_version(
+                            _rb_db, dashboard_id,
+                            name="AI 治理改前回退点",
+                            description="ai_governor run_id=%s" % (_gov.get("run_id") or ""),
+                            created_by=current_user, is_auto_save=True,
+                        )
+                    context["ai_govern_rollback"] = "created"
+                except Exception as _rbe:
+                    context["ai_govern_rollback"] = "failed"
+                    print(f"[Chat] AI 治理回退点创建失败(不阻断): {_rbe}")
+        else:
+            _rs = _gov.get("governance") or {}
+            context["ai_governance"] = {
+                "ai_governed": False, "fallback_used": True, "ai_coverage": _rs.get("ai_coverage", 0.0),
+                "by_node": _rs.get("by_node") or {},
+                "failure_reason": _gov.get("failure_reason") or _rs.get("failure_reason") or "AI 全链不可用",
+                "nodes": _rs.get("nodes") or [],
+            }
+            context["ai_govern_run_id"] = _gov.get("run_id")
+            # Task #706：规则兜底同样会增删改看板，护栏④「改前可回退」不能只在 AI 分支生效
+            if dashboard_id:
+                try:
+                    from app.core.version_manager import VersionManager
+                    from app.core.database import async_session_factory as _rb_factory2
+                    async with _rb_factory2() as _rb_db2:
+                        await VersionManager.create_version(
+                            _rb_db2, dashboard_id,
+                            name="规则兜底改前回退点",
+                            description="ai_governor 全链不可用，改前快照",
+                            created_by=current_user, is_auto_save=True,
+                        )
+                    context["ai_govern_rollback"] = "created_fallback"
+                except Exception as _rbe2:
+                    context["ai_govern_rollback"] = "failed"
+                    print(f"[Chat] 规则兜底回退点创建失败(不阻断): {_rbe2}")
+            else:
+                context["ai_govern_rollback"] = "not_applicable"
+            plan = plan_actions(request.message, context, override=bool(request.override))
+            print(f"[Chat] AI 全链不可用 → 规则兜底(已显式标注): "
+                  f"{context['ai_governance']['failure_reason']}")
         intent_result = plan["primary_intent"]
         
         yield await sse_event("intent_classified", {
@@ -974,6 +1070,9 @@ async def send_message_stream(
             "is_compound": plan["is_compound"],
             "clauses": plan["clauses"],
             "unparsed_clauses": plan["unparsed_clauses"],
+            "ai_governance": context.get("ai_governance") or {},
+            "ai_govern_run_id": context.get("ai_govern_run_id"),
+            "ai_govern_rollback": context.get("ai_govern_rollback"),
             "actions": [
                 {"seq": i + 1, "type": a["type"], "clause": a.get("clause"),
                  "params": a.get("params")}
@@ -993,13 +1092,23 @@ async def send_message_stream(
         analysis = intent_result["analysis"]
         params = analysis.get("extracted_params", {})
         
-        feasibility = check_feasibility(
-            request.message,
-            intent_type_str,
-            params,
-            context,
-            override_blocking=request.override
-        )
+        if context.get("ai_govern_plan"):
+            # Task #701/#706：plan 由 AI 五节点签发（自检结果由 AI 自己负责），
+            # 规则可行性检查器不再做语义审批，避免「规则否决 AI 决策」。
+            # 规则仍保留硬护栏（字段白名单、50 图上限）在 ActionExecutor 执行层。
+            feasibility = {
+                "feasible": True, "issues": [], "suggestion": None,
+                "can_override": False, "overridden_issues": [],
+                "checked_by": "ai_governor",
+            }
+        else:
+            feasibility = check_feasibility(
+                request.message,
+                intent_type_str,
+                params,
+                context,
+                override_blocking=request.override
+            )
         
         if not feasibility["feasible"]:
             # 不可行，返回引导
@@ -1442,6 +1551,7 @@ async def send_message_stream(
                         error_msg=_ar.get("error"),
                         llm_layer=(intent_result or {}).get("classified_by"),
                         latency_ms=_latency,
+                        run_id=context.get("ai_govern_run_id"),
                     ))
                 except RuntimeError:
                     pass  # 无运行中的事件循环 → 跳过埋点
@@ -1465,6 +1575,7 @@ async def send_message_stream(
                     error_msg=response_data.get("action_error") or (response_data.get("ai_error") or {}).get("error"),
                     llm_layer=(intent_result or {}).get("classified_by"),
                     latency_ms=_latency,
+                    run_id=context.get("ai_govern_run_id"),
                 ))
             except RuntimeError:
                 pass
@@ -1476,11 +1587,24 @@ async def send_message_stream(
         # night36 Task A2/A4：统一"AI 参与"信号（向后兼容，只新增字段，不改名既有字段）
         _intent_result = intent_result or {}
         # 取顶层 classified_by；add_chart 走 LLM 提取时该值嵌套在 extracted_params.classified_by
-        _cb = _intent_result.get("classified_by") or (_intent_result.get("extracted_params") or {}).get("classified_by") or "rule"
+        # Task #698：add_chart 的 llm_add_chart 标记嵌套在 analysis.extracted_params 里，
+        # 旧代码只取顶层 / 一级 extracted_params → AI 明明参与结构化提取却判「规则兜底」。
+        _cb_raw = [
+            _intent_result.get("classified_by"),
+            (_intent_result.get("extracted_params") or {}).get("classified_by"),
+            ((_intent_result.get("analysis") or {}).get("extracted_params") or {}).get("classified_by"),
+        ]
+        # 不能用 or 链：顶层常是 "rule"（规则分类命中），会短路掉嵌套在
+        # analysis.extracted_params 里的 llm_add_chart / llm_multi_kpi 标记，
+        # 导致「AI 明明参与结构化提取」却显示「规则兜底」（用户 11-12 实测痛点）。
+        # 任一层级出现 llm_* 即认定 AI 参与；否则取第一个非空值。
+        _cb = next((str(x) for x in _cb_raw if x and str(x).startswith("llm")), None) \
+            or next((str(x) for x in _cb_raw if x), None) or "rule"
         # night49：动作级 classified_by 也算 AI 参与。LLM 主导规划的多动作 plan（llm_semantic）
         # 或 llm_add_chart 结构化提取，此前被 primary_intent 的 semantic_rule 盖住，
         # 前端误渲染「本次 AI 未参与」诚实卡（AI 明明参与了规划却被判规则兜底）。
-        _LLM_CBS = ("llm", "llm_add_chart", "llm_semantic", "llm_plan", "llm_extract")
+        _LLM_CBS = ("llm", "llm_add_chart", "llm_semantic", "llm_plan", "llm_extract",
+                    "llm_multi_kpi")
         _action_cbs = []
         for _a in (plan.get("actions") or []):
             _acb = _a.get("classified_by") or ((_a.get("params") or {}).get("classified_by"))
@@ -1493,7 +1617,10 @@ async def send_message_stream(
         if response_data.get("ai_error"):
             _ai_participated_reply = False
             _ai_failed_reason = classify_ai_fail_reason(response_data["ai_error"].get("error", ""))
-            _ai_participated = False  # 失败：两段都未成功参与
+            # Task #698：意图/动作段 AI 已真实参与时，不能因「回复文案段」失败
+            # 把整轮判成「规则兜底」——那会让用户误以为 AI 完全挂了。
+            # 文案段失败仍由 ai_error 卡 + ai_failed_reason 单独呈现。
+            _ai_participated = bool(_ai_participated_intent)
         elif llm_reply_used:
             _ai_participated_reply = True
             _ai_failed_reason = "ok"
@@ -1504,6 +1631,21 @@ async def send_message_stream(
             _ai_failed_reason = "rule_only"
             # 向后兼容：意图段参与（如 add_chart 走 LLM 结构化提取）也算"AI 参与"
             _ai_participated = _ai_participated_intent
+        # ── Task #702/#706 统一失败可见性 / 绿标门槛 ──
+        from app.core.ai_budget import green_badge
+        _gov_summary = context.get("ai_governance") or {}
+        if _gov_summary.get("ai_governed"):
+            _ai_participated_intent = True
+            _action_source = "ai_governor"
+            _ai_participated = green_badge(_gov_summary)
+            _ai_participated_reply = bool(llm_reply_used)
+            if _ai_failed_reason == "rule_only":
+                _ai_failed_reason = "ok"
+        elif _gov_summary.get("fallback_used"):
+            # 规则接管必须显式可见：不伪装 AI 参与，带失败原因、可重试
+            _action_source = "rule_fallback"
+            _ai_participated = False
+            _ai_failed_reason = "ai_unavailable:" + str(_gov_summary.get("failure_reason") or "")[:120]
         full_response = {
             "message": response_data["message"],
             "intent": intent_result,
@@ -1521,10 +1663,20 @@ async def send_message_stream(
             "ai_participated_reply": _ai_participated_reply,
             "ai_failed_reason": _ai_failed_reason,
             "action_source": _action_source,
+            "ai_governance": _gov_summary,
+            "ai_coverage": _gov_summary.get("ai_coverage"),
+            "ai_governed": _gov_summary.get("ai_governed"),
+            "ai_govern_run_id": context.get("ai_govern_run_id"),
+            "ai_fallback_used": bool(_gov_summary.get("fallback_used") or not _gov_summary.get("ai_governed")),
+            "ai_failure_reason": _gov_summary.get("failure_reason"),
+            # Task #706：绿标唯一口径 + 全链失败显式状态，前端不得再按 generation_mode 猜
+            "ai_badge_eligible": green_badge(_gov_summary),
+            "status": "failed" if _gov_summary.get("fallback_used") else "done",
+            "ai_verified": _gov_summary.get("verified", True) is not False,
         }
 
-        yield await sse_event("complete", full_response)
-        
+        # Task #706：complete 必须等 DB 落库成功后再发（见下方保存段），
+        # 否则「保存失败被吞 + 前端已显示成功与 AI 徽标」，刷新后整轮对话消失且无提示。
         # 8. 记录用户事件到飞轮
         log_user_action(
             "user_action",
@@ -1541,6 +1693,7 @@ async def send_message_stream(
         
         # 9. 保存消息到数据库（使用独立db session）
         # 修复：在流式生成器内创建新的db session，避免依赖注入的session已关闭
+        _persist_error = None
         async with async_session_factory() as stream_db:
             try:
                 # P0-1：动作成功后把"本次改了哪张图/字段/口径"回写到会话记忆，供下一轮指代消解
@@ -1630,7 +1783,17 @@ async def send_message_stream(
                 await stream_db.commit()
             except Exception as e:
                 await stream_db.rollback()
+                _persist_error = str(e)
                 print(f"[ERROR] 保存消息失败: {e}")
+        
+        # Task #706：落库失败 → 发 error 事件并终止，绝不发 complete 冒充成功
+        if _persist_error:
+            yield await sse_event("error", {
+                "message": f"本轮对话未能保存：{_persist_error[:120]}。请重试，本次结果未持久化。"
+            })
+            yield "data: [DONE]\n\n"
+            return
+        yield await sse_event("complete", full_response)
         
         # 7. 发送结束标记
         yield "data: [DONE]\n\n"

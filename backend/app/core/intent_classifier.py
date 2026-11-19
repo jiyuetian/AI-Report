@@ -226,6 +226,10 @@ class IntentClassifier:
             # 「我指的是每一项的平均值」此前无动作动词 → 落 UNKNOWN/LLM 臆造 4 张 bar；
             # 现用泛指量词(每一项/每个/各/所有/全部/各项) + 聚合词(平均/均值/汇总)直接判 ADD_CHART。
             r"(每一项|每一个|每个|各个|各|所有|全部|这些|那些|各项)\s*[^，。；]{0,15}?(平均值|均值|平均|汇总|平均汇总)",
+            # #3 根因修复：逗号分隔「加X，用Y图」模式（图型词在逗号后）。
+            # 「加一个楼层分布分析，用柱状图」此前规则要求图型词与动词同子句，逗号截断 → 漏判 → 落 LLM；
+            # AI 离线时 LLM 落空 → UNKNOWN 纯报错。现补逗号模式规则，使离线也能命中 ADD_CHART。
+            r"(新增|添加|再加|加|插入|来个|来一张)\s*[^，。；！？]{0,30}?[，,]\s*[^，。；]{0,14}?(用|采用|选|画成|做成|生成|来个|来一张|换成|改为|改成|变成)?\s*(饼图|柱状图|柱图|条形图|直方图|线图|折线图|散点图|环形图|圆环图|表格|图|图表|KPI|kpi|卡片)",
         ],
         IntentType.UNDO: [
             r"(撤销|撤回|回退|取消).{0,8}(刚才|刚刚|上一步|之前|操作|动作|这|那|改|加|删|做)",
@@ -1315,6 +1319,11 @@ class IntentClassifier:
         早于逐子句拆分，避免只命中单个点名字段而漏掉"等"的其余字段。
         """
         import re
+        dim_keywords = ["产品", "地区", "区域", "省份", "城市", "类型", "类别", "分类",
+                        "状态", "渠道", "部门", "客户", "月份", "年份", "季度", "性别", "等级", "业务",
+                        "楼层", "门店", "网点", "支行", "机构", "线路", "班组"]
+        metric_keywords = ["销售额", "销售", "金额", "余额", "数量", "笔数", "总额", "总数",
+                           "均值", "平均", "占比", "收入", "利润", "成本", "额度"]
         # ---- N1-D1 泛指展开（早于逐子句拆分）----
         _GEN = re.compile(r"(每一项|每一个|每个|各个|各|所有|全部|这些|那些|各项|各指标|各字段|各维度)")
         _AGG = re.compile(r"(平均值|均值|平均|汇总|平均汇总)")
@@ -1334,12 +1343,47 @@ class IntentClassifier:
                 })
             if expanded:
                 return expanded
+        # ---- #3 根因修复：逗号分隔「加X，用Y图」合并为单图 ----
+        # 「加一个楼层分布分析，用柱状图」：图型词在逗号后，原单子句拆分让前半句(无图型)与
+        # 后半句(用柱状图)各自落空 → 走 LLM；AI 离线时 LLM 落空 → UNKNOWN 纯报错。
+        # 这里把逗号后的「用X图」抽为强制图型，用前半句做维度/指标提取，产出单图兜底。
+        _comma_ct = re.search(
+            r'[，,]\s*[^，。；]{0,14}?(?:用|采用|选|画成|做成|生成|来个|来一张|换成|改为|改成|变成)?\s*'
+            r'(饼图|柱状图|柱图|条形图|直方图|线图|折线图|散点图|环形图|圆环图|表格|图表|图|KPI|kpi|卡片)',
+            message,
+        )
+        if _comma_ct:
+            _ct = cls._normalize_chart_type(_comma_ct.group(1))
+            _head = message[:_comma_ct.start()].strip().rstrip('，,').strip()
+            if _head:
+                _dim = ""
+                _metric = ""
+                # 维度：命中维度关键词则取真实字段
+                for k in dim_keywords:
+                    if k in _head:
+                        _d = cls._match_field(k, field_profiles, "dim")
+                        if _d:
+                            _dim = _d
+                            break
+                # 指标：仅当真实数值字段名出现在前半句时才取（避免回退到首个数值字段污染）
+                for fp in field_profiles:
+                    nm = fp.get("name") or fp.get("column") or ""
+                    if cls._is_numeric_profile(fp) and (nm in _head or _head in nm):
+                        _metric = nm
+                        break
+                _title = re.sub(
+                    r'^(?:再)?\s*(?:加工|新增|添加|加|来)\s*(?:一个|一张|个|张)?\s*', '', _head
+                ).strip('：: ').strip()
+                _title = re.sub(r'(?:的|了|来)$', '', _title).strip() or (_dim and f"{_dim}分布") or "新图表"
+                return [{
+                    "title": _title,
+                    "chart_type": _ct,
+                    "dimension_field": _dim,
+                    "metric_field": _metric,
+                    "aggregation": None,
+                }]
         parts = re.split(r'[、，,；;与及和]+', message)
         parts = [p.strip() for p in parts if p.strip()]
-        dim_keywords = ["产品", "地区", "区域", "省份", "城市", "类型", "类别", "分类",
-                        "状态", "渠道", "部门", "客户", "月份", "年份", "季度", "性别", "等级", "业务"]
-        metric_keywords = ["销售额", "销售", "金额", "余额", "数量", "笔数", "总额", "总数",
-                           "均值", "平均", "占比", "收入", "利润", "成本", "额度"]
         charts = []
         for p in parts:
             ct = None

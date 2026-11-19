@@ -224,27 +224,48 @@ _ALLOWED_SEMANTIC_TYPES = (
 )
 
 # 模块级 LLM 调用封装，便于测试时 monkeypatch（返回解析后的 dict 或 None）
-def _llm_plan_call(system_prompt: str, user_prompt: str, max_tokens: int = 700) -> Optional[Dict[str, Any]]:
-    """调用 LLM 产出动作 JSON。失败/限流返回 None（交由规则降级，不抛异常）。"""
+class _LLMUnavailable:
+    """哨兵：LLM 调用本身失败（限流/网络/超时），区别于『调用成功但产出不合规』(返回 None)。
+
+    Task #689：用于区分「AI 真的挂了」与「AI 回了但格式不对」，前者必须向用户显式澄清（可重试），
+    而非静默把动作丢进 unparsed 走 UNKNOWN 自然回复（用户感知=没反应/没干事）。
+    """
+    pass
+_LLM_UNAVAILABLE = _LLMUnavailable()
+
+
+def _llm_plan_call(system_prompt: str, user_prompt: str, max_tokens: int = 700):
+    """调用 LLM 产出动作 JSON。
+
+    返回：
+      - dict                        正常 JSON
+      - _LLM_UNAVAILABLE 哨兵       LLM 调用本身失败（限流/网络/超时/无内容）—— 区别于"成功但非法"
+      - None                        LLM 成功返回但内容无法解析为合规 JSON（极少）
+    """
     try:
         from app.core.llm_gateway import get_llm_gateway, LLMRequest
         import concurrent.futures, asyncio
+        from app.core.ai_budget import budget_for as _plan_budget
+        _pb = _plan_budget("plan")
         request = LLMRequest(
             prompt=system_prompt + "\n" + user_prompt,
             json_mode=True,
             max_tokens=max_tokens,
             temperature=0.3,
+            timeout=float(_pb["timeout"]),
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             resp = ex.submit(
                 lambda r: asyncio.run(get_llm_gateway().chat_complete(r)),
                 request,
-            ).result(timeout=40)
-        if not resp or not resp.success or not resp.content:
-            return None
+            ).result(timeout=_pb["timeout"] + 3)
+        if not resp:
+            return _LLM_UNAVAILABLE
+        if not resp.success or not resp.content:
+            return _LLM_UNAVAILABLE
         return resp.response_json or json.loads(resp.content)
     except Exception:
-        return None
+        return _LLM_UNAVAILABLE
 
 
 def _validate_llm_action(data: Dict[str, Any], charts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -357,6 +378,10 @@ def _plan_with_llm(message: str, context: Dict[str, Any]) -> Optional[Dict[str, 
     )
     user = f"用户要求：{message}\n请输出动作 JSON。"
     data = _llm_plan_call(system, user)
+    if data is _LLM_UNAVAILABLE:
+        # Task #689：AI 调用本身失败（限流/网络）→ 显式标记，交由 plan_actions 给出诚实澄清（可重试），
+        # 绝不静默丢动作。
+        return {"llm_unavailable": True}
     if not isinstance(data, dict):
         return None
     if data.get("need_clarify"):
@@ -432,6 +457,118 @@ def _rule_multi_add(clause: str, context: Dict[str, Any]) -> List[Dict[str, Any]
             "classified_by": "rule_multi_metric",
         })
     return acts
+
+
+
+# ── Task #698：列举式多指标请求（「A，B，C…的卡片」）──────────────────
+# 旧链路痛点：整句被 split_clauses 合并成 1 个子句，_explicit_numeric_tokens
+# 要求「≥2 个能精确匹配真实字段的数值 token」，而用户说的是口语派生指标
+# （客户数 / 客户平均年龄 / 失信人员数 …），精确匹配全灭 → 批量分支不触发
+# → 规则单动作把 6 个指标塞进 1 个 metric_name → 只出 1 张臆造空图。
+_CARD_WORDS = ("卡片", "指标卡", "KPI", "kpi", "数字卡", "总计卡", "汇总卡")
+
+
+def _list_metric_phrases(clause: str) -> List[str]:
+    """识别列举式多指标请求，返回指标短语列表；非列举返回 []。"""
+    s = (clause or "").strip()
+    if not s or not any(w in s for w in _CARD_WORDS):
+        return []
+    s = re.sub(r"^(?:新增|添加|加上|加|增加|再来|请|帮我|麻烦|把|将)\s*", "", s)
+    s = re.sub(
+        r"(?:的|等)?(?:指标卡片|指标卡|KPI卡片|KPI卡|KPI|kpi|数字卡|总计卡|汇总卡|卡片|卡)\s*$",
+        "", s,
+    )
+    parts = [p.strip() for p in re.split(r"[,，、;；]", s) if p.strip()]
+    phrases = [p for p in parts if 2 <= len(p) <= 24]
+    return phrases if len(phrases) >= 2 else []
+
+
+def _map_phrase_to_field(phrase: str, fps: List[Dict[str, Any]]) -> Optional[str]:
+    """把口语指标短语映射到真实字段名：精确 → 核心词包含 → 去后缀核心词包含。"""
+    entries = [(fp.get("name") or fp.get("column") or "", fp) for fp in fps]
+    entries = [(n, fp) for n, fp in entries if n]
+    if phrase in [n for n, _ in entries]:
+        return phrase
+    best, best_len = "", 0
+    for nm, _fp in entries:
+        core = re.sub(r"[（(].*?[)）]", "", nm)
+        cores = {core}
+        cores.add(re.sub(r"^(客户|借款人|单位|历史|公积金|收入|职业)", "", core) or core)
+        cores.add(re.sub(r"(人员|未通过|次数|月数|状况|性质|行业|稳定性|总数|总计)$", "", core) or core)
+        for c in cores:
+            if len(c) >= 2 and c in phrase and len(c) > best_len:
+                best, best_len = nm, len(c)
+    if best:
+        return best
+    # 「客户数/总数/人数/计数」类无字段短语：用 ID/编号类字段做 count
+    if any(k in phrase for k in ("客户数", "总数", "人数", "计数", "个数", "笔数", "数量")):
+        for nm, _fp in entries:
+            if any(k in nm for k in ("ID", "编号", "编号", "借据号", "客户号")):
+                return nm
+    return ""
+
+
+def _phrase_aggregation(phrase: str, field: str, fps: List[Dict[str, Any]]) -> str:
+    """按短语语义 + 字段类型推断 KPI 聚合口径。"""
+    if any(k in phrase for k in ("平均", "均值", "avg", "mean")):
+        return "avg"
+    if any(k in phrase for k in ("最大", "最高", "max")):
+        return "max"
+    if any(k in phrase for k in ("最小", "最低", "min")):
+        return "min"
+    fp = next((x for x in fps if (x.get("name") or x.get("column") or "") == field), None)
+    if fp is not None and not _is_numeric_profile(fp):
+        return "count"
+    if any(k in phrase for k in ("数", "人数", "总数", "总计", "计数", "个数", "笔数")):
+        return "count"
+    return "sum"
+
+
+def _build_metric_specs(phrases: List[str], llm_charts: Any,
+                        context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """优先复用分类器 LLM 已产出的多图 spec（AI 主导，含真实字段映射）；
+    LLM 只给 1 张或不合规时，用字段画像做确定性语义映射兜底（不丢动作）。"""
+    fps = ((context or {}).get("dataset_info") or {}).get("field_profiles") or \
+        (context or {}).get("field_profiles") or []
+    names = [(fp.get("name") or fp.get("column") or "") for fp in fps]
+    specs: List[Dict[str, Any]] = []
+
+    if isinstance(llm_charts, list) and len(llm_charts) >= 2:
+        for sp in llm_charts[:8]:
+            if not isinstance(sp, dict):
+                continue
+            mf = sp.get("metric_field") or sp.get("value_field") or sp.get("y_field") or ""
+            if mf and mf in names:
+                agg = sp.get("aggregation") or _phrase_aggregation(
+                    str(sp.get("title") or ""), mf, fps)
+                fp = next((x for x in fps if (x.get("name") or x.get("column") or "") == mf), None)
+                if fp is not None and not _is_numeric_profile(fp):
+                    agg = "count"
+                specs.append({
+                    "title": sp.get("title") or mf,
+                    "chart_type": "kpi",
+                    "metric_field": mf,
+                    "dimension_field": "",
+                    "aggregation": agg,
+                })
+        if len(specs) >= 2:
+            return specs
+
+    # 规则兜底：按短语逐个映射真实字段，映射不到的保留口语标题但不臆造字段
+    used = set()
+    for ph in phrases[:8]:
+        field = _map_phrase_to_field(ph, fps)
+        if not field or field in used:
+            continue
+        used.add(field)
+        specs.append({
+            "title": ph,
+            "chart_type": "kpi",
+            "metric_field": field,
+            "dimension_field": "",
+            "aggregation": _phrase_aggregation(ph, field, fps),
+        })
+    return specs
 
 
 def _consume_llm_plan(llm_plan: Dict[str, Any], clause: str,
@@ -1021,6 +1158,34 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
         analysis = result.get("analysis", {})
         params = analysis.get("extracted_params", {}) or {}
 
+        # ---- Task #698：列举式多指标（「A，B，C…的卡片」）→ 稳定产出 N 张 KPI 卡。
+        # 旧链路要求「≥2 个精确匹配真实字段的数值 token」，口语派生指标全灭 → 只出 1 张。
+        # 这里优先复用分类器 LLM 已产出的 charts（AI 主导），LLM 缺席时规则语义映射兜底；
+        # 且短路掉后续「整串 metric_name 当字段」的 field_not_found 校验。
+        if itype == IntentType.ADD_CHART.value:
+            _phrases = _list_metric_phrases(clause)
+            if len(_phrases) >= 2:
+                _llm_charts = params.get("charts")
+                _specs = _build_metric_specs(_phrases, _llm_charts, context)
+                if _specs:
+                    _from_llm = isinstance(_llm_charts, list) and len(_llm_charts) >= 2
+                    _cb = "llm_multi_kpi" if _from_llm else "rule_multi_kpi"
+                    _p = dict(params)
+                    _p["charts"] = _specs
+                    _p["chart_type"] = "kpi"
+                    _p["classified_by"] = _cb
+                    _p.pop("metric_name", None)   # 禁下游拿整串/首项当字段名校验
+                    _p.pop("target_field", None)
+                    actions.append({
+                        "type": "add_chart", "params": _p, "clause": clause,
+                        "intent_type": "add_chart", "confidence": 88,
+                        "classified_by": _cb,
+                    })
+                    if primary is None:
+                        primary = dict(result)
+                        primary["classified_by"] = _cb
+                    continue
+
         # ---- night49：多指标「加/改多张卡片」请求 → 交给 LLM 批量规划（AI 最高权限生成）。
         # 规则 ADD_CHART/CHANGE_CHART 只会取首个指标生成 1 张卡（生产痛点：只加了 1 张）。
         # 这里在规则分类之后、单动作生成之前短路：命中多指标则直接走 _plan_with_llm；
@@ -1049,9 +1214,40 @@ def plan_actions(message: str, context: Dict[str, Any] = None, override: bool = 
         # ---- P0-2：规则未命中但属看板操作语义 → 交 LLM 主导规划动作 ----
         if itype == IntentType.SEMANTIC_ACTION.value:
             _llm_plan = _plan_with_llm(clause, context)
+            if isinstance(_llm_plan, dict) and _llm_plan.get("llm_unavailable"):
+                # Task #689：AI 不可达（限流/网络/超时）→ 诚实澄清，绝不静默丢动作；
+                # 携带 pending 让「重试」能重新调用 AI 按原要求执行。
+                _msg = (
+                    f"AI 语义规划暂时不可用（模型限流或网络抖动），无法理解「{clause}」并生成动作。"
+                    f"请稍后重试——点「重试」会重新调用 AI 按你的要求执行，不会丢动作。"
+                )
+                actions.append(_clarify_action(
+                    "ai_unavailable", _msg, clause, None,
+                    pending={"intent_type": "semantic", "clause": clause}))
+                if primary is None:
+                    primary = {
+                        "intent_type": "clarify", "confidence": 50,
+                        "analysis": {"raw_message": clause, "extracted_params": {},
+                                     "classified_by": "ai_unavailable"},
+                        "is_confident": False, "classified_by": "ai_unavailable",
+                    }
+                continue
             if _llm_plan is None:
-                # LLM 失败/产出不合规 → 降级回规则（落 unparsed，最终走 UNKNOWN 自然回复）
-                unparsed.append(clause)
+                # LLM 成功返回但产出不合规（语义过于模糊）→ 也给出澄清而非静默丢（保持可重试）
+                _msg = (
+                    f"我没能把「{clause}」精确规划成可执行动作（语义可能过于模糊或缺少必要信息）。"
+                    f"请换种说法，或稍后重试让 AI 重新理解。"
+                )
+                actions.append(_clarify_action(
+                    "semantic_unparsed", _msg, clause, None,
+                    pending={"intent_type": "semantic", "clause": clause}))
+                if primary is None:
+                    primary = {
+                        "intent_type": "clarify", "confidence": 50,
+                        "analysis": {"raw_message": clause, "extracted_params": {},
+                                     "classified_by": "planner"},
+                        "is_confident": False, "classified_by": "planner",
+                    }
                 continue
             _np = _consume_llm_plan(_llm_plan, clause, actions)
             if _np is not None and primary is None:

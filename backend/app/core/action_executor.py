@@ -79,6 +79,17 @@ class ActionExecutor:
         "kpi": "kpi",
         "KPI": "kpi",
         "KPI卡": "kpi",
+        # Task #698：中文「卡片」此前未归一化，KPI 卡被当成 bar/table 建，
+        # 文本指标被塞进数值轴 → 前端「该图表无可绘制数据」。
+        "卡片": "kpi",
+        "指标卡": "kpi",
+        "指标卡片": "kpi",
+        "数字卡": "kpi",
+        "数值卡": "kpi",
+        "总计卡": "kpi",
+        "汇总卡": "kpi",
+        "KPI卡片": "kpi",
+        "kpi_card": "kpi",
         # 英文直接映射
         "pie": "pie",
         "bar": "bar",
@@ -379,6 +390,131 @@ class ActionExecutor:
         ftype = (fp.get("type") or fp.get("dtype") or "").upper()
         return any(t in ftype for t in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "NUMERIC", "REAL", "NUMBER", "DEC"))
 
+    @staticmethod
+    def _ai_resolve_field(mention: str, context: Dict[str, Any]) -> str:
+        """Task #690·执行节点 AI 化：AI 语义字段映射护栏。
+
+        当 AI 规划里引用的字段名（如用户说的「学区」）与数据集真实字段（如「校区」）对不上时，
+        先做本地子串/包含快速匹配；命中不了再让 LLM 从真实字段里挑语义最相近者，
+        而不是像旧逻辑那样 `skipped += 1` 静默丢图（这正是「学区」曾失败的根因）。
+
+        返回真实字段名；都映射不上则返回空串（交由原护栏决定跳/拒）。LLM 不可用时返回空串（不阻塞）。
+        """
+        mention = (mention or "").strip()
+        field_profiles = (context.get("dataset_info") or {}).get("field_profiles") or []
+        names = [fp.get("name") or fp.get("column") for fp in field_profiles
+                 if fp.get("name") or fp.get("column")]
+        if not mention or not names:
+            return ""
+        # 本地快速匹配（无需 LLM）
+        for nm in names:
+            if mention == nm or mention in nm or nm in mention:
+                return nm
+        # 需要语义映射 → 调 LLM（复用规划器的同步 LLM 调用封装）
+        try:
+            from app.core.action_planner import _llm_plan_call
+            _names_str = "、".join(names)
+            _sys = (
+                "你是字段名语义映射器。给定真实字段名列表和用户/AI 提到的字段名，"
+                "从列表里挑一个语义最相近的真实字段名。只返回一个 JSON：{\"field\": \"<字段名或空串>\"}。"
+                "若确实没有相近字段，返回 {\"field\": \"\"}。不要任何解释文字。"
+            )
+            _usr = f"真实字段：{_names_str}\n提到的字段：「{mention}」\n请返回最相近的真实字段名。"
+            data = _llm_plan_call(_sys, _usr, max_tokens=50)
+            if isinstance(data, dict):
+                cand = str(data.get("field") or "").strip().strip('"').strip("'")
+            else:
+                cand = ""
+            if cand in names:
+                return cand
+            for nm in names:  # 模糊兜底
+                if cand and (cand in nm or nm in cand):
+                    return nm
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _ai_complete_chart_spec(params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Task #690·执行节点 AI 化（核心）：图表规格残缺时由 AI 补全，规则只做白名单校验。
+
+        触发场景（用户实测痛点「学区」）：上游分类器抽取出 {"title":"学区分布","field":"校区"}，
+        执行器旧逻辑只认 dimension_field/metric_field，字段被视为空 → 直接拒绝。
+        现在执行节点自己调用 AI，基于「用户原话 + 真实字段画像」产出完整规格
+        （dimension_field / metric_field / chart_type / title），再用字段白名单做护栏校验。
+        AI 不可用时返回 {}，交由既有规则兜底（first_dim_metric），不抢 AI 的决策权也不阻塞。
+        """
+        field_profiles = (context.get("dataset_info") or {}).get("field_profiles") or []
+        names = [fp.get("name") or fp.get("column") for fp in field_profiles
+                 if fp.get("name") or fp.get("column")]
+        if not names:
+            return {}
+        numeric = []
+        for fp in field_profiles:
+            n = fp.get("name") or fp.get("column")
+            if n and ActionExecutor._is_numeric_field(fp):
+                numeric.append(n)
+        text = [n for n in names if n not in numeric]
+        clause = str(params.get("clause") or params.get("raw_message") or "")
+        hint = str(params.get("title") or "")
+        known = str(params.get("field") or params.get("metric_name") or "")
+        known_std = [str(params.get(k) or "") for k in (
+            "dimension_field", "dimension", "metric_field", "metric", "value_field", "y_field")]
+        clues = [c for c in [clause, hint, known] + known_std if c]
+        if not clues:
+            return {}
+        try:
+            from app.core.action_planner import _llm_plan_call
+            sys_p = (
+                "你是 BI 看板图表规格补全器。用户用自然语言要求加一张图，"
+                "但上游抽取的参数残缺、或字段名不在数据集中。请从【真实字段白名单】里"
+                "挑出最合适的维度字段与指标字段，并给出图表类型。\n"
+                "只返回一个 JSON：{\"dimension_field\":\"<白名单里的文本/分类字段或空串>\","
+                "\"metric_field\":\"<白名单里的数值字段或空串>\","
+                "\"chart_type\":\"bar|line|pie|scatter|table|kpi\","
+                "\"title\":\"<不超过12字的中文标题>\"}。\n"
+                "规则：\n"
+                "1. 用户口语字段（如「学区」）要按语义映射到白名单里最接近的真实字段（如「校区」）。\n"
+                "2. 严禁输出白名单之外的字段名；无法确定就填空串。\n"
+                "3. 「分布/占比」优先 pie，「趋势」优先 line，「对比/按…」优先 bar，"
+                "单个数值概览优先 kpi。\n"
+                "4. 不要任何解释文字。\n"
+            )
+            usr_p = (
+                f"【真实字段白名单】{'、'.join(names)}\n"
+                f"【数值字段】{'、'.join(numeric) or '（无）'}\n"
+                f"【文本/分类字段】{'、'.join(text) or '（无）'}\n"
+                f"【用户原话】{clause or hint}\n"
+                f"【上游已抽取线索】{'; '.join(dict.fromkeys(clues))}\n"
+                "请返回图表规格 JSON。"
+            )
+            data = _llm_plan_call(sys_p, usr_p, max_tokens=160)
+            if not isinstance(data, dict):
+                return {}
+            out: Dict[str, Any] = {}
+            d = str(data.get("dimension_field") or "").strip()
+            m = str(data.get("metric_field") or "").strip()
+            ct = str(data.get("chart_type") or "").strip().lower()
+            if d and d in names:
+                out["dimension_field"] = d
+                out["dimension"] = d
+            if m and m in names:
+                out["metric_field"] = m
+                out["metric"] = m
+                out["value_field"] = m
+                out["y_field"] = m
+            if ct in ("bar", "line", "pie", "scatter", "table", "kpi"):
+                out["chart_type"] = ct
+            t = str(data.get("title") or "").strip()
+            if t and len(t) <= 24:
+                out["title"] = t
+            # 规则护栏：至少要有白名单内的指标；否则视为 AI 产出不可用
+            if not out.get("metric_field"):
+                return {}
+            return out
+        except Exception:
+            return {}
+
     # ISS-052 ③：分类维度高基数阈值——超过则柱/线图 Top-N 兜底
     MAX_DIM_CATS = 20
 
@@ -589,17 +725,61 @@ class ActionExecutor:
                 names = [fp.get("name") or fp.get("column") or "" for fp in field_profiles]
                 if cand in names:
                     return cand
+                # Task #698：列举式多指标整串（如「客户数，客户平均年龄，…的卡片」）
+                # 禁止做子串模糊匹配，否则 40 字长串里会捞出「失信人员」，
+                # 与「客户ID」拼成一张臆造空图（用户实测痛点）。
+                if any(p in cand for p in ("，", ",", "、", "；", ";")) or len(cand) > 18:
+                    return ""
                 for nm in names:
                     if cand and (cand in nm or nm in cand):
                         return nm
                 return ""
+            # Task #698：上游（LLM 只回 1 张 / 规则提取）偶尔把列举式多指标塞进
+            # 单个 spec：title 是 40 字整串、metric_field 为空、dimension_field 硬填「客户ID」。
+            # 旧逻辑会从长串里模糊捞出「失信人员」拼成「失信人员按客户ID分布」空图。
+            # 这里统一展开成 N 张带真实字段的 KPI spec；展开失败则保持原 spec 由下方护栏跳过。
+            _expanded_specs = []
+            for _sp in charts_spec:
+                _sp_title = str(_sp.get("title") or "").strip()
+                _is_list = (any(p in _sp_title for p in ("，", ",", "、", "；", ";"))
+                            or len(_sp_title) > 18)
+                if _is_list and not (_sp.get("metric_field") or _sp.get("value_field")):
+                    try:
+                        import re as _re
+                        from app.core.action_planner import _build_metric_specs
+                        _body = _re.sub(
+                            r"(?:的|等)?(?:指标卡片|指标卡|KPI卡片|KPI卡|KPI|kpi|数字卡|总计卡|汇总卡|卡片|卡)\s*$",
+                            "", _sp_title)
+                        _phr = [x.strip() for x in _re.split(r"[,，、;；]", _body) if x.strip()]
+                        _phr = [x for x in _phr if 2 <= len(x) <= 24]
+                        _made = _build_metric_specs(_phr, None, context) if len(_phr) >= 2 else []
+                        if _made:
+                            _expanded_specs.extend(_made)
+                            continue
+                    except Exception as _ex:
+                        print(f"[Executor] 列举式 spec 展开失败(忽略): {_ex}")
+                _expanded_specs.append(_sp)
+            charts_spec = _expanded_specs
+
             for spec in charts_spec[:max(0, limit - existing)]:
                 ct = ActionExecutor.normalize_chart_type(spec.get("chart_type", "bar"))
                 title = (spec.get("title") or "").strip()
                 metric_cand = spec.get("metric_field") or spec.get("metric_name") or title
-                dim_cand = spec.get("dimension_field") or title
+                # Task #698：KPI 卡不需要分类维度，禁止拿标题去猜维度
+                # （旧逻辑对 6 张卡各白调一次 LLM 做语义映射，既慢又可能臆造字段）。
+                dim_cand = spec.get("dimension_field") or ("" if ct == "kpi" else title)
                 metric = _strict_match(metric_cand, "metric")
                 dim = _strict_match(dim_cand, "dim")
+                # Task #690：AI 语义字段映射——AI 规划里引用字段(如「学区」)对不上真实字段(如「校区」)时，
+                # 调 LLM 选最相近真实字段，而非静默丢图(skipped)。
+                if not metric and metric_cand:
+                    _r = ActionExecutor._ai_resolve_field(metric_cand, context)
+                    if _r:
+                        metric = _strict_match(_r, "metric")
+                if not dim and dim_cand:
+                    _r = ActionExecutor._ai_resolve_field(dim_cand, context)
+                    if _r:
+                        dim = _strict_match(_r, "dim")
                 # 2026-09-21 修复（1.5）：字段无法解析为真实字段时，跳过该图，
                 # 绝不拿"第一个维度/指标"臆造无关的「新增bar」垃圾图。
                 if not metric:
@@ -625,7 +805,9 @@ class ActionExecutor:
                 title = title or f"{dim or '数据'}分布"
                 # night13 Item2 (ISS-055/K-6)：LLM 常把用户口语原句当标题
                 # （实测出现过「总销量的旁边加上一个销售额」），此处强制改写为「指标名+维度」。
-                if spec.get("title") and ActionExecutor._is_speech_fragment_title(title):
+                # Task #701：AI 治理路径下 AI 拥有最高配置权，标题由 AI 决定，规则不改写
+                if (spec.get("title") and not spec.get("preserve_title")
+                        and ActionExecutor._is_speech_fragment_title(title)):
                     title = ActionExecutor._canonical_title(ct, dim, metric, spec.get("aggregation"))
                 # N1-D3'：同标题+同图型已存在则跳过，避免纠正类重复指令叠加成翻倍卡片
                 if any(c.get("title") == title and c.get("chart_type") == ct
@@ -639,7 +821,15 @@ class ActionExecutor:
                     if _dc is not None and _dc > ActionExecutor.MAX_DIM_CATS:
                         top_n = ActionExecutor.MAX_DIM_CATS
                 seq = existing + len(new_charts) + 1
-                _new = ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq, spec.get("aggregation"))
+                # Task #698：KPI 卡指标若为文本/分类字段，sum/avg 恒为空，
+                # 统一改成 count（计数非空值），保证卡片有真实可绘制数据。
+                _agg = spec.get("aggregation")
+                if ct == "kpi":
+                    _m_fp = next((fp for fp in field_profiles
+                                  if (fp.get("name") or fp.get("column")) == metric), None)
+                    if _m_fp is not None and not ActionExecutor._is_numeric_field(_m_fp):
+                        _agg = "count"
+                _new = ActionExecutor._build_chart(ct, title, dim, metric, dataset_id, seq, _agg)
                 if top_n:
                     _new["config"]["top_n"] = top_n
                     _new["config"]["sort"] = "desc"
@@ -652,9 +842,37 @@ class ActionExecutor:
             # 既有的真实字段键（dimension_field/metric_field/...）直接放行；
             # 口语提取的 metric_name（K-2「指标要担保余额」）也接受——但必须经字段画像校验
             # 真实存在，命中则把 metric 指向该真实字段放行，命不中则与 K-8 一致拒绝臆造。
+            # ---- Task #690：执行节点参数别名归一化 ----
+            # 上游 LLM 分类器常产出 {"title": "学区分布", "field": "校区"} 这类非标准键
+            # （AI 其实已完成「学区→校区」语义映射），但执行器旧逻辑只认
+            # dimension_field/metric_field，字段被视为空而直接拒绝——正是「学区」失败的根因。
+            _alias = (params.get("field") or params.get("x_field")
+                      or params.get("category_field") or params.get("group_by"))
+            if _alias and not (params.get("dimension_field") or params.get("metric_field")
+                               or params.get("dimension") or params.get("metric")):
+                _alias_fp = next((fp for fp in field_profiles
+                                  if (fp.get("name") or fp.get("column")) == _alias), None)
+                if _alias_fp:
+                    params = dict(params)
+                    if ActionExecutor._is_numeric_field(_alias_fp):
+                        params["metric_field"] = _alias
+                        params["metric"] = _alias
+                        params["value_field"] = _alias
+                    else:
+                        params["dimension_field"] = _alias
+                        params["dimension"] = _alias
             _has_explicit_field = (params.get("dimension_field") or params.get("metric_field")
                                    or params.get("value_field") or params.get("y_field")
                                    or params.get("metric") or params.get("dimension"))
+            # ---- Task #690：规格不完整（缺指标/图型）→ 执行节点自己调 AI 补全 ----
+            # AI 主导决策，规则只做字段白名单校验；AI 不可用则退回 first_dim_metric 规则地基。
+            if not (params.get("metric_field") or params.get("metric")
+                    or params.get("value_field") or params.get("y_field")):
+                _spec = ActionExecutor._ai_complete_chart_spec(params, context)
+                if _spec:
+                    params = dict(params)
+                    params.update(_spec)
+                    _has_explicit_field = True
             _mn = (params.get("metric_name") or "").strip()
             if not _has_explicit_field and _mn:
                 _mn_field = next((fp.get("name") or fp.get("column") for fp in field_profiles
@@ -665,7 +883,41 @@ class ActionExecutor:
                     params["metric"] = _mn_field
                     params["metric_field"] = _mn_field
                     _has_explicit_field = True
-                # 命不中 → 落到下面的拒绝分支（K-8）
+                else:
+                    # Task #690：AI 语义字段映射（如「学区」→「校区」），而非直接拒绝（K-8 兜底）
+                    _rf = ActionExecutor._ai_resolve_field(_mn, context)
+                    if _rf:
+                        params = dict(params)
+                        params["metric"] = _rf
+                        params["metric_field"] = _rf
+                        _has_explicit_field = True
+            # Task #690：即便 params 已带字段名（如 metric/dimension），若对不上真实字段也用 AI 映射一遍，
+            # 避免「学区」这类口语/别名被当真实字段臆造成空数据图。
+            # 无条件扫描：字段提及对不上真实字段时统一走 AI 语义映射（Task #690）
+            if field_profiles:
+                _names = [fp.get("name") or fp.get("column") for fp in field_profiles
+                          if fp.get("name") or fp.get("column")]
+                _m_mention = params.get("metric") or params.get("metric_field") or params.get("value_field") or params.get("y_field") or ""
+                _d_mention = params.get("dimension") or params.get("dimension_field") or ""
+                _resolved = False
+                if _m_mention and _m_mention not in _names:
+                    _rf = ActionExecutor._ai_resolve_field(_m_mention, context)
+                    if _rf:
+                        params = dict(params)
+                        params["metric"] = _rf
+                        params["metric_field"] = _rf
+                        params["value_field"] = _rf
+                        params["y_field"] = _rf
+                        _resolved = True
+                if _d_mention and _d_mention not in _names:
+                    _rf = ActionExecutor._ai_resolve_field(_d_mention, context)
+                    if _rf:
+                        params = dict(params)
+                        params["dimension"] = _rf
+                        params["dimension_field"] = _rf
+                        _resolved = True
+                if _resolved:
+                    _has_explicit_field = True
             if not _has_explicit_field:
                 _fns = [fp.get("name") or fp.get("column") for fp in field_profiles if fp.get("name") or fp.get("column")][:12]
                 _avail = "、".join(_fns) if _fns else "（当前数据集没有可用字段画像）"
@@ -711,7 +963,8 @@ class ActionExecutor:
                 if _dc2 is not None and _dc2 > ActionExecutor.MAX_DIM_CATS:
                     top_n = ActionExecutor.MAX_DIM_CATS
             # night13 Item2 (ISS-055/K-6)：标题语义校验（含默认标题「新增XX」也需规范化）
-            if (not title) or ActionExecutor._is_speech_fragment_title(title):
+            if ((not title) or (not params.get("preserve_title")
+                                and ActionExecutor._is_speech_fragment_title(title))):
                 title = ActionExecutor._canonical_title(chart_type, dim, metric, params.get("aggregation"))
             if existing < limit:
                 seq = existing + 1
@@ -1085,9 +1338,16 @@ class ActionExecutor:
                 f"【用户要求】{user_hint or '基于真实字段写一段结论'}\n"
                 "只输出结论正文（不超过80字），不要解释、不要JSON。"
             )
+            from app.core.ai_budget import budget_for as _budget_for
+            _b = _budget_for("execute")
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                resp = ex.submit(lambda: asyncio.run(llm_chat(prompt, timeout=40))).result(timeout=45)
-            text = (resp or "").strip()
+                resp = ex.submit(lambda: asyncio.run(llm_chat(
+                    prompt, timeout=float(_b["timeout"]),
+                    max_tokens=int(_b["max_tokens"]), max_retries=int(_b["retries"]),
+                ))).result(timeout=_b["timeout"] + 3)
+            # Task #706：llm_chat 返回 LLMResponse dataclass，不是 str；
+            # 原 (resp or "").strip() 恒抛 AttributeError 被 except 吞掉 → AI 结论润色恒失败。
+            text = (getattr(resp, "content", None) or "").strip()
             if not text:
                 return None, "empty"
             # ---- anti-hallucination 校验 ----
