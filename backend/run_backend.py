@@ -15,12 +15,18 @@ os.chdir(BACKEND_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-# 后端需经活代理访问外网 LLM。工具 shell 环境锁定了不稳定的 59106 代理，
-# 故在 import 任何网络库之前强制注入活代理；可用 LLM_PROXY 环境变量覆盖
-# （该键为自定义键，不被工具 shell 锁定），便于路演换网络时配置。
-_PROXY = os.environ.get("LLM_PROXY") or "http://127.0.0.1:7897"
-os.environ["HTTPS_PROXY"] = _PROXY
-os.environ["HTTP_PROXY"] = _PROXY
+# 代理策略（2026-11-18 修复，#43 真机阻塞根因）：
+# 历史坑：无条件把 http://127.0.0.1:7897 注入 HTTP(S)_PROXY。代理软件一关，
+# 所有 LLM 调用即 "All connection attempts failed"，即使网关可直连也会全链失败。
+# 新策略：只有显式设置 LLM_PROXY 才覆盖代理；LLM_PROXY=none/off/direct 显式禁用；
+# 未设置时沿用进程外部环境（直连或系统代理由运行环境决定），不再硬编码死代理。
+_PROXY = (os.environ.get("LLM_PROXY") or "").strip()
+if _PROXY and _PROXY.lower() not in ("none", "off", "direct"):
+    os.environ["HTTPS_PROXY"] = _PROXY
+    os.environ["HTTP_PROXY"] = _PROXY
+elif _PROXY.lower() in ("none", "off", "direct"):
+    os.environ.pop("HTTPS_PROXY", None)
+    os.environ.pop("HTTP_PROXY", None)
 
 # === 环境固化：magic DLL PATH ===
 # 历史坑：python-magic 依赖的 libmagic DLL 不在 PATH 时，app.api.upload 里的

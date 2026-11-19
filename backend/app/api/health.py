@@ -6,6 +6,7 @@ from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.deployment_posture import posture_summary
 
 router = APIRouter(tags=["Health"])
 
@@ -40,15 +41,33 @@ async def _check_llm_reachable(attempts: int = 3) -> dict:
                 # night19 任务 A：去掉 2026-10-03 的 max_retries=0 + 18s 假快路径 hack。
                 # 用户拍板：18s 上限不可取——探针应反映真实链路可用性（可靠、可追溯），允许跑几分钟；
                 # 保留 llm_chat 内部真实重试语义（MAX_RETRIES），整体上限放宽到 180s。
+                # 2026-11-02 调整：探针已改为「建议信号」（brain 管线乐观放行，不再硬锁全链路），
+                # 故此处只需快速探一次真实链路是否可用即可，缩短上限避免无意义长阻塞。
+                # 2026-11-12（#695）：原探针「请只回复一个字：好」是 8 字符自然语言请求，
+                # 与真实质检/图表生成的长 JSON 负载完全脱节，短 prompt 绿灯不代表 AI 可用。
+                # 改成 json_mode 的真实量级 JSON 请求（约 2k 字符），且必须能解析出 JSON。
+                _probe_fields = "\n".join(
+                    f"- 字段{i} (VARCHAR): 非空{900 + i}/1000行, 空值率0.0{i}, 唯一值{30 + i}个"
+                    for i in range(10)
+                )
+                _probe_prompt = (
+                    "你是数据质量分析师。以下是一张数据表的结构与统计，请判断是否存在规则未覆盖的潜在问题，"
+                    "最多返回2条；只返回合法JSON，不要解释文字、不要推理过程、不要代码块围栏。"
+                    "\n\n## 表结构\n" + _probe_fields +
+                    "\n\n## 输出格式\n" +
+                    '{"issues":[{"column":"真实字段名","severity":"warning","message":"概括","detail":"说明","row_count":1}]}' +
+                    "\n无问题则返回 " + '{"issues":[]}' + "。"
+                )
                 resp = await asyncio.wait_for(
-                    llm_chat(prompt="请只回复一个字：好", json_mode=False, timeout=60.0),
-                    timeout=180.0,
+                    llm_chat(prompt=_probe_prompt, json_mode=True, timeout=45.0,
+                             respect_cooldown=False, max_retries=1),
+                    timeout=90.0,
                 )
             except asyncio.TimeoutError:
-                return {"reachable": False, "reason": "gateway 探针超时(>180s)"}
-            if getattr(resp, "success", False) and (getattr(resp, "content", None) or "").strip():
-                return {"reachable": True, "reason": "ok (gateway)"}
-            return {"reachable": False, "reason": f"gateway 不可用: {getattr(resp, 'error', '无 content')}"}
+                return {"reachable": False, "reason": "gateway 真实负载探针超时(>90s)"}
+            if getattr(resp, "success", False) and getattr(resp, "response_json", None) is not None:
+                return {"reachable": True, "reason": "ok (gateway·真实JSON负载探针)"}
+            return {"reachable": False, "reason": f"gateway 真实负载探针不可用: {getattr(resp, 'error', '无有效JSON')}"}
         except Exception as e:
             return {"reachable": False, "reason": f"gateway_probe_error: {str(e)[:200]}"}
 
@@ -119,14 +138,31 @@ _LLM_PROBE_CACHE: dict = {
     "checked_at": None,          # ISO 时间字符串
     "elapsed_ms": None,          # 本次探针耗时
     "reason": None,              # 人类可读说明
-    "expected_max_wait_s": 180,  # 预期最长等待（前端醒目提示用）
+    "expected_max_wait_s": 90,   # 预期最长等待（前端醒目提示用）
 }
+# 2026-11-12（#695）：探针缓存 TTL。原实现 checked_at 可能停在昨天，/health 仍返回绿灯。
+_LLM_PROBE_TTL_SECONDS = 120
 _PROBE_LOCK = asyncio.Lock()
 
 
 def _now_iso() -> str:
     from datetime import datetime
     return datetime.utcnow().isoformat()
+
+
+def _probe_is_stale() -> bool:
+    """缓存超过 TTL 即视为过期，禁止把隔夜绿灯当成本次可达。"""
+    ts = _LLM_PROBE_CACHE.get("checked_at")
+    if not ts:
+        return True
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() > _LLM_PROBE_TTL_SECONDS
+    except Exception:
+        return True
 
 
 async def _run_llm_probe() -> None:
@@ -177,7 +213,11 @@ async def health_check():
     P4-3 修复：只返回服务状态与版本，不泄露内部 provider 错误/会话 sid 等敏感信息。
     night19 任务 A：立即返回缓存的上一次 LLM 探针结果；若从未探测过则后台触发一次真实探针。
     """
-    if _LLM_PROBE_CACHE.get("state") in (None, "unknown"):
+    state_now = _LLM_PROBE_CACHE.get("state")
+    if state_now != "probing" and (state_now in (None, "unknown") or _probe_is_stale()):
+        # 过期缓存立即作废，避免隔夜绿灯误导（reachable 置 None 而不是沿用旧值）
+        _LLM_PROBE_CACHE.update(state="unknown", llm_reachable=None,
+                                reason="探针结果已过期，正在重新探测")
         _trigger_probe_bg()
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -188,6 +228,9 @@ async def health_check():
             "llm_reachable": _LLM_PROBE_CACHE.get("llm_reachable"),
             "llm_state": _LLM_PROBE_CACHE.get("state"),
             "checked_at": _LLM_PROBE_CACHE.get("checked_at"),
+            "probe_ttl_s": _LLM_PROBE_TTL_SECONDS,
+            # Task #716：只下发一个布尔摘要，不暴露具体未通过项给外部探测者
+            "deployment": posture_summary(),
         }
     )
 
@@ -198,7 +241,12 @@ async def health_llm_probe():
 
     前端轮询直到 state 离开 probing 后显示 ok/fail。预期最长等待见 expected_max_wait_s。
     """
-    if _LLM_PROBE_CACHE.get("state") != "probing":
+    state_now = _LLM_PROBE_CACHE.get("state")
+    if state_now != "probing":
+        # 每次显式调用 /health/llm 都触发一次新探针；过期缓存先作废，不返回隔夜结果。
+        if _probe_is_stale():
+            _LLM_PROBE_CACHE.update(state="unknown", llm_reachable=None,
+                                    reason="探针结果已过期，正在重新探测")
         _trigger_probe_bg()
     return JSONResponse(
         status_code=status.HTTP_200_OK,

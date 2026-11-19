@@ -69,6 +69,31 @@ def _extract_json(text: str) -> Optional[Any]:
             start = text.find(opener, start + 1)
     return None
 
+
+def _json_from_reasoning(text: str) -> Optional[Any]:
+    """推理模型把 JSON 写在 reasoning/reasoning_content 时的兜底提取（2026-11-12）。
+
+    背景：sensenova-6.8-flash-lite / glm-5.2 等推理模型在长 prompt 下默认开启
+    reasoning，会把 max_tokens 全部消耗在 reasoning_content，导致
+    choices[0].message.content 为空、网关误判「响应结构损坏」并 failover 到下一层。
+    只在「文本本身就是一段完整 JSON」时才接受，避免从大段推理文字里
+    误捞出 prompt 中的示例 JSON 当成真实业务结果。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = text.strip()
+    _fence = re.search(r"```(?:json)?\s*(.*?)\s*```", t, re.DOTALL | re.IGNORECASE)
+    if _fence:
+        t = _fence.group(1).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    if t[:1] in ("{", "["):
+        return _extract_json(t)
+    return None
+
+
 # 从settings加载配置（确保.env文件生效）
 try:
     from app.core.config import settings, get_llm_provider_list
@@ -85,11 +110,31 @@ except Exception:
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-MAX_RETRIES = 2  # ISS-045 网关自动退避：每 key 初始+2次重试 = 3 次尝试，退避 8/16/24s（min(8*(retry+1),45)）；外层仍逐 provider 切换
+# 2026-11-11 还原约定逻辑（v9.2 修复记录：多 key 重试 fail-fast，MAX_RETRIES 2→1，退避封顶 0.5s）：
+# 单 provider 只初始+1次重试=2 次尝试即换下一个，绝不在同一 provider 上死磕；外层仍逐 provider 轮训。
+MAX_RETRIES = 1
+
+# 2026-11-11 修复（Task #688·429 根因）：单一 provider 被限流(429)后进入短冷却，
+# 避免同一请求内反复锤同簇(共享配额)模型、以及后续请求反复重试该 provider 空耗 RPM 预算。
+# 但按「provider 名」冷却（非 host 簇），使同 host 的其它模型(如 6.8-lite 与 kimi 共享 token.sensenova.cn)
+# 仍有机会在下一请求被重试——契合「kimi/deepseek/glm 共享一份配额、6.8-lite 另有独立额度」的真实 429 分布。
+PROVIDER_COOLDOWN_SECONDS = 10
+
+
+def _host_of(base_url: str) -> str:
+    """取 base_url 的 host（netloc），用于同簇限流判定。"""
+    if not base_url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        return urlparse(base_url).netloc or base_url
+    except Exception:
+        return base_url
+
 
 def _backoff_wait(retry: int) -> float:
-    """指数退避等待（秒）：8*(retry+1)，封顶 45s → retry=0/1/2 ⇒ 8/16/24s。"""
-    return min(8 * (retry + 1), 45)
+    """约定 fail-fast 退避（秒）：封顶 0.5s，仅为错峰避免瞬时并发撞同一限流窗口。"""
+    return min(0.5, 8 * (retry + 1))
 
 
 def _mask(text: str) -> str:
@@ -130,6 +175,10 @@ class LLMRequest:
     request_id: str = ""
     user_id: str = ""
     timeout: Optional[float] = None  # 单次调用超时（秒），为空则用全局默认
+    # Task #728/#33：整次调用总预算（秒）。不传则完全沿用旧行为；传入后网关按
+    # 「总预算剩余」夹紧每次 client.post 的 timeout，并在耗尽前停止 failover，
+    # 保证一次完整跨 provider 切换能在节点预算内跑完（见 chat_complete）。
+    total_timeout: Optional[float] = None
     model: Optional[str] = None  # 模型覆盖（默认用 settings.LLM_MODEL）
 
 
@@ -328,6 +377,7 @@ class LLMGateway:
         self._clients: Dict = {}
         self.mock_mode = not self.providers  # 无可用 provider → Mock 模式
         self._rate_limit_counts: Dict[str, int] = {}  # night23 Task C：各 provider（层）429 累计计数
+        self._provider_cooldown: Dict[str, float] = {}  # Task #688：provider 名 → 限流冷却截止时间戳
 
     def _build_client(self, prov: Dict) -> httpx.AsyncClient:
         base_url = prov.get("base_url") or "http://localhost:8001/v1"
@@ -366,6 +416,7 @@ class LLMGateway:
         fallback_response: Optional[Dict] = None,
         messages: Optional[List[Dict]] = None,
         max_retries: Optional[int] = None,
+        respect_cooldown: bool = True,
     ) -> LLMResponse:
         """
         基础聊天完成
@@ -376,6 +427,11 @@ class LLMGateway:
         """
         start_time = time.time()
         request_id = request.request_id or str(int(time.time() * 1000))
+        # Task #728/#33：整次调用总预算（可选）。不传时 total_deadline=None，
+        # 下面的夹紧逻辑全部跳过，旧链路行为零变化。
+        _tt = getattr(request, "total_timeout", None)
+        total_deadline = (time.monotonic() + float(_tt)) if _tt else None
+        budget_exhausted = False
         
         # 1. 限流检查
         await rate_limiter.acquire(request_id)
@@ -430,10 +486,30 @@ class LLMGateway:
             # 供 health 探针在 18s 内判定可达性；不传（None）时保持 MAX_RETRIES=2 现状不变。
             retries = MAX_RETRIES if max_retries is None else max(0, int(max_retries))
             # 外层：逐个 provider 容错（多 key / 跨 provider 切换）
+            # 2026-11-12 弱化（#692）：原实现「任一 429 立刻把整个 host 加入热跳过」，
+            # 会让共享 token.sensenova.cn 的 glm/deepseek/kimi 在第一层 429 后全被跳过，
+            # 5 层链实砍成 2~3 层。改为「同簇累计 2 次 429 才跳过」，保留同簇兜底机会。
+            host_429_counts: Dict[str, int] = {}
             for pi, prov in enumerate(self.providers):
+                # Task #728/#33：总预算耗尽就停止扩容 failover，避免外层 wait_for
+                # 把「正在切换 provider」的请求静默砍成 TimeoutError。
+                if total_deadline is not None:
+                    if budget_exhausted or total_deadline - time.monotonic() < 2.5:
+                        print(f"[LLM-BUDGET] 总预算耗尽，停止 failover（request_id={request_id}）")
+                        break
                 client = self._get_client(prov)
                 prov_name = prov.get("name", f"provider#{pi}")
                 base_url = prov.get("base_url") or ""
+                host = _host_of(base_url)
+                # Task #688：限流冷却跳过（跨请求生效；探针 max_retries==0 时 respect_cooldown=False 豁免）
+                if respect_cooldown:
+                    _cd = self._provider_cooldown.get(prov_name, 0.0)
+                    if _cd and time.time() < _cd:
+                        print(f"[LLM-COOLDOWN] 跳过 {prov_name}（限流冷却中，至 {_cd:.0f}）")
+                        continue
+                    if host and host_429_counts.get(host, 0) >= 2:
+                        print(f"[LLM-HOT-HOST] 跳过 {prov_name}（同簇 {host} 已累计 2 次限流）")
+                        continue
                 # 六层 failover 修复（night10）：首层沿用调用方显式 model（如 kimi-k3），
                 # 一旦 failover 到备胎 provider，必须用该 provider 自己的 model
                 # （glm-5.3-flash / glm-4.5-air / deepseek-v4-flash / sensenova-6.8-flash-lite），
@@ -457,14 +533,38 @@ class LLMGateway:
                         }
                         if need_business:
                             request_body["business_type"] = "chat"
-                        if request.json_mode:
-                            request_body["response_format"] = {"type": "json_object"}
+                        # 2026-11-12（#692）：per-provider extra_body 合并。
+                        # 商汤 6.8-flash-lite / glm / deepseek 等推理模型在长 prompt 下默认开启
+                        # reasoning，会把 max_tokens 烧在 reasoning_content，content 为空；
+                        # 实测只有 {"thinking": {"type": "disabled"}} 能稳定返回合法 JSON。
+                        # 配置来源：.env 的 LLM_PROVIDERS[].extra_body，按 provider 生效。
+                        _extra = prov.get("extra_body")
+                        if isinstance(_extra, dict) and _extra:
+                            for _ek, _ev in _extra.items():
+                                if _ek not in ("model", "messages"):  # 核心路由参数不允许被覆盖
+                                    request_body[_ek] = _ev
+                        # 不再下发 response_format={"type":"json_object"}：
+                        # 部分聚合网关/模型（如 sensenova-6.8-flash-lite）对该参数支持不稳，
+                        # 会返回不含 message.content 的异常结构 → 客户端 KeyError('content') 崩溃、
+                        # 探针误判「不可达」、全链路降级规则。JSON 结构化输出改由系统提示强制 +
+                        # _extract_json 解析（网关原生设计），不依赖 response_format。
 
                         # ISS-103 质检 30s 封顶：允许每个 provider 在 .env 里用 "timeout" 字段
                         # 单独设定单次调用超时（覆盖 request.timeout）。健康主用模型 1-3s 返回，
                         # 给 5-6s 足够；OpenRouter/unisound 免费大模型常需 15-20s，给 20-22s 才有机会
                         # 在 25s 总预算内完成。不写该字段则回落 request.timeout / 全局默认。
-                        eff_timeout = prov.get("timeout") or getattr(request, "timeout", None) or TIMEOUT_SECONDS
+                        # Task #706：预算优先 —— ai_budget 下发的 request.timeout 必须真正生效；
+                        # .env 的 per-provider timeout 退为「未指定预算时」的默认值，不再静默覆盖节点预算。
+                        eff_timeout = getattr(request, "timeout", None) or prov.get("timeout") or TIMEOUT_SECONDS
+                        # Task #728/#33：单次调用不得超过「总预算剩余」。首打超时后
+                        # 剩余时间仍够切下一层时，把第二层的等待窗口收敛到剩余值，
+                        # 而不是让第二层再耗满整份单次超时。
+                        if total_deadline is not None:
+                            _remain = total_deadline - time.monotonic()
+                            if _remain < 2.5:
+                                budget_exhausted = True
+                                break
+                            eff_timeout = min(float(eff_timeout), _remain)
                         response = await client.post(
                             "/chat/completions",
                             json=request_body,
@@ -491,7 +591,28 @@ class LLMGateway:
                             last_error = f"LLM返回错误体(HTTP 200 实为失败): {_em}"
                             key_exhausted = True
                             break
-                        content = data["choices"][0]["message"]["content"]
+                        # 防御式提取 content：message 可能缺失 content 键（部分 provider 异常响应 /
+                        # content 为 null），缺失即视为本次失败并切下一 provider，避免 KeyError 崩溃中毒探针。
+                        _msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
+                        content = _msg.get("content")
+                        if not isinstance(content, str) or not content.strip():
+                            # 推理模型兜底：content 为空但 reasoning 里是一整段合法 JSON 时，
+                            # 拿它当 content 用（否则本层直接判失败，白白浪费一次 failover）。
+                            _reason_json = None
+                            if request.json_mode:
+                                for _rk in ("reasoning_content", "reasoning", "reasoning_text"):
+                                    _rj = _json_from_reasoning(_msg.get(_rk))
+                                    if _rj is not None:
+                                        _reason_json = _rj
+                                        break
+                            if _reason_json is not None:
+                                content = json.dumps(_reason_json, ensure_ascii=False)
+                                print(f"[LLM-REASONING-FALLBACK] provider {prov_name} content 为空，已从 {_rk} 提取合法 JSON")
+                            else:
+                                print(f"[LLM] provider {prov_name} content 为空且 reasoning 无合法 JSON，切换下一 provider")
+                                last_error = "LLM响应 content 为空（推理模型耗尽 token 或结构损坏）"
+                                key_exhausted = True
+                                break
                         response_json = None
                         if request.json_mode:
                             response_json = _extract_json(content)
@@ -552,6 +673,9 @@ class LLMGateway:
                         last_error = f"LLM超时(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
                         if retry < retries:
+                            if total_deadline is not None and total_deadline - time.monotonic() < 2.5 + _backoff_wait(retry):
+                                budget_exhausted = True
+                                break
                             await asyncio.sleep(_backoff_wait(retry))  # ISS-045 指数退避 8/16/24s
                             continue
                         key_exhausted = True
@@ -560,6 +684,9 @@ class LLMGateway:
                         last_error = f"LLM网络错误(attempt {retry + 1}): {e}"
                         print(f"[LLM] provider {prov_name} {last_error}")
                         if retry < retries:
+                            if total_deadline is not None and total_deadline - time.monotonic() < 2.5 + _backoff_wait(retry):
+                                budget_exhausted = True
+                                break
                             await asyncio.sleep(_backoff_wait(retry))  # ISS-045 指数退避 8/16/24s
                             continue
                         key_exhausted = True
@@ -576,6 +703,11 @@ class LLMGateway:
                             # 立即 failover 到下一层（更可能拥有独立配额）既快又稳。
                             # 每层记 429 计数，供健康监测与 failover 决策。
                             self._incr_rate_limit(prov_name)
+                            if respect_cooldown:
+                                # 该 provider 进入冷却；同簇只在累计 2 次 429 后才触发热跳过
+                                self._provider_cooldown[prov_name] = time.time() + PROVIDER_COOLDOWN_SECONDS
+                                if host:
+                                    host_429_counts[host] = host_429_counts.get(host, 0) + 1
                             last_error = f"LLM限流(429, attempt {retry + 1}): {err_body}"
                             print(f"[LLM-RATELIMIT] provider {prov_name} 429（累计第{self._rate_limit_counts.get(prov_name, 0)}次），立即切下一层（不等待退避 {_backoff_wait(retry)}s）")
                             key_exhausted = True
@@ -802,6 +934,9 @@ async def llm_chat(
     user_id: str = "",
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    respect_cooldown: bool = True,
+    max_tokens: Optional[int] = None,
+    total_timeout: Optional[float] = None,
 ) -> LLMResponse:
     """
     便捷调用函数
@@ -833,5 +968,7 @@ async def llm_chat(
         model=model,
         user_id=user_id,
         timeout=timeout,
+        max_tokens=int(max_tokens) if max_tokens else 2000,
+        total_timeout=total_timeout,
     )
-    return await gateway.chat_complete(request, fallback, messages=messages, max_retries=max_retries)
+    return await gateway.chat_complete(request, fallback, messages=messages, max_retries=max_retries, respect_cooldown=respect_cooldown)

@@ -126,7 +126,12 @@ def get_llm_provider_list() -> list:
                 norm = []
                 for it in items:
                     if isinstance(it, dict) and it.get("api_key"):
-                        norm.append({
+                        # 2026-11-12（质检连续失败根因之一）：原来只挑 6 个字段重组，
+                        # 把 .env 里的 per-provider "timeout" / "extra_body" 全丢掉，
+                        # 网关 eff_timeout 永远回落 request.timeout，超时配置从未生效。
+                        # 改为保留原始 dict 全部扩展字段，只覆盖需要规范化的键。
+                        _prov = dict(it)
+                        _prov.update({
                             "name": it.get("name", f"provider{len(norm)}"),
                             "base_url": it.get("base_url") or settings.LLM_BASE_URL,
                             "api_key": it.get("api_key"),
@@ -134,6 +139,7 @@ def get_llm_provider_list() -> list:
                             "function_calling": it.get("function_calling", settings.LLM_FUNCTION_CALLING),
                             "json_mode": it.get("json_mode", settings.LLM_JSON_MODE),
                         })
+                        norm.append(_prov)
                 if norm:
                     return norm
         except Exception as e:
@@ -149,11 +155,3 @@ def get_llm_provider_list() -> list:
             "json_mode": settings.LLM_JSON_MODE,
         }]
     return []
-
-
-@lru_cache()
-def get_settings() -> Settings:
-    return Settings()
-
-
-settings = get_settings()
