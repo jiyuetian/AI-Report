@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, update
 from datetime import datetime
 
 from app.core.database import async_session_factory
@@ -22,6 +22,8 @@ from app.core.brain_config_manager import BrainTraceManager
 from app.core.duckdb_manager import get_duckdb
 from app.core.config import settings
 from app.core.ai_fail_reason import classify_ai_fail_reason
+# Task #714：dashboard 整链总闸（可暂停时钟，交互等待不计入 AI 预算）
+from app.core.ai_budget import ChainClock, chain_budget
 from app.core.brain_modules.step_reasoning import (
     build_step_reasoning, contract_reasons_to_log, extract_self_corrections
 )
@@ -38,6 +40,7 @@ from app.models.dataset import Dataset
 from app.models.dashboard import Dashboard
 from app.models.quality import QualityIssue
 from app.models.brain import BrainTrace, BrainTraceSummary
+from app.models.ai_action_log import AiActionLog
 from app.api.health import _check_llm_reachable
 # Phase 4：Skill 框架接入（planner 驱动能力剪枝 + S1/S2 经 skill 执行，内联兜底）
 from app.core.skills.registry import registry
@@ -176,35 +179,61 @@ def _record_stage_error(run_id: str, stage: str, msg: str) -> None:
 # 流水线在 S3 等 AI 失败时会暂停，等待用户经 POST /brain/run/{run_id}/resume 回传选择
 _RUN_WAITERS: Dict[str, asyncio.Event] = {}
 _RUN_CHOICE: Dict[str, str] = {}
+# 每次看板生成一条整链时钟（run_id -> ChainClock）；等用户点选期间 pause，不占 AI 预算
+_RUN_CLOCKS: Dict[str, ChainClock] = {}
+
+
+def _chain_wait(run_id: str, timeout: float, stage: str = "") -> float:
+    """把任一 AI 阶段的 wait_for 上限收敛到整链剩余预算。"""
+    clock = _RUN_CLOCKS.get(run_id)
+    return clock.clamp(timeout, stage) if clock else float(timeout)
+
+
+class AiConfirmationRequired(Exception):
+    """#43：AI 未在所有节点完成，且用户尚未确认「重试」或「兜底」——禁止出厂。"""
+    pass
 
 
 async def _request_user_choice(run_id: str, payload: Dict[str, Any], timeout: Optional[int] = None) -> str:
     """暂停流水线，等待用户通过 /resume 回传选择。
 
-    返回用户选择：'rule_fallback'（规则兜底生成）或 'wait_retry'（等 AI 恢复重试）。
-    超时自动兜底为 'rule_fallback'，避免任务永久挂起。
+    返回用户选择：'rule_fallback'（用户明确选规则兜底）、'wait_retry'（用户明确选重试）
+    或 'awaiting_user'（含超时：用户未确认，不得兜底、不出厂）。
     超时秒数默认 120（生产合理），可用环境变量 BRAIN_AI_CHOICE_TIMEOUT 调整，
     演示现场可设为 30 以缩短等待（如：BRAIN_AI_CHOICE_TIMEOUT=30 启动后端）。
     """
     # M3（拍板2）：默认 120s，可配置；演示时可调短
     if timeout is None:
+        # Task #706：等用户点选的超时 ≠ 流水线 AI 总闸，不能复用 chain_budget("dashboard")
+        # （否则 120s 链预算被交互等待吃掉，S3 阶段反而没有总闸）。
         _raw = os.getenv("BRAIN_AI_CHOICE_TIMEOUT")
         try:
-            timeout = int(_raw) if _raw else 120
+            timeout = int(_raw) if _raw else 300
         except (TypeError, ValueError):
-            timeout = 120
+            timeout = 300
+    # #43：清理上一次超时后迟到、无人消费的选择，避免污染本次判定
+    _RUN_CHOICE.pop(run_id, None)
     _RUN_STATUS.setdefault(run_id, {})["ai_awaiting"] = payload
     ev = asyncio.Event()
     _RUN_WAITERS[run_id] = ev
+    # Task #714：等用户点选是交互时间，不属于 AI 预算，整链时钟在此暂停
+    _clock = _RUN_CLOCKS.get(run_id)
+    if _clock:
+        _clock.pause()
     try:
         await asyncio.wait_for(ev.wait(), timeout=timeout)
     except asyncio.TimeoutError:
-        choice = "rule_fallback"
+        # #43（2026-11-18 用户拍板）：超时 = 没拿到用户确认，系统无权替用户选兜底。
+        # 保留 ai_awaiting，前端继续显示Decision弹窗；流水线终止且不出厂。
+        choice = "awaiting_user"
     else:
-        choice = _RUN_CHOICE.pop(run_id, "rule_fallback")
+        choice = _RUN_CHOICE.pop(run_id, "awaiting_user")
     finally:
+        if _clock:
+            _clock.resume()
         _RUN_WAITERS.pop(run_id, None)
-        _RUN_STATUS.get(run_id, {}).pop("ai_awaiting", None)
+        if choice != "awaiting_user":
+            _RUN_STATUS.get(run_id, {}).pop("ai_awaiting", None)
     return choice
 
 
@@ -262,6 +291,13 @@ async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
     from app.core.brain_modules import generate_charts_with_llm
     s3_result = {"charts": [], "generated_by": "rule_engine", "fallback_reason": reason}
     for r in range(max_rounds):
+        # Task #714：整链预算耗尽后不再发起新的 AI 重试，避免「总闸只写在字典里」
+        _clk = _RUN_CLOCKS.get(run_id)
+        if _clk and _clk.exceeded():
+            # #38：这里确实跳过了一个 AI 阶段，属于真饿死，必须留痕
+            _clk.mark_starved("S3.retry", "整链预算耗尽，不再发起新的 AI 重试")
+            print("[Brain] dashboard 整链预算耗尽，停止 S3 重试，交规则兜底")
+            break
         # 退避：首轮稍短，避免刚限流就猛打；逐轮加长
         await asyncio.sleep(min(8 * (r + 1), 45))
         try:
@@ -284,6 +320,9 @@ async def _retry_s3_with_ai(run_id, db, theme_tag, fields, goals, grain, reason,
         })
         if choice == "rule_fallback":
             return res, True
+        if choice == "awaiting_user":
+            # #43：超时=用户没确认，不得默认走规则兜底出厂
+            raise AiConfirmationRequired("S3 AI 重试期间你尚未确认如何处理")
         # 否则继续下一轮重试
     return s3_result, True
 
@@ -339,6 +378,10 @@ async def _run_worker(run_id: str, dataset_id: str, user_id: str) -> None:
     finally:
         _RUN_STATUS[run_id]["finished"] = True
         _RUN_TASKS.pop(run_id, None)
+        # 整链时钟保留到 /status 查询结束前，单条记录很小；任务结束即回收
+        _clk_done = _RUN_CLOCKS.pop(run_id, None)
+        if _clk_done:
+            _clk_done.resume()
 
 
 class BrainRunRequest(BaseModel):
@@ -422,6 +465,21 @@ class TokenBudget:
         if not self._cut and self.used >= int(self.budget * self.CUT_RATIO):
             self._cut = True
         return self._cut
+
+    def grant(self, extra: int, reason: str = "") -> int:
+        """为某个核心 AI 节点显式追加专用额度（白盒可查，不撒谎）。
+
+        #36：S4b 现在必须携带事实包上下文，前面 S1~S3 的累计消耗不应把
+        核心分析文本饿死。追加额度后重新评估熔断态，并把追加量记在实例上。
+        """
+        extra = max(0, int(extra))
+        self.budget += extra
+        self.granted = getattr(self, "granted", 0) + extra
+        self.grant_reason = reason
+        if self.used < int(self.budget * self.CUT_RATIO):
+            self._cut = False
+            self._warned = self.percent >= self.WARN_RATIO * 100
+        return extra
 
 
 def _token_event(run_id: str, dataset_id: str, level: str, message: str, detail: Dict[str, Any]) -> str:
@@ -600,6 +658,48 @@ def _fmt_num(v) -> str:
     return f"{disp}（{format(round(f), ',')}）"
 
 
+def _build_narrative_fact_pack(duck_inst, dataset_id, max_rows: int = 24) -> dict:
+    """#36 通用：从清洗层真实明细行构造叙事事实包（纯读、零 LLM）。
+
+    任何数据集都可复用；列名自动识别，时间列按名称提示词推断；
+    任何异常返回空 dict，调用方降级跳过事实闸门，绝不阻断看板生成。
+    """
+    if duck_inst is None:
+        return {}
+    try:
+        tbl = duck_inst.get_layer_table_name(dataset_id, "cleaned")
+        if not duck_inst.table_exists(tbl):
+            tbl = duck_inst.get_layer_table_name(dataset_id, "raw")
+        if not duck_inst.table_exists(tbl):
+            return {}
+        qt = '"' + str(tbl).replace('"', '""') + '"'
+        cur = duck_inst.conn.execute("SELECT * FROM %s LIMIT %d" % (qt, max_rows))
+        vals = cur.fetchall()
+        names = [d[0] for d in (getattr(cur, "description", None) or [])]
+        if not names:
+            try:
+                names = [r[1] for r in duck_inst.conn.execute(
+                    "PRAGMA table_info(%s)" % ("'" + str(tbl).replace("'", "''") + "'")
+                ).fetchall()]
+            except Exception:
+                names = []
+        if not names:
+            info = duck_inst.get_table_info(tbl)
+            names = [(c.get("name") if isinstance(c, dict) else c[0])
+                     for c in (info.get("columns") or [])]
+        if not names or not vals:
+            return {}
+        # 清洗层内部列（_src_row 等）不是业务指标，不能进事实包白名单
+        keep_cols = [n for n in names if not str(n).startswith("_")]
+        idx = [names.index(n) for n in keep_cols]
+        rows = [{n: r[i] for n, i in zip(keep_cols, idx)} for r in vals]
+        from app.core.narrative_fact_guard import build_fact_pack_from_rows
+        return build_fact_pack_from_rows(rows)
+    except Exception as e:
+        print(f"[Brain] 叙事事实包构造失败(不阻断): {e}")
+        return {}
+
+
 def _build_real_data_block(duck_inst, dataset_id, final_charts) -> str:
     """S4b 注入：基于清洗后明细表算每张图表的真实聚合数字，喂给 LLM 写分析摘要，
     从根上杜绝『基于图表配置合理推断』导致的数字编造（clean 基线曾编造 12.3亿/45% 等）。
@@ -685,9 +785,11 @@ def _build_real_data_block(duck_inst, dataset_id, final_charts) -> str:
 
 def _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason):
     """night36 Task A2：看板侧把 S3 失败原因归一为与 chat.py 对齐的枚举。
-    night36-fix F1：复用 app.core.ai_fail_reason.classify_ai_fail_reason（单一事实来源，避免分叉）。"""
+    night36-fix F1：复用 app.core.ai_fail_reason.classify_ai_fail_reason（单一事实来源，避免分叉）。
+    2026-11-02 修正：S3 AI 成功(s3_ai_failed=False)时须返回 "ok"，不得误报 "rule_only"
+    （否则会出现 generated_by=llm 却标注 rule_only 的矛盾，误导用户以为 AI 没参与）。"""
     if not s3_ai_failed:
-        return "rule_only"
+        return "ok"
     return classify_ai_fail_reason(s3_ai_reason or "")
 
 
@@ -695,7 +797,7 @@ async def _dispatch_s3_ai_primary(
     *,
     db, engine, enhancer, select_fn, candidates, candidate_pool,
     theme_tag, fields, goals, grain, _s3_table, field_profiles, timeout,
-    derived_metrics=None,
+    derived_metrics=None, run_id=None,
 ) -> tuple:
     """A2 翻转（可单测）：AI 作为每步主执行者——先「在框架内自由生成」图表，失败退化为候选选择 / 规则兜底。
 
@@ -715,11 +817,12 @@ async def _dispatch_s3_ai_primary(
                 semantics=None, derived_metrics=derived_metrics,
                 table_name=_s3_table, field_profiles=field_profiles,
             ),
-            timeout=timeout,
+            timeout=_chain_wait(run_id, timeout, "S3.main"),
         )
         if _ai_res and _ai_res.get("generated_by") == "llm" and _ai_res.get("charts"):
-            # AI 主执行成功 → 规则引擎统一强制叙事顺序（KPI 在前 / 风险殿后）
-            _ai_res["charts"] = engine._enforce_narrative_order_dicts(_ai_res["charts"])
+            # Task #706：AI 主执行成功 → 尊重 AI 自己给出的叙事顺序，规则不再无条件重排。
+            # 权限矩阵 v2：规则是辅助兜底而非验收/审批者；仅候选池选择路径保留规则重排。
+            _ai_res["ai_order_preserved"] = True
             s3_result = {
                 "charts": _ai_res["charts"],
                 "generated_by": "llm",
@@ -752,7 +855,7 @@ async def _dispatch_s3_ai_primary(
                     field_profiles=field_profiles, table_name=_s3_table,
                     flywheel_context=fly_ctx or None,
                 ),
-                timeout=timeout,
+                timeout=_chain_wait(run_id, timeout, "S3.candidate_select"),
             )
             if llm_sel and llm_sel.get("charts"):
                 llm_sel["charts"] = engine._enforce_narrative_order_dicts(llm_sel["charts"])
@@ -807,6 +910,8 @@ async def brain_run_pipeline(
     4. S4+S5: 编排优化+评分验证
     """
     
+    # Task #714：整链总闸从这里开始计时，覆盖 S1→S5 全部 AI 阶段
+    _RUN_CLOCKS[run_id] = ChainClock("dashboard")
     async with async_session_factory() as db:
         progress = StageProgress(run_id, dataset_id)
         # P1-1 单任务 token 预算：按配置上限累计本次生成流水线各阶段 LLM 消耗
@@ -861,60 +966,25 @@ async def brain_run_pipeline(
             
             print(f"[Brain] 开始管道: dataset={dataset_id}, fields={fields}, grain={grain}")
 
-            # ========== LLM 可达性探测（M1：失败则询问用户，不再静默规则） ==========
-            # 原逻辑：探测失败→静默规则兜底（用户无感知）。现改为：探测失败→暂停并弹出选择框，
-            # 让用户决定「立即规则兜底」或「等待 AI 恢复重试」。超时（BRAIN_AI_CHOICE_TIMEOUT）
-            # 未操作则自动规则兜底，避免任务永久挂起。
+            # ========== LLM 可达性预探测（仅作「建议信号」，不再硬锁全链路） ==========
+            # 改造（2026-11-02，对齐需求②「AI 是每个步骤执行者，每步兜底逻辑也交给 AI」）：
+            #   原逻辑：一次预探测失败/超时 → llm_offline=True → S1–S6 全阶段被硬锁为规则兜底，
+            #   单个探针抖动(慢/429/超时)即让看板「全程零 AI 参与」。这正是 #2「AI 未真正参与」的根因。
+            #   新逻辑：预探测只作建议（记录进 run 状态/报告），不再暂停询问、不再硬锁。
+            #   仅当用户「显式选择规则兜底」或管理员关闭 AI 时才硬锁(llm_offline=True)；
+            #   探测超时/异常等不确定情况一律「乐观放行」——各阶段 own try/except + 超时
+            #   做「逐阶段兜底」，某阶段 AI 真失败只该阶段回退，其余阶段照常走 AI。
             llm_offline = False
             user_accepted_rule_fallback = False  # 标记：用户已在探针阶段明确选"规则兜底"，S3 不再重复弹窗
             try:
                 llm_probe = await _check_llm_reachable()
-                llm_offline = not llm_probe.get("reachable", False)
-                if llm_offline:
-                    # M1（拍板）：探针失败不再静默规则，改为询问用户（用户知情 + 用户选择）
-                    print(f"[Brain] LLM 不可达({llm_probe.get('reason')})：暂停并询问用户")
-                    choice = await _request_user_choice(run_id, {
-                        "stage": "probe",
-                        "options": ["rule_fallback", "wait_retry"],
-                        "reason": llm_probe.get("reason") or "LLM 不可达",
-                        "message": (
-                            "AI 服务当前暂不可用（模型限流或超时）。\n"
-                            "您可以：\n"
-                            "· 用规则引擎立即生成基础看板（结果将标注「本次为规则生成」）\n"
-                            "· 或等待 AI 恢复后重试"
-                        ),
-                    })
-                    if choice == "rule_fallback":
-                        user_accepted_rule_fallback = True
-                    if choice == "wait_retry":
-                        # 用户选择等待：重新探测一次；恢复则继续走 AI，否则仍走规则兜底
-                        try:
-                            _re = await _check_llm_reachable()
-                            if _re.get("reachable"):
-                                llm_offline = False
-                                print("[Brain] 用户选择等待后重探测：AI 已恢复，继续走 LLM 路径")
-                        except Exception:
-                            pass
-                    # 若 rule_fallback 或重探测仍不可达：保持 llm_offline=True → 后续阶段走规则兜底
+                if not llm_probe.get("reachable", False):
+                    print(f"[Brain] 预探测未确认可达({llm_probe.get('reason')})：乐观放行，逐阶段尝试 AI（单阶段失败仅该阶段回退规则）")
+                else:
+                    print("[Brain] 预探测可达：逐阶段走 AI 主执行")
             except Exception as e:
-                # 探测本身异常：fail-closed 判为不可达，并询问用户（不再静默规则）
-                print(f"[Brain] LLM 探测异常(按不可达处理并询问用户): {e}")
-                llm_offline = True
-                choice = await _request_user_choice(run_id, {
-                    "stage": "probe",
-                    "options": ["rule_fallback", "wait_retry"],
-                    "reason": f"探测异常: {_short_err(e)}",
-                        "message": "AI 服务探测异常（暂不可用）。您可改用规则引擎立即生成基础看板，或等待恢复后重试。",
-                    })
-                if choice == "rule_fallback":
-                    user_accepted_rule_fallback = True
-                if choice == "wait_retry":
-                    try:
-                        _re = await _check_llm_reachable()
-                        if _re.get("reachable"):
-                            llm_offline = False
-                    except Exception:
-                        pass
+                # 探测异常：fail-soft（乐观），逐阶段尝试 AI，由阶段自身兜底；不再按不可达硬锁
+                print(f"[Brain] LLM 预探测异常(乐观放行，逐阶段尝试 AI): {_short_err(e)}")
 
             # ========== Phase 4: 构建 SkillContext + 规划器（能力剪枝权威来源） ==========
             # planner 按 capability_profile 剪枝 LLM skill；这里 llm_offline 已是入口探测结果，
@@ -1030,6 +1100,16 @@ async def brain_run_pipeline(
                 goals = s2_res.get("goals", [])
                 s2_source = s2_res.get("source", "rule")
                 s2_generated_by = s2_res.get("generated_by", "rule")
+                # #45/#47：主链路侧幻觉目标白盒复核（纯函数，不二次删目标——S2 已在源头过滤）
+                # 记录丢弃计数供 #47 交付分级读取，并写入 trace 留痕
+                try:
+                    from app.core.analysis_quality_guard import filter_hallucinated_goals as _fhg
+                    _goal_guard = _fhg(
+                        [g.to_dict() if hasattr(g, "to_dict") else dict(g) for g in (goals or [])],
+                        fields or [])
+                    ctx.shared["s2_goal_guard"] = {"dropped": _goal_guard.get("dropped") or []}
+                except Exception:
+                    ctx.shared["s2_goal_guard"] = {"dropped": []}
                 ctx.shared["goals"] = goals
                 ctx.shared["s2_generated_by"] = s2_generated_by
                 ctx.shared["s2_source"] = s2_source
@@ -1133,13 +1213,20 @@ async def brain_run_pipeline(
                     _enhancer = S3LLMEnhancer()
                     # A2 翻转：AI 作为每步主执行者，先「在框架内自由生成」图表，失败退化为候选选择/规则兜底。
                     # 抽取为 _dispatch_s3_ai_primary（见本文件上方）以便白盒单测，不依赖真实 LLM 网络。
-                    s3_result, s3_ai_failed, s3_ai_reason, llm_offline = await _dispatch_s3_ai_primary(
+                    # 注意：不把 S3 返回的 llm_offline 回写进共享标志——否则 S3 单次超时/失败会硬锁 S4–S6
+                    # 也退化规则（这正是「AI 未参与每步」的二阶根因）。S3 失败仅本阶段按规则兜底，
+                    # 下游 S4/S5/S6 仍各自独立尝试 AI（需求②：AI 是每个步骤执行者）。
+                    from app.core.ai_budget import budget_for as _s3_budget
+                    s3_result, s3_ai_failed, s3_ai_reason, _s3_llm_offline = await _dispatch_s3_ai_primary(
                         db=db, engine=engine, enhancer=_enhancer,
                         select_fn=select_charts_from_candidates,
                         candidates=candidates, candidate_pool=candidate_pool,
                         theme_tag=theme_tag, fields=fields, goals=goals, grain=grain,
                         _s3_table=_s3_table, field_profiles=field_profiles,
-                        timeout=settings.BRAIN_S3_LLM_TIMEOUT,
+                        # Task #706：改走 ai_budget 节点预算（原写死 180s，与 120s 链预算冲突）；
+                        # 两次串行 wait_for 合计 2×60=120s，即 dashboard 链总闸。
+                        timeout=_s3_budget("s3")["timeout"],
+                        run_id=run_id,
                         derived_metrics=derived_metrics,
                     )
                 await _safe_trace(db, BrainTraceManager.complete_stage(
@@ -1190,6 +1277,12 @@ async def brain_run_pipeline(
                         derived_metrics=derived_metrics, field_profiles=field_profiles,
                         table_name=_s3_table
                     )
+                elif choice == "rule_fallback":
+                    # #43：用户明确确认兜底，供最终二值闸门判定 user_confirmed_rule，避免重复询问
+                    user_accepted_rule_fallback = True
+                else:
+                    # 超时未点选：不出厂
+                    raise AiConfirmationRequired("S3 AI 调用失败，你尚未确认重试还是规则兜底")
 
             charts = s3_result.get("charts", [])
             generated_by = s3_result.get("generated_by", "rule_engine")
@@ -1533,6 +1626,9 @@ async def brain_run_pipeline(
             yield progress.to_event()
 
             analysis_text = ""
+            # #36：L1 事实包是分析文本的必要上下文，显式给 S4b 追加专用额度，
+            # 避免 S1~S3 的累计消耗把核心 AI 分析节点饿死（真机曾退化成 86 字规则摘要）。
+            budget.grant(1800, reason="S4b 事实包上下文专用额度")
             # P1-1 单任务 token 预算熔断：超预算则跳过 S4b 的 LLM 调用，保留已完成图表/看板
             if budget.is_cut():
                 token_cut = True
@@ -1563,6 +1659,18 @@ async def brain_run_pipeline(
                         f"## 真实数据（撰写时必须引用以下具体数字，禁止臆造）\n{real_data_block}\n\n"
                         if real_data_block else ""
                     )
+
+                    # #36 L1：把逐期序列 + 可引用数字白名单 + 趋势事实一起喂给 LLM。
+                    # 原先只有 GROUP BY 聚合摘要，LLM 无法判断单调性，只能把波动写成趋势。
+                    _narrative_pack, fact_section = {}, ""
+                    try:
+                        from app.core.narrative_fact_guard import format_fact_section
+                        _narrative_pack = _build_narrative_fact_pack(duck_inst, dataset_id)
+                        if _narrative_pack.get("columns"):
+                            fact_section = format_fact_section(
+                                _narrative_pack, compact=True) + "\n\n"
+                    except Exception as _pe:
+                        print(f"[Brain] 事实包注入跳过(不阻断): {_pe}")
     
                     # ★ 改造：分析说明按原型升级为「结论 → 佐证 → 建议」完整段落，
                     # 解决用户反馈"按原型除了图表还有分析报告"。
@@ -1577,6 +1685,7 @@ async def brain_run_pipeline(
                         f"## 分析目标\n{goals_summary}\n\n"
                         f"## 图表配置\n{charts_summary}\n\n"
                         f"{real_data_section}"
+                        f"{fact_section}"
                         f"## 撰写要求（务必遵循）\n"
                         f"1. 总长度 400-700 字；分 3 段（结论 → 佐证 → 建议），中间用换行分隔，不要列表。\n"
                         f"2. 第一段【结论】：用 2-3 句话概括核心业务发现，必须引用『真实数据』章节中的具体数字或比例；若某指标真实数据未给出，只做定性描述，绝对禁止编造数字、比例或金额。\n"
@@ -1665,6 +1774,117 @@ async def brain_run_pipeline(
             yield progress.to_event()
             print(f"[Brain] S4b完成: analysis_text_len={len(analysis_text)}")
 
+            # ========== S4b-guard：叙事事实闸门（#36 通用方案，不绑定数据集） ==========
+            # L2 生成后校验：纯函数零网络；失败则带事实包回灌重生成一次。
+            # L3 仍不符则计入 accuracy / overall、判不通过，并写入 config 供白盒核验。
+            narrative_guard = {"passed": True, "failure_count": 0, "score_penalty": 0,
+                               "skipped": "no_fact_pack"}
+            try:
+                from app.core.narrative_fact_guard import guard_narrative, format_fact_section as _ffs
+                _pack_now = locals().get("_narrative_pack") or {}
+                if _pack_now.get("columns"):
+                    narrative_guard = guard_narrative(analysis_text, _pack_now)
+                    narrative_guard["fact_columns"] = list(_pack_now["columns"].keys())
+                    narrative_guard["row_count"] = _pack_now.get("row_count")
+                    # #46：最低信息量闸门——套话（无真实数值/无字段趋势信号）不得当作分析结论。
+                    # 独立于 guard_narrative，不改动其既有 passed 语义，避免破坏已通过的回归断言。
+                    try:
+                        from app.core.analysis_quality_guard import check_information_density as _cid
+                        _density = _cid(analysis_text, _pack_now)
+                        narrative_guard["information_density"] = _density
+                        if not _density["passed"]:
+                            narrative_guard["failure_count"] = int(narrative_guard.get("failure_count") or 0) + 1
+                            narrative_guard["score_penalty"] = min(
+                                40, int(narrative_guard.get("score_penalty") or 0) + 8)
+                            narrative_guard["passed"] = False
+                    except Exception as _de:
+                        print(f"[Brain] 信息量闸门跳过(不阻断): {_de}")
+                    # #48：多轮定向重生成——把具体不符项逐轮回灌给 AI，修到零差错为止。
+                    # 真机取证：旧逻辑只重试一次且 failure_count=1/regenerated=null，
+                    # 带错数字照常出厂，违背「看板是 AI 每一步确认的最终成果」。
+                    if (not narrative_guard["passed"] and not token_cut
+                            and locals().get("prompt_text") and locals().get("system_prompt")):
+                        def _eval_candidate(_cand):
+                            """重生成候选必须同时通过事实闸门与 #46 信息量闸门。"""
+                            _g = guard_narrative(_cand, _pack_now)
+                            _g["fact_columns"] = narrative_guard.get("fact_columns")
+                            _g["row_count"] = narrative_guard.get("row_count")
+                            try:
+                                from app.core.analysis_quality_guard import check_information_density as _cid
+                                _d = _cid(_cand, _pack_now)
+                                _g["information_density"] = _d
+                                if not _d["passed"]:
+                                    _g["failure_count"] = int(_g.get("failure_count") or 0) + 1
+                                    _g["score_penalty"] = min(
+                                        40, int(_g.get("score_penalty") or 0) + 8)
+                                    _g["passed"] = False
+                            except Exception:
+                                pass
+                            return _g
+
+                        _init_fc = int(narrative_guard.get("failure_count") or 0)
+                        _best_text, _best_guard = analysis_text, narrative_guard
+                        _round = 0
+                        for _round in range(1, 4):
+                            try:
+                                from app.core.llm_gateway import llm_chat as _lc
+                                _fix_prompt = (
+                                    locals()["prompt_text"] + "\n\n"
+                                    + _ffs(_pack_now, _best_guard, compact=False)
+                                    + "\n\n这是第 %d 次修正。请逐条改正上面列出的每一处事实错误，"
+                                      "只输出修正后的分析正文，不要解释。" % _round
+                                )
+                                _re = await _lc(
+                                    prompt=locals()["system_prompt"] + "\n\n" + _fix_prompt,
+                                    json_mode=False,
+                                    user_id="analysis_text_fact_retry_%d" % _round, timeout=45,
+                                )
+                                if not (_re.success and _re.content):
+                                    print("[Brain] 叙事事实重生成第%d轮未返回有效内容，停止" % _round)
+                                    break
+                                _cand = _re.content.strip()
+                                _g2 = _eval_candidate(_cand)
+                                _fc = int(_g2.get("failure_count") or 0)
+                                print("[Brain] 叙事事实重生成第%d轮: failure_count %d -> %d"
+                                      % (_round, int(_best_guard.get("failure_count") or 0), _fc))
+                                if _fc < int(_best_guard.get("failure_count") or 0):
+                                    _best_text, _best_guard = _cand, _g2
+                                    budget.add(_cand)
+                                if _fc == 0:
+                                    break
+                            except Exception as _ge:
+                                print(f"[Brain] 事实包重生成第{_round}轮跳过(不阻断): {_ge}")
+                                break
+                        if _best_text != analysis_text:
+                            analysis_text = _best_text
+                            _best_guard["regenerated"] = True
+                            _best_guard["regenerate_rounds"] = _round
+                            _best_guard["initial_failure_count"] = _init_fc
+                            narrative_guard = _best_guard
+                            print("[Brain] 叙事事实多轮重生成生效: rounds=%d final_fc=%d"
+                                  % (_round, _best_guard["failure_count"]))
+            except Exception as _gge:
+                print(f"[Brain] 叙事事实校验跳过(不阻断): {_gge}")
+
+            if narrative_guard.get("failure_count"):
+                _fpen = float(narrative_guard.get("score_penalty") or 0)
+                _dims = dict(s4_s5_result.get("dimension_scores") or {})
+                if "accuracy" in _dims:
+                    _dims["accuracy"] = max(0.0, float(_dims["accuracy"]) - _fpen)
+                    s4_s5_result["dimension_scores"] = _dims
+                overall_score = max(0.0, float(overall_score) - _fpen)
+                passed = False
+                progress.message = (
+                    f"分析摘要事实校验：{narrative_guard['failure_count']} 处与原始数据不符，评分 -{_fpen:.0f}"
+                )
+                progress.detail = {**(progress.detail or {}),
+                                   "narrative_fact_guard": narrative_guard,
+                                   "final_score": overall_score, "passed": passed}
+                yield progress.to_event()
+                print(f"[Brain] 叙事事实闸门: failures={narrative_guard['failure_count']} penalty={_fpen}")
+            else:
+                print("[Brain] 叙事事实闸门: passed")
+
             # ========== 保存看板到数据库 ==========
             dashboard_id = f"dash_{dataset_id[:8]}_{uuid.uuid4().hex[:6]}"
 
@@ -1734,7 +1954,123 @@ async def brain_run_pipeline(
 
             # 2.3-B：合并 S2(目标) 与 S3(图表) 的 AI 参与情况
             s2_gen = ctx.shared.get("s2_generated_by", "rule")
-            ai_participated = (generated_by == "llm") or (s2_gen == "llm")
+            # Task #702：统一 AI 覆盖口径 —— 分别记 S2/S3 两节点，算出覆盖率与全链掌权，
+            # 不再用「任一节点 LLM 成功」这种不可比的口径充当绿标依据。
+            from app.core.ai_budget import (
+                chain_summary, green_badge, node_result,
+            )
+            _s2_ai = str(s2_gen).startswith("llm")
+            _s3_ai = (generated_by == "llm")
+            # #37：绿标必须覆盖 S1~S5 的真实执行状态，不能只统计 S2/S3。
+            # 取证发现 S5 AI 联合裁判失败（source=rule / ai_dims=null）却仍标全链绿标，
+            # 根因就是 s5 不在 by_node 口径里。各节点来源取真实留痕，不猜测。
+            _s1_src = str((locals().get("s1_result") or {}).get("source") or "")
+            _s4_src = str(s4_s5_result.get("s4_source") or "")
+            _s5_src = str(s4_s5_result.get("s5_source") or "")
+            _s1_ai = _s1_src.startswith("ai")
+            _s4_ai = _s4_src.startswith("ai")
+            _s5_ai = _s5_src == "ai_joint"
+            _dash_nodes = [
+                node_result("s1", by="ai" if _s1_ai else "rule_fallback",
+                            llm_called=_s1_ai, fallback_used=not _s1_ai,
+                            reason=None if _s1_ai else "S1 主题识别由词典/规则接管"),
+                node_result("s2", by="ai" if _s2_ai else "rule_fallback",
+                            llm_called=_s2_ai, fallback_used=not _s2_ai,
+                            reason=None if _s2_ai else "S2 目标生成由规则接管"),
+                node_result("s3", by="ai" if _s3_ai else "rule_fallback",
+                            llm_called=_s3_ai, fallback_used=not _s3_ai,
+                            reason=None if _s3_ai else str(locals().get("s3_ai_reason") or "S3 图表生成由规则兜底")),
+                node_result("s4", by="ai" if _s4_ai else "rule_fallback",
+                            llm_called=_s4_ai, fallback_used=not _s4_ai,
+                            reason=None if _s4_ai else "S4 叙事编排由规则接管（来源=%s）" % _s4_src),
+                node_result("s5", by="ai" if _s5_ai else "rule_fallback",
+                            llm_called=_s5_ai, fallback_used=not _s5_ai,
+                            reason=None if _s5_ai else "S5 AI 联合裁判失败，退回规则评分卡（来源=%s）" % _s5_src),
+            ]
+            _dash_gov = chain_summary(_dash_nodes, chain="dashboard")
+            # Task #714：整链总闸白盒取证；预算耗尽时诚实降级，绿标绝不点亮
+            _clk_sum = (_RUN_CLOCKS.get(run_id).summary()
+                        if _RUN_CLOCKS.get(run_id)
+                        else {"chain": "dashboard", "budget_s": chain_budget("dashboard"),
+                              "elapsed_s": None, "paused_s": 0, "exceeded": False, "checkpoints": []})
+            # #38：只有「确实有 AI 阶段因预算不足被压缩/跳过」才允许按预算降级。
+            # 整链墙钟超过预算只是观测事实（含 DuckDB/落库/网关排队等非 AI 时间），
+            # 不得凭空把 ai_governed 改 False、不得污染 ai_failure_reason。
+            # 绿标在此完全由 _dash_nodes 五节点真实结果（chain_summary）决定。
+            if _clk_sum.get("ai_starved"):
+                _dash_gov["ai_governed"] = False
+                _dash_gov["fallback_used"] = True
+                _dash_gov["failure_reason"] = (
+                    (_dash_gov.get("failure_reason") or "")
+                    + "; dashboard 整链预算耗尽（AI 阶段被压缩/跳过：%s）"
+                      % ", ".join(_clk_sum.get("starved_stages") or [])
+                ).strip("; ")
+            _dash_badge = green_badge(_dash_gov)
+            # Task #706：ai_participated / generation_mode 与绿标同源；
+            # 「任一节点 AI 参与」的过程语义另存 ai_participated_any，不得再当绿标依据。
+            ai_participated = bool(_dash_badge)
+            ai_participated_any = bool(_dash_gov["ai_node_count"] > 0)
+
+            # ===== #43 二值终态闸门：AI 每一步确认的最终成果 OR 用户明确确认的规则成果 =====
+            # 用户红线：不存在「部分成功/部分失败」拼接看板；AI 调用失败必须用户亲自选
+            # 「重试」或「兜底」。此闸门覆盖 S1-S5 所有节点的降级，任何一个非 AI 且用户
+            # 未显式确认兜底时，流水线停住，不写 Dashboard、不写版本。
+            from app.core.ai_result_gate import (
+                decide_result_kind, is_user_rule_choice, RUN_KIND_AI, RUN_KIND_RULE,
+                factory_result_kind,
+            )
+            _stage_errors_map = dict((_RUN_STATUS.get(run_id, {}).get("stage_errors") or {}))
+            _result_kind = decide_result_kind(
+                by_node=_dash_gov.get("by_node"),
+                verified=bool(_dash_gov.get("ai_governed")),
+                user_rule_choice=("rule_fallback" if user_accepted_rule_fallback else None),
+                stage_errors=list(_stage_errors_map.keys()),
+            )
+            if _result_kind is None:
+                _awaiting_payload = factory_result_kind()
+                _awaiting_payload["stage"] = "final_gate"
+                _awaiting_payload["reason"] = (
+                    _dash_gov.get("failure_reason")
+                    or "；".join("%s: %s" % (k, str(v)[:120]) for k, v in _stage_errors_map.items())
+                    or ("仅 %s%% 节点由 AI 完成；其余为规则降级"
+                        % int(round(float(_dash_gov.get("ai_coverage") or 0) * 100)))
+                )
+                _awaiting_payload["coverage"] = _dash_gov.get("ai_coverage")
+                _chosen = await _request_user_choice(run_id, _awaiting_payload)
+                if is_user_rule_choice(_chosen):
+                    user_accepted_rule_fallback = True
+                    _result_kind = RUN_KIND_RULE
+                else:
+                    # wait_retry：本次不出厂，请用户点「重新生成」完整重跑 AI 链；
+                    # awaiting_user：超时未点选，同样不出厂。
+                    raise AiConfirmationRequired(
+                        "等待用户确认后重新生成 AI 看板" if _chosen == "wait_retry"
+                        else "用户未确认，本次不出厂"
+                    )
+            _RUN_STATUS.setdefault(run_id, {})["result_kind"] = _result_kind
+            if _result_kind == RUN_KIND_RULE:
+                # 用户确认兜底：整链按规则成果标注，禁止任何 AI 绿标 / AI 验收字样
+                _dash_badge = False
+                ai_participated = False
+                _dash_gov["ai_governed"] = False
+                _dash_gov["fallback_used"] = True
+
+            # ===== #47 交付分级：地基版不与 AI 全链版同分同绿 =====
+            try:
+                from app.core.analysis_quality_guard import apply_delivery_policy as _adp
+                _info_ok = bool((narrative_guard.get("information_density") or {}).get("passed", True)) \
+                    if narrative_guard.get("information_density") else True
+                _hallucinated = 0
+                try:
+                    _hallucinated = len((ctx.shared.get("s2_goal_guard") or {}).get("dropped") or [])
+                except Exception:
+                    pass
+                _delivery = _adp(bool(passed), _result_kind, _info_ok, _hallucinated)
+            except Exception:
+                _delivery = {"delivery_tier": "unknown", "score_label": "分级不可用",
+                             "quality_flags": [], "is_ai_full": False, "passed": bool(passed),
+                             "distinct_from_ai": False}
+
             dashboard_config = {
                 "charts": final_charts,
                 "chart_count": len(final_charts),
@@ -1745,9 +2081,42 @@ async def brain_run_pipeline(
                 "s2_generated_by": s2_gen,
                 # 问题1修复（Layer2）：把生成方式显式落库，供前端打开看板时渲染绿标/灰标
                 # （此前仅在 SSE 完成事件 detail 里算，未写入 config，导致打开页无标注）
-                # 2.3-B：ai_participated 合并 S2(目标) 与 S3(图表)，任一为 LLM 即 True
+                # Task #706：与绿标同源；任一节点 AI 参与的「过程语义」另存 ai_participated_any
                 "ai_participated": ai_participated,
+                "ai_participated_any": ai_participated_any,
                 "generation_mode": "ai" if ai_participated else "rule",
+                # #43：二值终态——ai_confirmed_full / user_confirmed_rule，不存在混合态
+                "result_kind": _result_kind,
+                "ai_full_chain_confirmed": bool(_result_kind == RUN_KIND_AI),
+                "user_confirmed_rule_fallback": bool(_result_kind == RUN_KIND_RULE),
+                # #47：交付分级白盒——规则地基版不得与 AI 全链确认版同分同绿
+                "delivery_tier": _delivery.get("delivery_tier"),
+                "score_label": _delivery.get("score_label"),
+                "quality_flags": _delivery.get("quality_flags") or [],
+                "distinct_from_ai": bool(_delivery.get("distinct_from_ai")),
+                # Task #702：统一的覆盖率/全链掌权/绿标资格/节点归因（与质检、对话同源）
+                "ai_coverage": _dash_gov["ai_coverage"],
+                "ai_governed": _dash_gov["ai_governed"],
+                "ai_badge_eligible": green_badge(_dash_gov),
+                "by_node": _dash_gov["by_node"],
+                "ai_fallback_used": _dash_gov["fallback_used"],
+                "ai_failure_reason": _dash_gov["failure_reason"],
+                # #37：S5 AI 裁判真实来源与失败标记（白盒可查）
+                "s4_source": _s4_src,
+                "s5_source": _s5_src,
+                "s5_ai_judge_failed": not _s5_ai,
+                "chain_budget_s": _dash_gov["total_budget_s"],
+                # Task #714：整链总闸实耗/暂停/耗尽标记（真机可白盒核验）
+                "chain_elapsed_s": _clk_sum["elapsed_s"],
+                "chain_paused_s": _clk_sum["paused_s"],
+                # #38：墙钟超预算是观测事实，不等于 AI 失败；只有 AI 阶段真被
+                # 压缩/跳过（ai_starved）才允许按预算降级，避免虚假降级。
+                "chain_deadline_exceeded": bool(_clk_sum.get("ai_starved")),
+                "chain_wall_exceeded": bool(_clk_sum.get("exceeded")),
+                "chain_wall_elapsed_s": _clk_sum.get("wall_elapsed_s"),
+                "chain_ai_starved": bool(_clk_sum.get("ai_starved")),
+                "chain_starved_stages": _clk_sum.get("starved_stages") or [],
+                "chain_checkpoints": _clk_sum["checkpoints"],
                 # night36 Task A2：与 chat 对齐的失败原因枚举
                 "ai_failed_reason": _norm_dashboard_fail_reason(s3_ai_failed, s3_ai_reason),
                 "score": {
@@ -1756,6 +2125,8 @@ async def brain_run_pipeline(
                     "dimensions": s4_s5_result.get("dimension_scores", {})
                 },
                 "analysis_text": analysis_text,
+                # #36：叙事事实校验结论（白盒可查，失败即扣分并判不通过）
+                "narrative_fact_guard": narrative_guard,
                 # 派生指标（已用真实数据反推验证的加工公式），血缘/前端据此白盒展示指标口径
                 "derived_metrics": derived_metrics,
                 # #7 修复：0 可视化字段时把 PRD 引导建议一并落库，前端空看板可展示
@@ -1781,6 +2152,20 @@ async def brain_run_pipeline(
             )
             db.add(dash)
             await db.commit()
+
+            # #37：把本次 run 的 AI 决策留痕关联到看板，支持「按看板反查每步真实调用结果」。
+            # 只补 dashboard_id 为空的本 run 记录，不改任何用户的历史留痕内容。
+            try:
+                _lr = await db.execute(
+                    update(AiActionLog)
+                    .where(and_(AiActionLog.run_id == run_id,
+                                AiActionLog.dashboard_id.is_(None)))
+                    .values(dashboard_id=dashboard_id)
+                )
+                await db.commit()
+                print(f"[Brain] AI 留痕关联看板: {_lr.rowcount} 行")
+            except Exception as _le:
+                print(f"[Brain] AI 留痕关联看板失败(不阻断): {_le}")
 
             # C04 版本管理：看板生成完成后自动落一个初始版本快照（用户可在「版本管理」回退）
             try:
@@ -1814,14 +2199,28 @@ async def brain_run_pipeline(
                 "chart_count": len(final_charts),
                 "final_score": overall_score,
                 "passed": passed,
+                "narrative_fact_guard": narrative_guard,
                 "theme": theme_tag,
                 # Phase 4 透明度：前端据此区分「AI 参与」与「规则兜底」，避免「模型不可用却显示成功」
                 "generated_by": generated_by,
                 # 2.3-B：S2 目标生成的 AI 参与标记（与 dashboard_config 一致）
                 "s2_generated_by": s2_gen,
                 "ai_participated": ai_participated,
-                # M2（拍板）：显式标注生成方式，供前端展示「本次为规则生成」徽标
+                "ai_participated_any": ai_participated_any,
+                # Task #706：显式标注生成方式，与落库 config 同源
                 "generation_mode": "ai" if ai_participated else "rule",
+                "result_kind": _result_kind,
+                "ai_full_chain_confirmed": bool(_result_kind == RUN_KIND_AI),
+                "ai_coverage": _dash_gov["ai_coverage"],
+                "ai_governed": _dash_gov["ai_governed"],
+                "ai_badge_eligible": green_badge(_dash_gov),
+                "by_node": _dash_gov["by_node"],
+                "ai_fallback_used": _dash_gov["fallback_used"],
+                "chain_elapsed_s": _clk_sum["elapsed_s"],
+                "chain_budget_s": _clk_sum["budget_s"],
+                "chain_deadline_exceeded": bool(_clk_sum.get("ai_starved")),
+                "chain_wall_exceeded": bool(_clk_sum.get("exceeded")),
+                "chain_ai_starved": bool(_clk_sum.get("ai_starved")),
                 "no_chartable_fields": s3_result.get("no_chartable_fields", False),
                 "suggestion": s3_result.get("suggestion", "")
             }
@@ -1829,6 +2228,13 @@ async def brain_run_pipeline(
             
             print(f"[Brain] 完成: dashboard_id={dashboard_id}, charts={len(final_charts)}")
             
+        except AiConfirmationRequired as e:
+            progress.stage_status = "failed"
+            progress.message = "已暂停：%s。看板未生成，点「重新生成」可完整重跑 AI 链路；" \
+                               "若坚持使用规则成果，请重新生成并在弹窗中选择「规则兜底」。" % str(e)
+            progress.detail = {"result_kind": None, "awaiting_user": True, "reason": str(e)}
+            _RUN_STATUS.setdefault(run_id, {})["result_kind"] = None
+            yield progress.to_event()
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
@@ -2154,7 +2560,7 @@ async def resume_run(run_id: str, body: ResumeRunRequest, current_user: Dict = D
             "success": True,
             "run_id": run_id,
             "awakened": False,
-            "message": "未找到等待中的流水线（可能已超时自动继续），请刷新状态查看"
+            "message": "未找到等待中的流水线（可能已超时或已结束），请刷新状态查看"
         }
     return {
         "success": True,

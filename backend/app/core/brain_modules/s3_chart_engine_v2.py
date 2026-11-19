@@ -86,6 +86,17 @@ _DIM_ROLE_PATTERNS = {
 _ID_PATTERNS = [r"\bid\b", r"编号", r"序号", r"代码$", r"编码", r"流水", r"order_no", r"primary"]
 
 
+def _semantic_agg(field: str, role: Optional[str] = None) -> dict:
+    """#44：复用通用存量口径判定（累计/余额/期末禁 sum），失败回退语义角色。"""
+    try:
+        from app.core.analysis_quality_guard import semantic_aggregation as _sa
+        return _sa(field, role)
+    except Exception:
+        return {"aggregation": ("avg" if role in ("duration", "rate", "age") else "sum"),
+                "must_not_sum": role in ("duration", "rate", "age"),
+                "title_prefix": ("平均" if role in ("duration", "rate", "age") else "总")}
+
+
 def _metric_role(name: str) -> Optional[str]:
     nl = name.lower()
     for role, pats in _METRIC_ROLE_PATTERNS.items():
@@ -561,10 +572,8 @@ class S3ChartEngine:
         # 被前端默认 sum 成"累计值"。派生指标已在 _derived_metric_config 强制 avg；此处补原始字段。
         if "aggregation" not in config and metric_field:
             _agg_role = _metric_role(metric_field)
-            if _agg_role in ("amount", "count"):
-                config["aggregation"] = "sum"
-            elif _agg_role in ("duration", "rate", "age"):
-                config["aggregation"] = "avg"
+            # #44：存量字段（累计/余额/期末）禁止跨期 sum，取期间均值
+            config["aggregation"] = _semantic_agg(metric_field, _agg_role)["aggregation"]
 
         # 比率类指标（抵押率/逾期率等）不能按金额口径展示：
         #   「总抵押率」语义错误 → 改「平均抵押率」；金额类 KPI 的 ¥ 前缀也要去掉
@@ -697,9 +706,9 @@ class S3ChartEngine:
             if _num_fields:
                 _m = self._best_metric(_num_fields, field_types, self.derived_metrics) or _num_fields[0]
                 _role = _metric_role(_m)
-                _agg = "sum" if _role in ("amount", "count") else (
-                    "avg" if _role in ("duration", "rate", "age") else "sum")
-                _title = f"平均{_m}" if _agg == "avg" else f"总{_m}"
+                _sa = _semantic_agg(_m, _role)
+                _agg = _sa["aggregation"]
+                _title = f"{_sa['title_prefix']}{_m}"
                 recs.insert(0, ChartRecommendation(
                     chart_type="kpi", title=_title,
                     x_field=None, y_field=_m, category_field=None, value_field=_m,
@@ -911,12 +920,7 @@ class S3ChartEngine:
         date_f = [f for f, t in field_types.items() if t == FieldType.DATE]
 
         def _agg(m: str) -> str:
-            role = _metric_role(m)
-            if role in ("amount", "count"):
-                return "sum"
-            if role in ("duration", "rate", "age"):
-                return "avg"
-            return "sum"
+            return _semantic_agg(m, _metric_role(m))["aggregation"]
 
         cands: List[Dict[str, Any]] = []
         cid = [0]
@@ -1120,7 +1124,9 @@ class S3ChartEngine:
         dates = [f for f, t in type_map.items() if t == FieldType.DATE]
 
         dimensions = [{"field": f, "type": type_map[f].value, "cardinality": cardinality.get(f, 0)} for f in dims]
-        metric_list = [{"field": f, "role": _metric_role(f) or "number", "aggregation": "sum" if _metric_role(f) in ("amount", "count") else "avg"} for f in metrics]
+        metric_list = [{"field": f, "role": _metric_role(f) or "number",
+                        "aggregation": _semantic_agg(f, _metric_role(f))["aggregation"],
+                        "must_not_sum": _semantic_agg(f, _metric_role(f)).get("must_not_sum", False)} for f in metrics]
 
         charts = []
         # 趋势：日期 × 主指标

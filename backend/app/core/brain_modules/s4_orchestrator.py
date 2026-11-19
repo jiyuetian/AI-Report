@@ -10,6 +10,23 @@ import json
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.brain_config_manager import BrainConfigManager
+# Task #712：S5 阈值单一真相源（管理员可在 brain_configs.thresholds 覆盖，禁止再写死数字）
+from app.core.brain_modules.threshold_config import (
+    get_default as thr_default, resolve_thresholds,
+)
+
+
+def _suggest_mins(t=None):
+    """S5 改进建议触发线：优先 DB 覆盖，回退 threshold_config 默认值。"""
+    t = t or {}
+    keys = {
+        "redundancy": ("s5_suggest_redundancy_min", 80),
+        "coverage": ("s5_suggest_coverage_min", 80),
+        "narrative": ("s5_suggest_narrative_min", 70),
+        "accuracy": ("s5_suggest_accuracy_min", 60),
+        "readability": ("s5_suggest_readability_min", 70),
+    }
+    return {dim: t.get(key, thr_default(key, dft)) for dim, (key, dft) in keys.items()}
 
 
 class ScoreDimension(Enum):
@@ -133,17 +150,20 @@ class S4Orchestrator:
     
     def __init__(self):
         self.score_weights = dict(DEFAULT_SCORE_WEIGHTS)
-        self.pass_threshold = 70
+        self.pass_threshold = thr_default("r6_grade_accept", 70)
         self.max_retries = 3
+        self.suggest_mins = _suggest_mins()
     
     async def load_score_config(self, db: AsyncSession):
-        """加载评分配置"""
+        """加载评分配置（Task #712：阈值来自 threshold_config + DB 覆盖）"""
+        t = await resolve_thresholds(db)
+        self.suggest_mins = _suggest_mins(t)
         config = await BrainConfigManager.get_config(db, "score_weights")
         if config and "content" in config:
             content = config["content"]
             # A3：合并而非替换，避免旧 3 键配置覆盖新维度权重
             self.score_weights = {**self.score_weights, **content.get("weights", {})}
-            self.pass_threshold = content.get("pass_threshold", 70)
+            self.pass_threshold = content.get("pass_threshold", t.get("r6_grade_accept", 70))
             self.max_retries = content.get("max_retries", 3)
     
     def select_kpis(self, charts: List[Dict], max_kpis: int = 4) -> List[Dict]:
@@ -336,17 +356,20 @@ class S5ScoreCard:
     def __init__(self):
         self.weights = dict(DEFAULT_SCORE_WEIGHTS)
         self.dim_mins = dict(DEFAULT_DIM_MINS)
-        self.pass_threshold = 70
+        self.pass_threshold = thr_default("r6_grade_accept", 70)
         self.max_retries = 3
+        self.suggest_mins = _suggest_mins()
     
     async def load_config(self, db: AsyncSession):
-        """加载评分配置"""
+        """加载评分配置（Task #712：阈值来自 threshold_config + DB 覆盖）"""
+        t = await resolve_thresholds(db)
+        self.suggest_mins = _suggest_mins(t)
         config = await BrainConfigManager.get_config(db, "score_weights")
         if config and "content" in config:
             content = config["content"]
             # A3：合并而非替换，避免旧 3 键配置覆盖新维度权重
             self.weights = {**self.weights, **content.get("weights", {})}
-            self.pass_threshold = content.get("pass_threshold", 70)
+            self.pass_threshold = content.get("pass_threshold", t.get("r6_grade_accept", 70))
             self.max_retries = content.get("max_retries", 3)
     
     def calculate_redundancy_score(self, charts: List[Dict]) -> float:
@@ -461,16 +484,16 @@ class S5ScoreCard:
 
         # 生成改进建议
         suggestions = []
-        if redundancy < 80:
+        if redundancy < self.suggest_mins["redundancy"]:
             suggestions.append("存在冗余图表，建议合并或删除相似图表")
-        if coverage < 80:
+        if coverage < self.suggest_mins["coverage"]:
             missing = {"kpi", "line", "bar", "pie"} - {c.get("chart_type") for c in charts}
             suggestions.append(f"缺少图表类型: {', '.join(missing)}")
-        if narrative < 70:
+        if narrative < self.suggest_mins["narrative"]:
             suggestions.append("叙事结构待优化，建议按KPI→趋势→明细排序")
-        if accuracy < 60:
+        if accuracy < self.suggest_mins["accuracy"]:
             suggestions.append("存在数据准确性风险（字段/聚合/口径），建议核查")
-        if readability < 70:
+        if readability < self.suggest_mins["readability"]:
             suggestions.append("可读性待优化（标题/图表数量/KPI 数量）")
 
         # 图表级评分（沿用 legacy 三维度字段）
@@ -857,7 +880,8 @@ def build_s5_detail(score_dict: Optional[Dict[str, Any]], critique: Optional[str
     if "passed" in score_dict:
         passed = bool(score_dict.get("passed"))
     else:
-        passed = (overall or 0) >= 70
+        # Task #712：r7_self_eval_pass 从「无消费方」变为 S5 详情兜底通过线的单一真相源
+        passed = (overall or 0) >= thr_default("r7_self_eval_pass", 70)
     suggestions = score_dict.get("improvement_suggestions") or []
     disposal = grade_s5_disposal(overall if overall is not None else 0)
     return {

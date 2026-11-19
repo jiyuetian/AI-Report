@@ -151,8 +151,11 @@ class LIDAPipeline:
 
         # ── Phase 4: Self-Repair（pass=False 时据 critique 重生成≤2次）──
         # A3：触发条件由原始 LLM 分改为 decide_pass 综合判定，避免"分高但数据错"漏修。
+        # Task #712：自修复轮次来自 threshold_config.r7_self_repair_max_rounds（PRD 要求 ≤2，管理员可调）
+        from app.core.brain_modules.threshold_config import resolve_thresholds as _resolve_thr
+        max_rounds = int((await _resolve_thr(db)).get("r7_self_repair_max_rounds", 2))
         repair_rounds = 0
-        while not critique.get("pass", False) and repair_rounds < 2:
+        while not critique.get("pass", False) and repair_rounds < max_rounds:
             repair_rounds += 1
             from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine
             engine = S3ChartEngine(derived_metrics=self.derived_metrics)
@@ -177,6 +180,7 @@ class LIDAPipeline:
             })
         result["self_repair"] = {
             "rounds": repair_rounds,
+            "max_rounds": max_rounds,
             "final_score": critique.get("score"),
             "final_overall": critique.get("overall"),
             "final_pass": critique.get("pass"),

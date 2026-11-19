@@ -40,6 +40,28 @@ class AnalysisGoal:
         return result
 
 
+
+def _filter_goals(growth_goals, fields):
+    """#45：幻觉目标过滤（纯函数，失败保守放行不阻断 S2）。
+
+    【2026-11-18 真机回归修复】必须保持输入形态：
+    generate(): List[AnalysisGoal] 的既有契约被下游 s12_ai_orchestrator / api/s2.py
+    依赖（它们调用 g.to_dict()）。原实现直接返回闸门产出的 dict 列表，导致
+    "'dict' object has no attribute 'to_dict'" → S2 整节点降级。
+    现在只把对象转成 dict 给纯函数判定，再按同一引用映射回原对象。
+    """
+    items = list(growth_goals or [])
+    dicts = [g.to_dict() if hasattr(g, "to_dict") else dict(g) for g in items]
+    try:
+        from app.core.analysis_quality_guard import filter_hallucinated_goals as _fh
+        out = _fh(dicts, fields)
+        kept_refs = {id(d) for d in (out.get("kept") or [])}
+        kept = [orig for orig, d in zip(items, dicts) if id(d) in kept_refs]
+        return kept, out.get("dropped") or []
+    except Exception:
+        return items, []
+
+
 class S2GoalGenerator:
     """
     S2 目标生成器
@@ -210,7 +232,12 @@ class S2GoalGenerator:
                 expected_charts=charts
             ))
         
-        return goals[:6]  # 确保最多6个
+        # #45：字段存在性闸门——丢弃点名不存在字段的幻觉目标（如逾期天数/地区）
+        goals, _dropped = _filter_goals(goals[:6], fields)
+        if _dropped:
+            print(f"[S2-guard] 丢弃幻觉目标 {len(_dropped)} 个: "
+                  + ", ".join(str(d.get('title')) for d in _dropped[:4]))
+        return goals[:6]
     
     async def generate_goals_llm_enhanced(
         self,
@@ -273,8 +300,12 @@ class S2GoalGenerator:
                     generated_by="llm"
                 ))
             
+            goals, _dropped = _filter_goals(goals if goals else base_goals, fields)
+            if _dropped:
+                print(f"[S2-guard] LLM目标丢弃幻觉项 {len(_dropped)} 个")
             return goals if goals else base_goals
         
+        base_goals, _dropped = _filter_goals(base_goals, fields)
         return base_goals
     
     def _default_prompt_template(self) -> str:

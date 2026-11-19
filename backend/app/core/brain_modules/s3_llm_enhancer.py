@@ -11,6 +11,7 @@ from jsonschema import validate, ValidationError, Draft7Validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.llm_gateway import llm_chat
+from app.core.ai_budget import budget_for
 from app.core.prompt_loader import load_prompt
 from app.core.brain_modules.s3_chart_engine_v2 import S3ChartEngine, ChartRecommendation, FieldAnalyzer, FieldType
 from app.core.brain_modules.schema_enricher import build_semantics
@@ -576,11 +577,14 @@ class S3LLMEnhancer:
                                         semantics, self.derived_metrics, table_name, field_profiles)
             
             # 调用LLM
+            _b3 = budget_for("s3")
             response = await llm_chat(
                 prompt=prompt,
                 json_mode=True,
                 user_id="s3_llm_enhancer",
-                timeout=60,  # 图表推荐输出较长；超时后由规则引擎兜底出图
+                timeout=_b3["timeout"],  # Task #702/#706：统一预算；超时后规则引擎兜底出图
+                max_retries=int(_b3["retries"]),
+                max_tokens=int(_b3["max_tokens"]),
             )
 
             # fallback_used=True 时明确走规则引擎降级，不再继续重试
@@ -689,11 +693,13 @@ class S3LLMEnhancer:
             fields=json.dumps(fields, ensure_ascii=False),
         )
 
+        _bs = budget_for("s3")
         response = await llm_chat(
             prompt=prompt,
             json_mode=True,
             user_id="s3_llm_enhancer",
-            timeout=45,  # 字段语义增强（非关键路径），超时直接放弃增强
+            timeout=_bs["timeout"],  # Task #706：改走统一预算（原硬编码 45s）
+            max_tokens=int(_bs["max_tokens"]),
         )
         
         if response.success and response.response_json:
@@ -821,7 +827,11 @@ async def select_charts_from_candidates(
 {{"charts":[{{"candidate_id":"Cxxx","chart_type":"kpi","title":"总担保金额","x_field":null,"y_field":"担保金额","category_field":null,"value_field":"担保金额","config":{{}},"reason":"..."}}]}}"""
 
     try:
-        response = await llm_chat(prompt=prompt, json_mode=True, user_id="s3_llm_selector", timeout=60)
+        _bc = budget_for("s3")
+        response = await llm_chat(prompt=prompt, json_mode=True, user_id="s3_llm_selector",
+                                timeout=_bc["timeout"],
+                                max_retries=int(_bc["retries"]),
+                                max_tokens=int(_bc["max_tokens"]))
     except Exception as e:
         print(f"[S3-LLM-select] LLM 调用异常: {e}")
         return None

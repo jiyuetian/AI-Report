@@ -1,3 +1,12 @@
+"""【DEPRECATED · Task #714】本文件已废弃，禁止修改或导入。
+
+当前主链路唯一权威实现是同目录 s3_chart_engine_v2.py：
+  - api/brain_run_sse.py、api/chat.py、api/s3.py、core/brain_modules/* 全部 import _v2；
+  - 本文件 21KB 无任何运行时引用（AST 全量扫描确认），改这里不会生效，只会误导。
+按安全红线不擅自删除单个源文件（删除须用户拍板）；保留作历史快照。
+scripts/check_deprecated_imports.py 会在 CI 阻断任何重新导入本文件的写法。
+新需求一律改 s3_chart_engine_v2.py。
+"""
 """
 S3 图表推荐引擎 - M2-05
 字段组合 → 图表类型映射（借鉴 LIDA）

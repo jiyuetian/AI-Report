@@ -118,6 +118,11 @@ interface DashboardConfig {
   generated_by?: 'llm' | 'rule_engine' | 'hybrid' | string;
   generation_mode?: 'ai' | 'rule' | 'hybrid' | string;
   ai_participated?: boolean;
+  // Task #706：绿标唯一口径（全链 AI 把关 + AI 自检通过 + 无规则接管）
+  ai_badge_eligible?: boolean;
+  ai_governed?: boolean;
+  ai_fallback_used?: boolean;
+  ai_participated_any?: boolean;
   // 2.3：目标生成是否由 AI 参与（S2 阶段），用于"目标区"小标展示
   s2_generated_by?: 'llm' | 'rule' | string;
 }
@@ -687,17 +692,14 @@ const DashboardPage: React.FC = () => {
     return auto.length ? [...base, ...auto] : base;
   }, [config, chartData]);
 
-  // 问题1修复：从已落库的 config 推导生成方式，供 DashboardOps 渲染绿标/灰标
-  // （优先用显式字段 generation_mode/ai_participated；旧看板仅有 generated_by 时回退推断）
-  const genMode = config?.generation_mode
-    ? config.generation_mode
-    : config?.ai_participated
-      ? 'ai'
-      : config?.generated_by === 'llm'
-        ? 'ai'
-        : config?.generated_by
-          ? 'rule'
-          : '';
+  // Task #706：绿标只认后端统一契约 ai_badge_eligible。
+  // 严禁再按「任一节点 AI 参与」(ai_participated / generation_mode) 点亮绿标；
+  // 旧看板缺字段时，只有 ai_governed 明确为真且无规则接管才认可，其余一律灰标。
+  const genMode = !config ? ''
+    : config.ai_badge_eligible === true ? 'ai'
+    : (config.ai_badge_eligible == null && config.ai_governed === true && config.ai_fallback_used !== true) ? 'ai'
+    : (config.ai_badge_eligible == null && config.generated_by == null && config.generation_mode === 'ai') ? 'ai'
+    : 'rule';
 
   // 2.3：目标生成方式（S2），供"目标区"小标展示
   const s2Gen = config?.s2_generated_by ?? '';
@@ -1434,6 +1436,7 @@ const DashboardPage: React.FC = () => {
           id={urlId}
           title={title}
           generationMode={genMode}
+          scoreLabel={(config as any)?.score_label}
           s2GeneratedBy={s2Gen}
           onRename={setTitle}
           // 问题3修复：版本回退成功后由 DashboardOps 触发，重载看板详情使界面立即生效
