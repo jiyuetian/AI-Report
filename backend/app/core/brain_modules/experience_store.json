@@ -22,5 +22,149 @@
     "count": 1,
     "last_outcome": "good",
     "last_seen": "2026-10-28T15:53:01"
+  },
+  "产品分析::2b7ea634b74e": {
+    "domain": "产品分析",
+    "signature": "None:拦截并自修:S3-AI契约总览",
+    "decisions": {
+      "拦截并自修": 16
+    },
+    "good": 0,
+    "edited": 16,
+    "count": 16,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:21:37"
+  },
+  "产品分析::a39c4276b5d1": {
+    "domain": "产品分析",
+    "signature": "R1:自修:S3-AI契约校验",
+    "decisions": {
+      "自修": 21
+    },
+    "good": 0,
+    "edited": 21,
+    "count": 21,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:21:37"
+  },
+  "产品分析::8f38d1037be4": {
+    "domain": "产品分析",
+    "signature": "None:修复:S3-AI契约自修",
+    "decisions": {
+      "修复": 21
+    },
+    "good": 0,
+    "edited": 21,
+    "count": 21,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:21:37"
+  },
+  "合规管理::2b7ea634b74e": {
+    "domain": "合规管理",
+    "signature": "None:拦截并自修:S3-AI契约总览",
+    "decisions": {
+      "拦截并自修": 2
+    },
+    "good": 0,
+    "edited": 2,
+    "count": 2,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T15:05:19"
+  },
+  "合规管理::a39c4276b5d1": {
+    "domain": "合规管理",
+    "signature": "R1:自修:S3-AI契约校验",
+    "decisions": {
+      "自修": 9
+    },
+    "good": 0,
+    "edited": 9,
+    "count": 9,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T15:05:19"
+  },
+  "合规管理::8f38d1037be4": {
+    "domain": "合规管理",
+    "signature": "None:修复:S3-AI契约自修",
+    "decisions": {
+      "修复": 7
+    },
+    "good": 0,
+    "edited": 7,
+    "count": 7,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T15:05:19"
+  },
+  "担保风控::2b7ea634b74e": {
+    "domain": "担保风控",
+    "signature": "None:拦截并自修:S3-AI契约总览",
+    "decisions": {
+      "拦截并自修": 6
+    },
+    "good": 0,
+    "edited": 6,
+    "count": 6,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:18:41"
+  },
+  "担保风控::a39c4276b5d1": {
+    "domain": "担保风控",
+    "signature": "R1:自修:S3-AI契约校验",
+    "decisions": {
+      "自修": 12
+    },
+    "good": 0,
+    "edited": 12,
+    "count": 12,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:18:41"
+  },
+  "担保风控::8f38d1037be4": {
+    "domain": "担保风控",
+    "signature": "None:修复:S3-AI契约自修",
+    "decisions": {
+      "修复": 11
+    },
+    "good": 0,
+    "edited": 11,
+    "count": 11,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:18:41"
+  },
+  "合规风控::2b7ea634b74e": {
+    "domain": "合规风控",
+    "signature": "None:拦截并自修:S3-AI契约总览",
+    "decisions": {
+      "拦截并自修": 2
+    },
+    "good": 0,
+    "edited": 2,
+    "count": 2,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:02:48"
+  },
+  "合规风控::a39c4276b5d1": {
+    "domain": "合规风控",
+    "signature": "R1:自修:S3-AI契约校验",
+    "decisions": {
+      "自修": 3
+    },
+    "good": 0,
+    "edited": 3,
+    "count": 3,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:02:48"
+  },
+  "合规风控::8f38d1037be4": {
+    "domain": "合规风控",
+    "signature": "None:修复:S3-AI契约自修",
+    "decisions": {
+      "修复": 3
+    },
+    "good": 0,
+    "edited": 3,
+    "count": 3,
+    "last_outcome": "edited",
+    "last_seen": "2026-11-18T16:02:48"
   }
 }

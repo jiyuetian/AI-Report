@@ -223,18 +223,18 @@ except Exception as e:
 
 
 # ───────────────────────── 4. 白盒：规则目录 + 提示词路径（R8/R11~R14） ─────────────────────────
-section("【白盒·4】规则目录 R1-R14 登记 + R10~R14 提示词路径落盘校验（G3 白盒化）")
+section("【白盒·4】规则目录 R1-R15 登记 + R10~R15 提示词路径落盘校验（G3 白盒化）")
 from app.core.brain_modules import rule_config_catalog as rc
 
 try:
     all_ids = rc.ALL_RULE_IDS
-    if all_ids == [f"R{i}" for i in range(1, 15)]:
-        ok("catalog:R1-R14", f"登记 {len(all_ids)} 条 {all_ids}")
+    if all_ids == [f"R{i}" for i in range(1, 16)]:
+        ok("catalog:R1-R15", f"登记 {len(all_ids)} 条 {all_ids}")
     else:
-        bad("catalog:R1-R14", f"数量异常 {all_ids}")
-    # 校验 R10~R14 default 路径指向 app/core/prompts 且文件存在
+        bad("catalog:R1-R15", f"数量异常 {all_ids}")
+    # 校验 R10~R15 default 路径指向 app/core/prompts 且文件存在
     prompt_keys = {"R10": "s3_insight_deepen", "R11": "s4_ai_orchestrate", "R12": "s5_ai_score",
-                   "R13": "s1_ai_theme", "R14": "s2_ai_goal"}
+                   "R13": "s1_ai_theme", "R14": "s2_ai_goal", "R15": "s6_ai_crud"}
     for rid, key in prompt_keys.items():
         entry = rc.RULE_CONFIG_CATALOG.get(rid)
         found = None

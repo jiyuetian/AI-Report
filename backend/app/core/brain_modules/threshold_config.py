@@ -59,6 +59,18 @@ DEFAULT_THRESHOLDS: Dict[str, Any] = {
     "s4_narrative_mode": "ai_first",
     "insight_ai_enabled": True,         # 洞察是否由 AI 增强解读
     "insight_ai_timeout": 25,           # 洞察 AI 解读硬超时（秒），超时退规则洞察
+    # ── 缺口闭环（2026-11-02）：S6 AI 自主 CRUD 护栏（L1-L4 增删改查自主执行层）──
+    "ai_crud_enabled": True,            # S6 AI 自主 CRUD 总开关（关=仅规则意图分类可触发 CRUD）
+    "ai_crud_max_actions": 5,           # 单次指令 AI 自主执行的最大动作数（护栏，防失控）
+    "ai_crud_allow_bulk": False,        # 是否允许 AI 自主批量改数（默认关，红线④绝不让 AI 碰生产库）
+    "ai_crud_allow_permission": False,  # 是否允许 AI 自主变更权限（默认关，仅超管手动）
+    "ai_crud_require_snapshot": True,  # R8-4：每次变更前强制快照回退点（护栏，可一键回滚）
+    # ── Task #712（v4 H1/H2）：S5 评分卡「改进建议」触发线（原散落硬编码 80/70/60）──
+    "s5_suggest_redundancy_min": 80,   # 去冗余分低于此值提示合并相似图表
+    "s5_suggest_coverage_min": 80,     # 覆盖度低于此值提示补齐图表类型
+    "s5_suggest_narrative_min": 70,    # 叙事分低于此值提示结论→佐证→明细排序
+    "s5_suggest_accuracy_min": 60,     # 准确性分低于此值提示核查字段/口径
+    "s5_suggest_readability_min": 70,  # 可读性分低于此值提示优化标题/数量
 }
 
 # 阈值白盒元信息（B1 注册表引用）
@@ -100,6 +112,18 @@ THRESHOLD_META: Dict[str, Dict[str, Any]] = {
     # G4 洞察 AI 增强（R10）
     "insight_ai_enabled": {"rule": "R10", "desc": "洞察层AI增强解读开关", "source": "config", "default": True},
     "insight_ai_timeout": {"rule": "R10", "desc": "洞察AI解读硬超时(秒)", "source": "config", "default": 25},
+    # ── 缺口闭环（2026-11-02）：S6 AI 自主 CRUD 护栏（L1-L4 增删改查自主执行层）──
+    "ai_crud_enabled": True,            # S6 AI 自主 CRUD 总开关（关=仅规则意图分类可触发 CRUD）
+    "ai_crud_max_actions": 5,          # 单次指令 AI 自主执行的最大动作数（护栏，防失控）
+    "ai_crud_allow_bulk": False,       # 是否允许 AI 自主批量改数（默认关，红线④绝不让 AI 碰生产库）
+    "ai_crud_allow_permission": False, # 是否允许 AI 自主变更权限（默认关，仅超管手动）
+    "ai_crud_require_snapshot": True,  # R8-4：每次变更前强制快照回退点（护栏，可一键回滚）
+    # Task #712 S5 改进建议阈值（R6 评分卡）
+    "s5_suggest_redundancy_min": {"rule": "R6", "desc": "去冗余建议触发线", "source": "config", "default": 80},
+    "s5_suggest_coverage_min": {"rule": "R6", "desc": "覆盖度建议触发线", "source": "config", "default": 80},
+    "s5_suggest_narrative_min": {"rule": "R6", "desc": "叙事建议触发线", "source": "config", "default": 70},
+    "s5_suggest_accuracy_min": {"rule": "R6", "desc": "准确性建议触发线", "source": "config", "default": 60},
+    "s5_suggest_readability_min": {"rule": "R6", "desc": "可读性建议触发线", "source": "config", "default": 70},
 }
 
 # brain_configs 中承载覆盖值的配置键

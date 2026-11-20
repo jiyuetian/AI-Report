@@ -155,7 +155,23 @@ RULE_CONFIG_CATALOG: Dict[str, List[Dict[str, Any]]] = {
          "default": "app/core/prompts/s2_ai_goal.md",
          "desc": "AI 主执行目标生成的提示词（外置，含规则底座+飞轮经验）"},
     ],
+    # ── 缺口闭环（2026-11-02）S6 AI 自主 CRUD：AI 在框架内自主对看板做增删改查 ──
+    "R15": [
+        {"param": "S6 AI 自主 CRUD 总开关", "source": CONFIG, "key": "ai_crud_enabled", "default": True,
+         "desc": "True=AI 可自主规划并执行 CRUD；False=仅规则意图分类可触发 CRUD"},
+        {"param": "S6 单次最大动作数", "source": CONFIG, "key": "ai_crud_max_actions", "default": 5,
+         "desc": "单次指令 AI 自主执行的最大动作数（护栏，防一次指令改崩看板）"},
+        {"param": "S6 允许 AI 批量改数", "source": CONFIG, "key": "ai_crud_allow_bulk", "default": False,
+         "desc": "默认关：红线④绝不让 AI 碰生产库；仅隔离临时库由人工放行"},
+        {"param": "S6 允许 AI 变更权限", "source": CONFIG, "key": "ai_crud_allow_permission", "default": False,
+         "desc": "默认关：权限变更仅超管手动，AI 不可自主操作"},
+        {"param": "S6 改前强制快照", "source": CONFIG, "key": "ai_crud_require_snapshot", "default": True,
+         "desc": "R8-4：每次变更前对看板打回退点快照，可一键回滚"},
+        {"param": "S6 自主 CRUD 提示词", "source": PROMPT, "key": "s6_ai_crud",
+         "default": "app/core/prompts/s6_ai_crud.md",
+         "desc": "AI 开工前读的 CRUD 契约：可用动作/参数/护栏/行业指标模版，确保它知悉如何操作"},
+    ],
 }
 
-# 所有规则编号（R1~R14）
-ALL_RULE_IDS = [f"R{i}" for i in range(1, 15)]
+# 所有规则编号（R1~R15）
+ALL_RULE_IDS = [f"R{i}" for i in range(1, 16)]
