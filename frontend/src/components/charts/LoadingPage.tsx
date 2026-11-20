@@ -12,7 +12,7 @@ import {
   ClockCircleOutlined
 } from '@ant-design/icons';
 import './LoadingPage.css';
-import { authHeaders, authorizedFetch } from '../../utils/request';
+import { API_BASE, authHeaders, authorizedFetch } from '../../utils/request';
 
 const { Title, Text } = Typography;
 
@@ -44,7 +44,7 @@ interface LoadingPageProps {
 // ① 变量名写成 VITE_API_BASE（其余文件均为 VITE_API_BASE_URL）→ 环境变量覆盖永远不生效
 // ② 默认值是硬编码绝对地址 http://localhost:8000/api/v1 → 开发态绕过 vite 代理（/api 不生效）、
 //    生产态会把请求打到访问者本机的 8000 端口。统一改为相对路径，与其他组件一致。
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+// API 基址统一由 utils/request.ts 提供（Task #713）
 
 const LoadingPage: React.FC<LoadingPageProps> = ({
   datasetId,
@@ -134,9 +134,15 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
       const did = data.detail?.dashboard_id || '';
       setDashboardId(did);
       if (!mountedRef.current) return;
+      // Task #706：恢复模式（emitComplete=false）同样要给徽标赋值，否则恒显示「本次为规则生成」；
+      // 徽标只认后端严格口径 ai_badge_eligible，不再读宽松的 generation_mode。
+      const badgeEligible = (data.detail as any)?.ai_badge_eligible === true
+        || ((data.detail as any)?.ai_badge_eligible == null && (data as any)?.ai_badge_eligible === true)
+        || ((data.detail as any)?.ai_badge_eligible == null && (data as any)?.ai_badge_eligible == null
+            && (data.detail as any)?.ai_governed === true && (data.detail as any)?.ai_fallback_used !== true);
+      setDashboardAiParticipated(!!badgeEligible)
       if (emitComplete) {
-        const aiParticipated = data.detail?.generation_mode === "ai"
-        setDashboardAiParticipated(!!aiParticipated)
+        const aiParticipated = !!badgeEligible
         if (aiParticipated) {
           message.success('看板生成完成！');
         } else {
@@ -319,7 +325,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
         body: JSON.stringify({ choice }),
       });
     } catch (e) {
-      /* 忽略瞬态错误，流水线侧有超时兜底 */
+      /* 未收到确认不继续：流水线停在 awaiting_user，看板不会生成 */
     }
   };
 
@@ -436,9 +442,9 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
           {/* M2（拍板）：完成态持久徽标 —— 一眼区分 AI 生成 / 规则兜底生成 */}
           {isComplete && (
             dashboardAiParticipated ? (
-              <Tag color="green" style={{ marginLeft: 8 }}>已生成</Tag>
+              <Tag color="green" style={{ marginLeft: 8 }}>AI 全链生成</Tag>
             ) : (
-              <Tag color="default" style={{ marginLeft: 8 }}>本次为规则生成</Tag>
+              <Tag color="default" style={{ marginLeft: 8 }}>规则兜底 / AI 未全程参与</Tag>
             )
           )}
         </div>
@@ -485,7 +491,7 @@ const LoadingPage: React.FC<LoadingPageProps> = ({
         open={!!aiAwaiting}
         closable={true}
         maskClosable={false}
-        onCancel={() => handleAiResume('rule_fallback')}
+        onCancel={handleCancel}
         footer={null}
       >
         <p style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
