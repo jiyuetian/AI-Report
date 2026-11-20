@@ -191,41 +191,46 @@ class LoginLockManager:
 security = HTTPBearer(auto_error=False)
 
 
+# ============== 401 会话失效可机读原因（Task #720） ==============
+# 背景：旧实现只返回字符串 detail（"令牌无效或已过期"），前端 authorizedFetch 无 401 兜底，
+# 上传页把它降级成「上传失败（HTTP 401）」这种用户看不懂的文案；重试还复用坏 token 死循环。
+# 这里统一补：人话 detail + WWW-Authenticate error + 可机读 X-Auth-Reason 响应头。
+# 前端仍按 HTTP 状态码治理会话，响应头用于排障与 E2E 断言，不构成新的耦合。
+AUTH_REASON_HEADER = "X-Auth-Reason"
+
+
+def auth_401(reason: str, message: str) -> HTTPException:
+    """统一构造 401。reason: missing / invalid_or_expired / revoked / malformed / internal"""
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=message,
+        headers={
+            "WWW-Authenticate": 'Bearer error="%s"' % reason,
+            AUTH_REASON_HEADER: reason,
+        },
+    )
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
     """获取当前用户（依赖注入）"""
     if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未提供认证令牌",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
+        raise auth_401("missing", "登录状态已失效，请重新登录后再继续")
+
     token = credentials.credentials
     payload = decode_token(token)
     
     if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌无效或已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
+        # 签名失效（服务端换过 SECRET_KEY）与 exp 过期都归到这一类，前端统一按"会话失效"处理
+        raise auth_401("invalid_or_expired", "登录状态已失效（令牌无效或已过期），请重新登录")
+
     # 吊销检查（D2-5）：已登出的 token 立即失效
     jti = payload.get("jti")
     if jti and is_token_blacklisted(jti):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌已吊销，请重新登录",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
+        raise auth_401("revoked", "登录状态已失效（已退出登录），请重新登录")
+
     user_id = payload.get("sub")
     if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌格式错误",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise auth_401("malformed", "登录状态异常（令牌格式错误），请重新登录")
     
     return {
         "user_id": user_id,
@@ -286,11 +291,7 @@ async def require_admin(
 ) -> Dict[str, Any]:
     """管理员门禁：基于 is_superuser 或 admin 角色（本系统 admin 仅 is_superuser，无角色）。"""
     if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未认证",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise auth_401("missing", "登录状态已失效，请重新登录")
     if not current_user.get("is_superuser") and "admin" not in current_user.get("roles", []):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -314,36 +315,29 @@ class Roles:
 
 # ============== B 类内部端点 env 闸门（ISS-025 Batch2） =============
 # 设计：prod 默认关闭（ENABLE_INTERNAL_ENDPOINTS=False）→ 内部端点必须鉴权，关闭匿名访问缺口；
-# dev 设 ENABLE_INTERNAL_ENDPOINTS=on/true/1 → 允许匿名访问内部端点（开发便利）。
+# dev 设 ENABLE_INTERNAL_ENDPOINTS=on/true/1 → 仅放开「只读」匿名访问（开发便利）。
+# Task #713（P0 安全债）：写操作（POST/PUT/PATCH/DELETE）无论开关状态一律要求有效令牌，
+# 杜绝「单个 env 变量把约 60 个写端点全变成匿名可写」。
 # 只做开关，不改任何业务逻辑；依赖此函数即视为已收口。
 async def internal_endpoint_guard(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> None:
-    """B 类内部/系统端点（/brain/*、/llm/*、/exceptions/*、/dependency-graph、/trigger、/recover 等）的 env 闸门。
+    """B 类内部/系统端点（/brain/*、/llm/*、/exceptions/* 等）的 env 闸门。
 
-    - ENABLE_INTERNAL_ENDPOINTS=on（dev）：放行匿名访问，不改变既有行为。
-    - 关闭（prod 默认）：要求有效 bearer 令牌，否则 401。已吊销令牌亦拒。
+    - 写方法（POST/PUT/PATCH/DELETE）：**任何配置下**都要求有效 bearer 令牌，已吊销亦拒。
+    - 只读方法 + ENABLE_INTERNAL_ENDPOINTS=on（dev）：放行匿名访问，不改变既有行为。
+    - 只读方法 + 开关关闭（prod 默认）：要求有效 bearer 令牌，否则 401。
     不改变被装饰 handler 的任何业务逻辑，仅做入口鉴权开关。
     """
-    if settings.ENABLE_INTERNAL_ENDPOINTS:
+    is_write = request.method.upper() in ("POST", "PUT", "PATCH", "DELETE")
+    if settings.ENABLE_INTERNAL_ENDPOINTS and not is_write:
         return
     if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="内部端点已收口（prod 默认需鉴权）；dev 可设 ENABLE_INTERNAL_ENDPOINTS=on 放开",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise auth_401("missing", "登录状态已失效，请重新登录")
     payload = decode_token(credentials.credentials)
     if payload is None or payload.get("sub") is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="内部端点已收口，令牌无效",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise auth_401("invalid_or_expired", "登录状态已失效（令牌无效），请重新登录")
     jti = payload.get("jti")
     if jti and is_token_blacklisted(jti):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="令牌已吊销，请重新登录",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise auth_401("revoked", "登录状态已失效（已退出登录），请重新登录")

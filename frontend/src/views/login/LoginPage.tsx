@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Form, Input, Button, Checkbox, Card, Typography, message, Steps } from 'antd'
+import { Form, Input, Button, Checkbox, Card, Typography, message, Steps, Alert } from 'antd'
 import { UserOutlined, LockOutlined, SafetyOutlined, MobileOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import './LoginPage.css'
-import { authorizedFetch } from '../../utils/request'
+import { API_BASE, authorizedFetch } from '../../utils/request'
 
 const { Title, Text, Link } = Typography
 
@@ -29,13 +29,21 @@ export default function LoginPage() {
   const [forgotStep, setForgotStep] = useState<ForgotStep>(ForgotStep.INPUT_PHONE)
   const [phone, setPhone] = useState('')
   const [countdown, setCountdown] = useState(0)
+  // Task #720：会话失效被全局兜底送回登录页时，明确告诉用户"文件没丢、登录后会继续传"
+  const [sessionExpired] = useState(() => {
+    try {
+      const hit = sessionStorage.getItem('auth_expired_notice') === '1'
+      if (hit) sessionStorage.removeItem('auth_expired_notice')
+      return hit
+    } catch { return false }
+  })
 
   // 登录提交
   const handleLogin = async (values: LoginFormData) => {
     setLoading(true)
     try {
       // TODO: 调用登录API
-      const response = await authorizedFetch('/api/v1/auth/login', {
+      const response = await authorizedFetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -288,6 +296,15 @@ export default function LoginPage() {
     <div className="login-page">
       <div className="login-container">
         <Card className="login-card">
+          {sessionExpired && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16, textAlign: 'left' }}
+              message="登录状态已失效，请重新登录"
+              description="你之前选择的文件已安全保留，登录成功后会自动回到上传页并继续上传，不需要重新选文件。"
+            />
+          )}
           <div className="login-header">
             <div className="logo">
               <div className="logo-icon">AI</div>

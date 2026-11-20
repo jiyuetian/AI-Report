@@ -252,6 +252,17 @@ async def apply_template(
             "render_updates": [],
         }
 
+    applied = len(result.get("render_updates", []))
+    # #4 修复：套用后命中 0 图（模板字段与目标数据集不匹配）时，明确告知而非静默成功，
+    # 避免用户点「套用」毫无反应、误以为功能缺失/只有管理员能用。
+    if applied == 0:
+        return {
+            "success": True,
+            "applied": 0,
+            "message": "模板字段与目标看板数据集不匹配，未套用任何图表（请检查模板字段名与数据集字段是否一致）",
+            "render_updates": [],
+        }
+
     dash.config = cfg
     from datetime import datetime
     dash.updated_at = datetime.utcnow()
@@ -260,7 +271,7 @@ async def apply_template(
 
     return {
         "success": True,
-        "applied": len(result.get("render_updates", [])),
+        "applied": applied,
         "message": result.get("message", "套用完成"),
         "render_updates": result.get("render_updates", []),
     }

@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from pathlib import Path
@@ -15,6 +15,7 @@ from app.core.duckdb_manager import get_duckdb
 from app.core.database import get_db
 from app.models.dataset import Dataset
 from app.models.file import File as FileModel
+from app.models.quality import QualityIssue, CleanRule, ChangeLog, QualityRowChange
 import pandas as pd
 
 router = APIRouter(prefix="/datasets", tags=["Datasets"])
@@ -451,14 +452,24 @@ async def delete_dataset(
         duckdb = get_duckdb()
         table_name = f"ds_{dataset_id.replace('-', '_')}"
         duckdb.drop_table(table_name)
-        
+
+        # 显式删除子表行（质检问题/清洗规则/变更明细/逐行变更）：
+        # Dataset 与这些子表的关系未配置 cascade，ORM 删除父记录时会先尝试把子表 dataset_id
+        # 置 NULL，而该列是 NOT NULL → 触发 "NOT NULL constraint failed: clean_rules.dataset_id"。
+        # 故在删父记录前先按 dataset_id 显式清理子行（与 reset_quality 清理口径一致）。
+        await db.execute(delete(QualityIssue).where(QualityIssue.dataset_id == dataset_id))
+        await db.execute(delete(CleanRule).where(CleanRule.dataset_id == dataset_id))
+        await db.execute(delete(ChangeLog).where(ChangeLog.dataset_id == dataset_id))
+        await db.execute(delete(QualityRowChange).where(QualityRowChange.dataset_id == dataset_id))
+
         # 从SQLite数据库删除记录
         result = await db.execute(select(Dataset).where(Dataset.id == dataset_id))
         record = result.scalar_one_or_none()
         if record:
             await db.delete(record)
             await db.flush()
-        
+        await db.commit()
+
         return {"message": "数据集删除成功", "dataset_id": dataset_id}
         
     except Exception as e:

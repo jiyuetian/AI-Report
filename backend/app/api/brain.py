@@ -1,4 +1,15 @@
-"""策略大脑配置API - M1-15"""
+"""策略大脑配置API - M1-15（DEPRECATED · Task #711）。
+
+⚠ 本文件是 2026-08-18 的内存假数据兼容层：/configs 返回硬编码字典、
+updated_at 固定、更新重启即丢。权威实现是 app/api/brain_v2.py（DB 持久化 +
+BrainConfigManager 热更新 + 版本/回滚/历史）。
+Task #711：本 router 整体迁到 /brain/legacy 前缀，彻底不再与 brain_v2 共用
+/api/v1/brain/* 路径 —— 否则 OpenAPI 对重复 path+method 取后注册者签名，文档会
+显示旧版 get_brain_configs 而实际请求命中新版 list_configs，形成文档/行为分叉。
+旧调用方仍可经 /api/v1/brain/legacy/configs|configs/update|report/* 访问（前端与
+后端均无引用，仅作兼容保留）。新需求一律改 brain_v2.py。
+本文件按安全红线不删除（单个删除须用户拍板），仅作显式归档标注。
+"""
 from app.core.security import internal_endpoint_guard
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
@@ -11,7 +22,7 @@ from app.core.database import get_db
 from app.models.dataset import Dataset
 from app.api.datasets import _assert_dataset_access
 
-router = APIRouter(prefix="/brain", tags=["Brain"])
+router = APIRouter(prefix="/brain/legacy", tags=["Brain (Legacy)"])
 
 # 内存存储（实际应使用数据库）
 _brain_configs: Dict[str, Any] = {

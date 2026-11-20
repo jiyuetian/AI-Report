@@ -78,8 +78,15 @@ def main():
             unauth.append((method.upper(), p))
 
     violations = []
+    # Task #713：expect_secured = 已闭环端点（无 token 真机验过 401）清单。
+    # 这些路径即便仍登记在 known_leak_tracked 历史清单里，也绝不允许再退回无鉴权：
+    # 一旦出现在「无 security」列表即 CI FAIL，堵住「误删鉴权被白名单放行」。
+    expect_secured = set(wl.get("expect_secured", []))
     matched = {"intentional_public": 0, "test_prefixes": 0, "known_leak_tracked": 0}
     for method, p in unauth:
+        if p in expect_secured:
+            violations.append((method, p + "  [已闭环端点被改回无鉴权]"))
+            continue
         bucket = is_whitelisted(p, wl)
         if bucket:
             matched[bucket] += 1
@@ -91,6 +98,7 @@ def main():
     print("  命中 intentional_public: %d" % matched["intentional_public"])
     print("  命中 test_prefixes:     %d" % matched["test_prefixes"])
     print("  命中 known_leak_tracked:%d" % matched["known_leak_tracked"])
+    print("  已闭环端点(expect_secured): %d" % len(expect_secured))
     print("  未登记(新增越权):      %d" % len(violations))
 
     if violations:

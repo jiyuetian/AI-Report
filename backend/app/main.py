@@ -151,6 +151,13 @@ async def lifespan(app: FastAPI):
     # 启动时执行
     print("🚀 AI-BI-Report starting up...")
 
+    # Task #716：投产姿势自检（只读，绝不输出密钥明文；失败不阻断启动）
+    try:
+        from app.core.deployment_posture import log_posture
+        log_posture()
+    except Exception as _e:
+        print(f"[POSTURE-WARN] 姿势自检失败(不阻断启动)：{_e}")
+
     # 打印 LLM 配置确认
     from app.core.config import settings
     import os
@@ -253,6 +260,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Task #720：把 401 的可机读原因暴露给浏览器（前端按状态码处理，本头用于排障/E2E 断言）
+    expose_headers=["X-Auth-Reason", "WWW-Authenticate"],
 )
 
 
@@ -272,8 +281,12 @@ app.include_router(upload.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(datasets.router, prefix="/api/v1")
 app.include_router(quality.router, prefix="/api/v1")
-app.include_router(brain.router, prefix="/api/v1")
+# Task #711 重复版本债收口：brain_v2 是 DB 持久化版（真配置）；
+# brain.py 是内存假数据兼容层（已标 DEPRECATED），整体迁到 /brain/legacy 前缀，
+# 不再与 v2 共用 /api/v1/brain/* 路径 → OpenAPI 签名与实际路由完全一致。
+# 顺序即契约：brain_v2 必须先于 brain 注册，不得调换；与 /brain/legacy 路径隔离构成双保险。
 app.include_router(brain_v2.router, prefix="/api/v1")
+app.include_router(brain.router, prefix="/api/v1")
 app.include_router(llm.router, prefix="/api/v1")
 app.include_router(s1.router, prefix="/api/v1")
 app.include_router(s2.router, prefix="/api/v1")
