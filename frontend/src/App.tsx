@@ -8,6 +8,7 @@ import LoginPage from './views/login/LoginPage'
 import ForbiddenPage from './views/error/ForbiddenPage'
 import { ChartThemeProvider } from './components/charts/ThemeProvider'
 import { AppThemeContext, AppTheme } from './themeContext'
+import { isTokenUsable } from './utils/request'
 
 // 对齐原型 index.html 的 AntD5 设计令牌
 const RISK_THEME_TOKENS = {
@@ -29,8 +30,14 @@ const queryClient = new QueryClient({
 })
 
 function ProtectedRoute({ children, requireAdmin = false }: { children: React.ReactNode, requireAdmin?: boolean }) {
-  const token = localStorage.getItem('token')
-  if (!token) return <Navigate to="/login" replace />
+  // Task #720：不能只看"有没有 token"。exp 已过期 / JWT 结构损坏时直接回登录页，
+  // 并清掉坏凭证；签名被服务端换密钥作废的情况由 authorizedFetch 的 401 兜底补齐。
+  if (!isTokenUsable()) {
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+    return <Navigate to={`/login?redirect=${redirect}`} replace />
+  }
   if (requireAdmin) {
     const user = JSON.parse(localStorage.getItem('user') || '{}')
     const isAdmin = user.roles?.includes('admin')

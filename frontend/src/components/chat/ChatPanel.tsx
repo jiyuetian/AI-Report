@@ -16,7 +16,7 @@ import {
   PictureOutlined, ThunderboltFilled, CloseOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { authHeaders, authorizedFetch } from '../../utils/request';
+import { API_BASE, authHeaders, authorizedFetch } from '../../utils/request';
 import { throttledMessage } from '../../utils/throttledMessage';
 import './ChatPanel.css';
 
@@ -66,7 +66,8 @@ interface ChatMessage {
   original_message?: string;  // 原始用户消息（用于override重发）
   ai_error?: AiError | null;  // AI 调用失败时携带，前端渲染报错卡+选择
   ai_participated?: boolean;       // night36 Task A2：本次回复是否由 LLM 真正参与生成
-  action_source?: 'llm' | 'rule' | 'hybrid';  // 动作来源：意图识别/规划用 LLM 即 llm/hybrid
+  ai_badge_eligible?: boolean;     // Task #706：绿标唯一口径（全链 AI 把关 + 自检通过 + 无兜底）
+  action_source?: 'llm' | 'rule' | 'hybrid' | 'ai_governor' | 'rule_fallback';  // 动作来源
   ai_failed_reason?: string;       // 枚举 ok/timeout/rate_limited/empty_response/not_wired/rule_only/other
   ai_participated_intent?: boolean;   // night36-fix F5：意图识别/规划是否由 LLM 参与
   ai_participated_reply?: boolean;    // night36-fix F5：回复文案是否由 LLM 生成
@@ -112,7 +113,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   // 获取Token状态
   const fetchTokenStatus = async () => {
     try {
-      const res = await authorizedFetch('/api/v1/tokens/status', { headers: authHeaders() });
+      const res = await authorizedFetch(`${API_BASE}/tokens/status`, { headers: authHeaders() });
       const data = await res.json();
       if (data.quota) {
         setTokenStatus(data.quota);
@@ -152,7 +153,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     if (!dashboardId) return;
     try {
       // G3 联动：/chat/sessions/latest 现已强制鉴权，裸 fetch 不带 token 会 401 → 走 authHeaders()
-      const res = await authorizedFetch(`/api/v1/chat/sessions/latest?dashboard_id=${encodeURIComponent(dashboardId)}`, { headers: authHeaders() });
+      const res = await authorizedFetch(`${API_BASE}/chat/sessions/latest?dashboard_id=${encodeURIComponent(dashboardId)}`, { headers: authHeaders() });
       if (!res.ok) return;
       const data = await res.json();
       if (data.success && data.session_id && data.messages?.length > 0) {
@@ -187,7 +188,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   // 创建会话
   const createSession = async () => {
     try {
-      const res = await authorizedFetch('/api/v1/chat/sessions', {
+      const res = await authorizedFetch(`${API_BASE}/chat/sessions`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ dashboard_id: dashboardId })
@@ -204,8 +205,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   // 发送消息
-  const sendMessage = async (overrideMsg?: { text: string; override?: boolean; forceRuleFallback?: boolean }) => {
-    const content = overrideMsg?.text || inputValue.trim();
+  // retryMsg: 重试 AI 时传入 { id, text }，复用原指令重跑完整 AI 链路并就地更新原助手气泡
+  const sendMessage = async (
+    overrideMsg?: { text: string; override?: boolean; forceRuleFallback?: boolean },
+    retryMsg?: { id: string; text: string },
+  ) => {
+    const content = retryMsg?.text || overrideMsg?.text || inputValue.trim();
     if (!content) return;
 
     // 检查Token是否耗尽
@@ -221,15 +226,17 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     }
     setIsLoading(true);
 
-    // 添加用户消息
-    const userMsg: ChatMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: overrideMsg ? `[强制执行] ${content}` : content,
-      timestamp: new Date().toISOString(),
-      images: images.length > 0 ? images : undefined
-    };
-    setMessages(prev => [...prev, userMsg]);
+    // 添加用户消息（重试 AI 时复用原指令，不新增用户气泡）
+    if (!retryMsg) {
+      const userMsg: ChatMessage = {
+        id: Date.now().toString(),
+        role: 'user',
+        content: overrideMsg ? `[强制执行] ${content}` : content,
+        timestamp: new Date().toISOString(),
+        images: images.length > 0 ? images : undefined
+      };
+      setMessages(prev => [...prev, userMsg]);
+    }
 
     // 获取或创建会话
     let sid = sessionId;
@@ -246,7 +253,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     // SSE流式请求
     try {
       // SSE 流式：chat/message 走 authorizedFetch 取原始 Response 以消费 ReadableStream，合理不走 request() 的 JSON 解析封装
-      const res = await authorizedFetch('/api/v1/chat/message', {
+      const res = await authorizedFetch(`${API_BASE}/chat/message`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -254,7 +261,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           message: content,
           dashboard_id: dashboardId,
           override: overrideMsg?.override || false,
-          force_rule_fallback: overrideMsg?.forceRuleFallback || false
+          force_rule_fallback: overrideMsg?.forceRuleFallback || false,
+          retry_of: retryMsg?.id || undefined
         })
       });
 
@@ -269,7 +277,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       let canOverride = false;
       let aiError: AiError | null = null;
       let aiParticipated = false;
-      let actionSource: 'llm' | 'rule' | 'hybrid' = 'rule';
+      let aiBadgeEligible = false;
+      let sawComplete = false;
+      let streamError: string | null = null;
+      let actionSource: 'llm' | 'rule' | 'hybrid' | 'ai_governor' | 'rule_fallback' = 'rule';
       let aiFailedReason: string = 'rule_only';
       let aiParticipatedIntent = false;
       let aiParticipatedReply = false;
@@ -295,13 +306,26 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 const data = JSON.parse(event.data);
                 assistantContent = data.message;
                 canOverride = data.can_override || false;
+              } else if (event.event === 'error') {
+                // Task #706：后端已下发真实错误（流中断 / 落库失败），不得再被解释成「规则引擎完成」
+                let _msg = '对话生成中断';
+                try { _msg = JSON.parse(event.data).message || _msg; } catch (_e) { /* 容错 */ }
+                streamError = _msg;
+                assistantContent = `对话未完成：${_msg}。请点「重试 AI」或重新发送。`;
+                aiParticipated = false;
+                aiError = { stage: 'stream', error: _msg, options: ['retry', 'rule_fallback'], message: _msg } as any;
               } else if (event.event === 'complete') {
                 const data = JSON.parse(event.data);
+                sawComplete = true;
                 assistantContent = data.message;
                 suggestedFollowups = data.suggested_followups || [];
                 aiError = data.ai_error || null;
-                aiParticipated = data.ai_participated === true;
-                actionSource = (data.action_source as 'llm' | 'rule' | 'hybrid') || 'rule';
+                // Task #706：绿标只认 ai_badge_eligible；老响应无该字段时才回退 ai_participated
+                aiBadgeEligible = data.ai_badge_eligible === true;
+                aiParticipated = data.ai_badge_eligible === true ? true
+                  : data.ai_badge_eligible === false ? false
+                  : data.ai_participated === true;
+                actionSource = (data.action_source as typeof actionSource) || 'rule';
                 aiFailedReason = data.ai_failed_reason || 'rule_only';
                 aiParticipatedIntent = data.ai_participated_intent === true;
                 aiParticipatedReply = data.ai_participated_reply === true;
@@ -327,14 +351,20 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       // 不推送空气泡：按 R4 诚实标注 + R3 双入口（交由 ai_error 卡承载），并补一句兜底文案。
       const finalContent = (assistantContent || '').trim();
       if (!finalContent) {
-        if (aiError) {
+        if (streamError) {
+          assistantContent = `对话未完成：${streamError}。请点「重试 AI」或重新发送。`;
+        } else if (aiError) {
           // AI 未参与：用 ai_error.message 作为兜底文案，决策入口由下方 ai_error 卡提供
           assistantContent = aiError.message || 'AI 调用失败，请重试或改用规则引导。';
+        } else if (!sawComplete) {
+          // Task #706：流结束但没收到 complete，不得默认按「规则兜底成功」冒领结果
+          assistantContent = '本轮对话未正常结束（未收到完成事件），结果可能未保存，请重试。';
+          aiParticipated = false;
         } else if (!aiParticipated) {
           // night36 Task A1/A4：严禁冒领"操作已完成"。按后端下发的结构化信号诚实标注：
           // 本次由规则引擎兜底完成，未调用大模型。
           const _why = aiFailedReason === 'rule_only' ? '规则引擎' : 'AI 未参与';
-          const _suffix = actionSource === 'llm' ? '（意图由 AI 识别）' : '';
+          const _suffix = String(actionSource) === 'llm' ? '（意图由 AI 识别）' : '';
           assistantContent = `本次由${_why}完成操作${_suffix}，未生成回复文案。如希望由大模型生成，可点「重试 AI」。`;
         }
         // 若 aiParticipated 为 true 但 message 仍空：保持空白，前端气泡显示「AI 参与 ✅」徽标，不补冒领文案
@@ -352,12 +382,18 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         original_message: canOverride ? content : (aiError || !aiParticipated ? content : undefined),
         ai_error: aiError,
         ai_participated: aiParticipated,
+        ai_badge_eligible: aiBadgeEligible,
         ai_participated_intent: aiParticipatedIntent,
         ai_participated_reply: aiParticipatedReply,
         action_source: actionSource,
         ai_failed_reason: aiFailedReason
       };
-      setMessages(prev => [...prev, assistantMsg]);
+      if (retryMsg) {
+        // 重试 AI：就地更新原助手气泡，不新增
+        setMessages(prev => prev.map(m => m.id === retryMsg.id ? { ...assistantMsg, id: retryMsg.id } : m));
+      } else {
+        setMessages(prev => [...prev, assistantMsg]);
+      }
 
       // 刷新Token状态
       fetchTokenStatus();
@@ -370,75 +406,29 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
-  // night36-fix F4：「重试 AI」只重生成回复文案，不重新执行动作（避免重复加图/改图）
+  // 「重试 AI」：按客户要求重跑完整 AI 链路（分类/抽取/执行均会在 LLM 可达时启用 AI），
+  // 而非仅重写聊天文本。后端依据 retry_of 先回滚上一轮新增图表再重跑，避免重复加图。
   const regenerateReply = async (msg: ChatMessage) => {
     if (!msg.id || !sessionId) return;
-    setIsLoading(true);
-    // 问题3：重试给可见反馈，避免"点击无反应"的错觉（AI 可能在后台轮训多个模型）
-    throttledMessage.loading('正在重新请求 AI…', 'retry-ai');
-    try {
-      const res = await authorizedFetch('/api/v1/chat/regenerate-reply', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, message_id: msg.id })
-      });
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('无法读取响应');
-      let assistantContent = '';
-      let aiError: AiError | null = null;
-      let aiParticipated = false;
-      let aiFailedReason = 'rule_only';
-      let aiParticipatedIntent = false;
-      let aiParticipatedReply = false;
-      let actionSource: 'llm' | 'rule' | 'hybrid' = 'rule';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = new TextDecoder().decode(value);
-        for (const line of text.split('\n\n')) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6);
-            if (dataStr === '[DONE]') continue;
-            try {
-              const event = JSON.parse(dataStr);
-              if (event.event === 'complete') {
-                const data = JSON.parse(event.data);
-                assistantContent = data.message || '';
-                aiError = data.ai_error || null;
-                aiParticipated = data.ai_participated === true;
-                aiParticipatedIntent = data.ai_participated_intent === true;
-                aiParticipatedReply = data.ai_participated_reply === true;
-                actionSource = (data.action_source as 'llm' | 'rule' | 'hybrid') || 'rule';
-                aiFailedReason = data.ai_failed_reason || 'rule_only';
-              }
-            } catch (e) { /* 忽略解析错误 */ }
-          }
+    // 取该助手消息对应的原始用户指令（优先 original_message，否则向前找最近一条 user 消息）
+    let userText = msg.original_message || '';
+    if (!userText) {
+      const idx = messages.findIndex(m => m.id === msg.id);
+      if (idx > 0) {
+        for (let i = idx - 1; i >= 0; i--) {
+          if (messages[i].role === 'user') { userText = messages[i].content; break; }
         }
       }
-      // 就地更新该助手消息（不新增气泡），不重跑动作
-      setMessages(prev => prev.map(m => m.id === msg.id ? {
-        ...m,
-        content: assistantContent || m.content,
-        ai_error: aiError,
-        ai_participated: aiParticipated,
-        ai_participated_intent: aiParticipatedIntent || (msg.ai_participated_intent ?? false),
-        ai_participated_reply: aiParticipatedReply,
-        action_source: actionSource,
-        ai_failed_reason: aiFailedReason,
-      } : m));
-      // night49：重试结束后给出确定性反馈，杜绝"点了没反应"的观感
-      if (aiError) {
-        throttledMessage.error(`AI 仍不可达：${aiError.error?.slice(0, 80) || '调用失败'}`, 'retry-still-fail');
-      } else if (aiParticipated) {
-        throttledMessage.success('AI 已重新生成本条回复', 'retry-ok');
-      } else {
-        throttledMessage.warning('AI 仍未参与（模型通道限流/不可达），已保留原结果', 'retry-no-ai');
-      }
+    }
+    if (!userText) userText = msg.content || '';
+    throttledMessage.loading('正在重新请求 AI 重跑动作…', 'retry-ai');
+    try {
+      // 复用 sendMessage 的完整 SSE 流水线（含动作执行）；retryMsg 触发后端重跑 + 就地更新
+      await sendMessage(undefined, { id: msg.id, text: userText });
+      throttledMessage.destroy('retry-ai');
     } catch (e) {
       console.error('重试 AI 失败:', e);
       throttledMessage.error('重试失败，请稍后再试', 'retry-fail');
-    } finally {
-      setIsLoading(false);
       throttledMessage.destroy('retry-ai');
     }
   };
@@ -587,8 +577,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 {msg.role === 'user' ? (
                   <Badge color="blue" text="我" />
                                 ) : isAdmin ? (
-                  msg.ai_participated ? (
-                    <Badge color="green" text="AI 参与 ✅" />
+                  (msg.ai_badge_eligible ?? msg.ai_participated) ? (
+                    <Badge color="green" text="AI 全链生成 ✅" />
                   ) : (
                     <Badge
                       color="orange"
@@ -645,7 +635,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 />
               )}
               {/* night36 Task A3/A4：AI 未参与（规则兜底）诚实卡 + 双入口（重试 AI / 保留规则结果） */}
-              {isAdmin && !msg.ai_error && msg.ai_participated === false && msg.action_source === 'rule' && !dismissedRuleCards.has(msg.id) && (
+              {isAdmin && !msg.ai_error && msg.ai_participated === false && (msg.action_source === 'rule' || msg.action_source === 'rule_fallback') && !dismissedRuleCards.has(msg.id) && (
                 <Alert
                   type="warning"
                   showIcon

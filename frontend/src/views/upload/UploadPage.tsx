@@ -7,7 +7,8 @@ import { SheetSelectModal, EncodingSelectModal } from '../../components/modals'
 import QualityCheckPanel, { type QualityCheckStatus } from '../../components/quality/QualityCheckPanel'
 import LoadingPage from '../../components/charts/LoadingPage'
 import { useNavigate } from 'react-router-dom'
-import { http, authHeaders, authorizedFetch } from '../../utils/request'
+import { API_BASE, http, authHeaders, authorizedFetch, ApiError, isTokenUsable } from '../../utils/request'
+import { savePendingUpload, listPendingUploads, getPendingUpload, deletePendingUpload } from '../../utils/pendingUploads'
 
 const { Dragger } = Upload
 const { Title, Text } = Typography
@@ -42,7 +43,7 @@ interface UploadItem {
 }
 
 // API配置
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+// API 基址统一由 utils/request.ts 提供（Task #713）
 
 // 看板生成完成的全局墓碑标记（fid -> dashboardId），独立于会话存储：
 // 即使 genMap 因"重新生成"等操作被清掉，恢复会话时也不会把已生成看板的文件再塞回上传队列
@@ -553,6 +554,14 @@ export default function UploadPage() {
 
   // 上传文件
   const uploadFile = async (file: File, uid: string) => {
+    // Task #721：任何入口（新上传 / 重试 / 恢复续传）发起上传前都重新登记待续传文件；
+    // 成功后立即精确删除，失败 / 401 则保留，重新登录回跳后自动继续，不丢用户文件。
+    // Task #721/G：必须 await 事务提交。401 会立刻卸载页面跳登录，
+    // 发射后不管会让 IndexedDB 写入被打断 → 文件真丢、自动续传落空。
+    await savePendingUpload({
+      uid, name: file.name, size: file.size, type: file.type,
+      lastModified: file.lastModified, savedAt: Date.now(), file,
+    })
     const controller = new AbortController()
     abortControllers.current.set(uid, controller)
 
@@ -630,6 +639,9 @@ export default function UploadPage() {
         } : item
       ))
 
+      // Task #721：上传成功即精确删除该文件的续传暂存，避免下次登录重复上传
+      await deletePendingUpload(uid)
+      fileRefs.current.delete(uid)
       message.success(`${file.name} 上传成功`)
       // 3.1：上传完成后自动收缩 Dragger，让首屏让位给内容（可点"继续上传"再展开）
       setUploadExpanded(false)
@@ -644,6 +656,15 @@ export default function UploadPage() {
 
     } catch (error) {
       const err = error as any
+      if (err instanceof ApiError && err.status === 401) {
+        // Task #720：request.ts 已统一清凭证 + 跳登录页。这里只留一条人话状态，
+        // 不再弹「上传失败（HTTP 401）」，也不让"重试"拿着同一个坏 token 原地死循环。
+        const msg = '登录状态已失效，正在跳转重新登录；文件已保留，登录后会自动继续上传'
+        setFileList(prev => prev.map(item =>
+          item.uid === uid ? { ...item, status: 'error', errorCode: 'AUTH_EXPIRED', errorMessage: msg } : item
+        ))
+        return
+      }
       if (err?.name === 'AbortError') {
         // 用户取消
         setFileList(prev => prev.filter(item => item.uid !== uid))
@@ -682,6 +703,41 @@ export default function UploadPage() {
       abortControllers.current.delete(uid)
     }
   }
+
+  // Task #721：重新登录后自动恢复上次因会话失效中断的上传队列。
+  // 延后 900ms 让 localStorage 的 upload_session 恢复先落定，两者都用函数式 setFileList 合并，互不覆盖。
+  // 只在 token 本地可用时执行：未登录场景绝不触发上传，避免制造新的 401 循环。
+  const resumeStartedRef = useRef(false)
+  useEffect(() => {
+    if (resumeStartedRef.current) return
+    resumeStartedRef.current = true
+    if (!isTokenUsable()) return
+    const timer = setTimeout(async () => {
+      const pending = await listPendingUploads()
+      if (!pending.length) return
+      const restored: UploadItem[] = []
+      for (const rec of pending) {
+        if (!(rec.file instanceof File)) continue
+        fileRefs.current.set(rec.uid, rec.file)
+        restored.push({
+          uid: rec.uid, name: rec.name, size: rec.size,
+          status: 'uploading', progress: 0,
+        })
+      }
+      if (!restored.length) return
+      setFileList(prev => {
+        const known = new Set(prev.map(f => f.uid))
+        return [...prev, ...restored.filter(f => !known.has(f.uid))]
+      })
+      setQueueExpanded(true)
+      message.info(`已恢复 ${restored.length} 个未上传完的文件，正在自动继续上传`)
+      for (const item of restored) {
+        const f = fileRefs.current.get(item.uid)
+        if (f) await uploadFile(f, item.uid)
+      }
+    }, 900)
+    return () => clearTimeout(timer)
+  }, [])
 
   // 自定义上传处理
   const customRequest: UploadProps['customRequest'] = async ({ file, onProgress, onSuccess, onError }) => {
@@ -733,6 +789,8 @@ export default function UploadPage() {
 
   // 取消上传
   const handleCancel = (uid: string) => {
+    void deletePendingUpload(uid)
+    fileRefs.current.delete(uid)
     const controller = abortControllers.current.get(uid)
     if (controller) {
       controller.abort()
@@ -755,18 +813,37 @@ export default function UploadPage() {
     setFileList(prev => prev.filter(item => item.uid !== uid))
   }
 
-  // 重试上传
-  const handleRetry = (item: UploadItem) => {
-    const originalFile = fileRefs.current.get(item.uid)
+  // 重试上传（Task #720/#721）：刷新过页面也能从 IndexedDB 找回原文件；
+  // 会话失效时不原地重发坏 token，明确告知"重新登录后自动继续"。
+  const handleRetry = async (item: UploadItem) => {
+    if (!isTokenUsable()) {
+      message.warning('登录状态已失效，请重新登录；文件已保留，登录后会自动继续上传')
+      return
+    }
+    let originalFile = fileRefs.current.get(item.uid)
+    if (!originalFile) {
+      const rec = await getPendingUpload(item.uid)
+      if (rec?.file) {
+        originalFile = rec.file
+        fileRefs.current.set(item.uid, rec.file)
+      }
+    }
     if (!originalFile) {
       message.error('文件已失效，请重新选择文件上传')
       return
     }
     // 重置状态
-    setFileList(prev => prev.map(f => 
+    setFileList(prev => prev.map(f =>
       f.uid === item.uid ? { ...f, status: 'uploading', progress: 0, errorCode: undefined, errorMessage: undefined } : f
     ))
-    uploadFile(originalFile, item.uid)
+    await uploadFile(originalFile, item.uid)
+  }
+
+  // 主动丢弃一条失败文件（连同 IndexedDB 暂存）：避免"没用的重试"一直挂在队列里
+  const handleDiscard = (uid: string) => {
+    void deletePendingUpload(uid)
+    fileRefs.current.delete(uid)
+    setFileList(prev => prev.filter(f => f.uid !== uid))
   }
 
   // 重复文件三选操作
@@ -1001,9 +1078,18 @@ export default function UploadPage() {
                     <Button 
                       type="text" 
                       icon={<ReloadOutlined />}
-                      onClick={() => handleRetry(item)}
+                      onClick={() => { void handleRetry(item) }}
                     >
                       重试
+                    </Button>
+                  ),
+                  item.status === 'error' && (
+                    <Button
+                      type="text"
+                      icon={<CloseOutlined />}
+                      onClick={() => handleDiscard(item.uid)}
+                    >
+                      移除
                     </Button>
                   )
                 ].filter(Boolean)}
@@ -1029,6 +1115,11 @@ export default function UploadPage() {
                       {item.status === 'error' && (
                         <Text type="danger" style={{ fontSize: 12 }}>
                           {item.errorMessage}
+                          {item.errorCode === 'AUTH_EXPIRED' && (
+                            <span style={{ display: 'block', color: '#1677ff', marginTop: 2 }}>
+                              无需手动重试，重新登录后会自动继续上传
+                            </span>
+                          )}
                         </Text>
                       )}
                       <Text type="secondary" style={{ fontSize: 12 }}>

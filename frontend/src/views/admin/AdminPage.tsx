@@ -895,7 +895,7 @@ const ReviewPoolTab: React.FC = () => {
                       <Table
                         size="small" pagination={false}
                         dataSource={t.chart_patterns}
-                        rowKey={(_: any, i: number) => String(i)}
+                        rowKey={(_: any, i?: number) => String(i ?? 0)}
                         columns={[
                           { title: '图表类型', dataIndex: 'chart_type', key: 'chart_type', render: (v: string) => v || '-' },
                           { title: '角色', dataIndex: 'role_hint', key: 'role_hint', render: (v: string) => v || '-' },

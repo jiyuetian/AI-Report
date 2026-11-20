@@ -67,6 +67,12 @@ export default function ChartTemplatePanel({ open, onClose, dashboardId, onAppli
     try {
       const res = await http.post<any>(`/chart-templates/${tpl.id}/apply`, { dashboard_id: dashboardId })
       if (res?.success) {
+        // #4 修复：套用 0 图时明确告警，避免用户点「套用」毫无反应、误以为功能缺失/仅管理员可用
+        if (res?.applied === 0) {
+          message.warning(res?.message || '模板字段与目标数据集不匹配，未套用任何图表')
+        } else {
+          message.success(`已套用 ${res.applied} 个图表`)
+        }
         onApplied(res)
       } else {
         message.error(res?.message || '套用失败')

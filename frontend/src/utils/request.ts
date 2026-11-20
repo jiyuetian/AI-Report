@@ -2,7 +2,12 @@
  * 统一 API 请求封装
  * 自动注入 token(Authorization: Bearer)、解析错误、处理 JSON
  */
-export const API_BASE = '/api/v1'
+/**
+ * API 基址唯一真相源（Task #713）：所有裸 fetch 组件一律从这里导入，禁止再各自定义
+ * VITE_API_BASE_URL 或写死 /api/v1。可用 VITE_API_BASE_URL 覆盖，尾部斜杠统一去掉，
+ * 避免 `${API_BASE}/path` 出现双斜杠 404。
+ */
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
 
 export class ApiError extends Error {
   status: number
@@ -10,6 +15,60 @@ export class ApiError extends Error {
     super(message)
     this.status = status
   }
+}
+
+/**
+ * Task #720：JWT 本地可用性检查。只解 payload 的 exp，不校验签名
+ * （签名是否仍被服务端认可由后端 401 兜底判定，因为前端拿不到 SECRET_KEY）。
+ * 修复前 ProtectedRoute 只判断 localStorage 里"有没有 token"，已过期/换密钥作废的
+ * token 照样能进页面，直到上传时才炸一个看不懂的 HTTP 401。
+ */
+export function isTokenUsable(): boolean {
+  const token = localStorage.getItem('token')
+  if (!token) return false
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return false
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const json = decodeURIComponent(
+      atob(b64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
+    )
+    const exp = Number(JSON.parse(json)?.exp)
+    if (!Number.isFinite(exp)) return false
+    // 预留 30s 时钟偏移，避免"刚好到期"的边界抖动
+    return exp * 1000 > Date.now() + 30_000
+  } catch {
+    return false
+  }
+}
+
+/** 登录/注册类端点的 401 是"账号或密码错误"，不是会话失效，绝不能触发跳登录页。 */
+function isAuthEndpoint(url: string): boolean {
+  let path = url
+  try { path = new URL(url, window.location.origin).pathname } catch { /* 相对路径直接判定 */ }
+  return /\/auth\/(login|register|token|send-code|refresh|logout)(\/|$)/.test(path)
+    || path.endsWith('/login')
+}
+
+// 同一次页面生命周期内只跳转一次，避免多个并发请求同时 401 导致重复 replace
+let sessionExpiredHandled = false
+
+/** 会话失效统一处理：清凭证 → 记回跳地址与提示 → 回登录页。 */
+export function handleSessionExpired(): void {
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
+  if (sessionExpiredHandled) return
+  if (window.location.pathname.startsWith('/login')) return
+  sessionExpiredHandled = true
+  try { sessionStorage.setItem('auth_expired_notice', '1') } catch { /* 隐私模式忽略 */ }
+  const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+  window.location.replace(`/login?redirect=${redirect}`)
+}
+
+/** 统一解析后端 detail（可能是字符串，也可能是 {code,message}）为人话文案。 */
+function detailText(d: any, fallback: string): string {
+  if (d && typeof d === 'object') return String(d.message || d.code || fallback)
+  return String(d || fallback)
 }
 
 /**
@@ -46,7 +105,14 @@ export async function authorizedFetch(url: string, options: RequestInit = {}): P
     headers['Authorization'] = `Bearer ${token}`
   }
   // eslint-disable-next-line no-restricted-globals -- 统一鉴权封装：fetch 的唯一合法出处（非 SSE 与非流式调用统一走这里）
-  return fetch(url, { ...options, headers })
+  const res = await fetch(url, { ...options, headers })
+  // Task #720：与 request() 同源的全局 401 兜底。修复前裸 fetch 调用（上传/预览/质检/SSE）
+  // 全部绕过会话治理，坏 token 能进页面、失败后原地留着让用户反复点"重试"。
+  if (res.status === 401 && !isAuthEndpoint(url)) {
+    handleSessionExpired()
+    throw new ApiError(401, '登录状态已失效，正在跳转重新登录；待上传文件已保留，登录后会自动继续')
+  }
+  return res
 }
 
 export async function request<T = any>(
@@ -66,19 +132,15 @@ export async function request<T = any>(
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
 
   if (!res.ok) {
-    // 全局 401 兜底：令牌无效或已过期 → 清除本地凭证并回登录页
-    // （避免各页面各自弹 error 后停留在空白/空态）
-    if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-      window.location.replace(`/login?redirect=${redirect}`)
+    // 全局 401 兜底：与 authorizedFetch 共用同一套会话治理（Task #720）
+    if (res.status === 401 && !isAuthEndpoint(`${API_BASE}${path}`)) {
+      handleSessionExpired()
       throw new ApiError(401, '登录已过期，请重新登录')
     }
     let detail = `请求失败(${res.status})`
     try {
       const body = await res.json()
-      detail = body?.detail || detail
+      detail = detailText(body?.detail, detail)
     } catch {
       /* 非 JSON 响应，忽略 */
     }
