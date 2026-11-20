@@ -215,13 +215,43 @@ class QualityChecker:
             try:
                 it = IssueType(issue_type)
             except ValueError:
-                # AI 自定义类型无对应规则方案时，给一个安全的忽略选项，避免下拉框 'No data'
+                # Task #724：AI 补充检测问题没有"自动清洗"方案（AI 只给线索，不改数据）。
+                # 旧文案只让用户盲信或盲弃、旁边还挂一个无效的「修复」按钮；
+                # 改成明确的"先看真实明细再决定"动作指引。
+                # #34：确认属实后必须有可执行的修复策略，不能只剩「查看明细」。
+                # AI 签发 patch → 规则引擎 API 落地；下面的 strategy 只是前端动作指引，
+                # 真正的数据修改由 /quality/{dataset_id}/ai-repair 白名单执行。
                 return [{
+                    "strategy": "ai_repair",
+                    "label": "按 AI 建议修复（推荐）",
+                    "description": "确认问题属实后，按 AI 给出的修复策略由规则引擎定点修改这几行；改前留回退点，可撤销。",
+                    "recommended": True,
+                }, {
+                    "strategy": "ai_review",
+                    "label": "查看明细数据后人工确认",
+                    "description": "先核对 AI 定位到的真实数据行，再决定确认属实或标记无需处理。",
+                }, {
                     "strategy": "ignore",
-                    "label": "忽略（AI 建议，需人工确认）",
-                    "description": "该问题由 AI 补充检测发现，暂无预设修复方案，建议人工核实后处理",
+                    "label": "暂不处理（保留数据原样）",
+                    "description": "不修改数据，仅把这条 AI 提示标记为暂不处理。",
                 }]
-        return QualityChecker._get_repair_options(it, column, column_stats)
+        return QualityChecker._append_ignore_option(
+            QualityChecker._get_repair_options(it, column, column_stats))
+
+    @staticmethod
+    def _append_ignore_option(opts: List[Dict]) -> List[Dict]:
+        """每个修复方案列表末尾追加「不处理（保留异常，不修改数据）」选项。
+
+        需求：异常处理的每个选项集都要预留「不处理」，让用户可对任一异常显式选择不处理。
+        已含 ignore 策略时不再重复追加。
+        """
+        if any(o.get("strategy") == "ignore" for o in opts):
+            return opts
+        return opts + [{
+            "strategy": "ignore",
+            "label": "不处理（保留异常，不修改数据）",
+            "description": "选择后该异常保持原样，不做任何清洗修改，仅标记为已确认不处理",
+        }]
 
     @classmethod
     def _get_repair_options(cls, issue_type: IssueType, column: str,

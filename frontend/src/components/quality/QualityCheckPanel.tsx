@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Card, Button, Tag, Table, Modal, Radio, Input, Space, Divider, Alert, message, Typography, Empty, Select, Tooltip, Progress } from 'antd'
+import { Card, Button, Tag, Table, Modal, Radio, Input, Space, Divider, Alert, message, Typography, Empty, Select, Tooltip, Progress, Spin } from 'antd'
 import {
   CheckCircleOutlined, WarningOutlined, CloseCircleOutlined,
   ToolOutlined, ReloadOutlined, ThunderboltOutlined, LoadingOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons'
 // Phase 5：SkillPanel 薄壳收口（展示本面板由哪些后端 skill 驱动，暗色自动继承）
 import SkillPanel from '../skills/SkillPanel'
-import { authHeaders, authorizedFetch } from '../../utils/request'
+import { API_BASE, authHeaders, authorizedFetch } from '../../utils/request'
 
 // 后端返回的单个问题结构
 export interface ApiQualityIssue {
@@ -23,6 +24,23 @@ export interface ApiQualityIssue {
   // 2026-09-18 产品化：每个问题附最多 5 条真实受影响样本，前端展开展示
   // 「原始数据第几行 + 清洗前的值 + 对应的问题 + 清洗后处理成的结果」
   samples?: QualitySample[]
+  // Task #724：AI 补充检测证据链（后端 /check/ai 与 /issues 两条路径同构）
+  ai_issue_id?: string
+  plain_conclusion?: string
+  basis?: string
+  involved_columns?: string[]
+  check_suggestion?: string
+  evidence_filter?: { column: string; op: string; value: any }[]
+  row_numbers?: number[]
+  evidence_available?: boolean
+  confirmation?: { decision?: string; note?: string; by?: string; at?: number }
+  // #34：AI 签发的修复策略 + 已执行的修复记录
+  repair_plan?: {
+    strategy?: string; label?: string; description?: string
+    reason?: string; risk?: string; target_value?: string; numeric_only?: boolean
+  }
+  repair?: { strategy?: string; label?: string; affected_rows?: number; at?: number }
+  status?: string
 }
 
 // 单条受影响样本（产品化展示用）：原始行 + 清洗前/后
@@ -87,7 +105,7 @@ export interface QualityCheckStatus {
   checked: boolean  // 是否已执行过质检
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+// API 基址统一由 utils/request.ts 提供（Task #713）
 
 // 按 fileId 存储质检状态，不同文件独立
 interface CheckState {
@@ -165,6 +183,9 @@ const STRATEGY_LABEL_MAP: Record<string, string> = {
   fill_boundary: '边界截断', winsorize: '缩尾(Winsorize)', coerce_numeric: '数值化',
   convert_standard: '日期标准化', map_closest: '码值归一', set_today: '未来日期→今天',
   swap_values: '交换日期', drop: '删除空行',
+  ai_repair_median: 'AI建议·中位数替换', ai_repair_mean: 'AI建议·均值替换',
+  ai_repair_winsorize: 'AI建议·P1/P99缩尾', ai_repair_set_null: 'AI建议·置空',
+  ai_repair_constant: 'AI建议·指定值替换',
 }
 
 // B2：把 before/after 统计快照渲染成可读摘要
@@ -253,42 +274,56 @@ export default function QualityCheckPanel({
   }, [updateState])
 
   // 轮询AI补充检测结果（后台任务完成后自动合并）
-  const pollAiResult = useCallback((dsId: string) => {
+  const pollAiResult = useCallback((dsId: string, silent = false) => {
     if (aiIntervalRef.current) clearInterval(aiIntervalRef.current)
     let attempts = 0
-    const MAX_ATTEMPTS = 15  // ISS-103：质检整体 30s 封顶（2s×15），超时转兜底提示，不让用户干等
+    // Task #728/#33：轮询上限由后端 ai_budget 单一真相源下发（chain_budget_s），
+    // 前端不再写死 30s。默认 32 次（64s）兜底，拿到后端预算后按 (budget+8)/2 动态收敛。
+    let maxAttempts = 32
     const timer = setInterval(async () => {
       attempts++
       try {
         const res = await authorizedFetch(`${API_BASE}/quality/check/ai/${dsId}`, { headers: authHeaders() })
         const data = await res.json()
+        const backendBudget = Number(data.chain_budget_s)
+        if (Number.isFinite(backendBudget) && backendBudget > 0) {
+          maxAttempts = Math.ceil((backendBudget + 8) / 2)
+        }
         if (data.status === 'done') {
           clearInterval(timer)
           aiIntervalRef.current = null
           setAiStatus('done')
           setAiWaiting(false)
           setAiIssueCount(Number(data.ai_issues_count) || 0)
-          // 准确信号：llm_called=true 才代表 AI 真正参与了本次质检（含 OpenRouter 免费层）。
-          // 不能用 fallback_used：wait_for 超时场景 fallback_used=False 但 AI 实际未参与，
-          // 若按 fallback_used 判断会误显示绿色"AI 已参与"。故以 llm_called 取反作为兜底标记。
-          setAiFallback(!((data.summary as any)?.llm_called))
+          // Task #706：优先用后端统一契约 ai_badge_eligible（与看板/对话同源），
+          // 老版本响应无该字段时再退回 llm_called。
+          const _sum: any = data.summary || {}
+          setAiFallback(_sum.ai_badge_eligible === true ? false
+            : _sum.ai_badge_eligible === false ? true
+            : !_sum.llm_called)
           const issues = (data.issues || []) as ApiQualityIssue[]
           mergeAiResult(issues)
-          if (data.ai_issues_count > 0) {
-            message.info({ content: `质检完成：规则 + AI 共发现 ${data.ai_issues_count} 个 AI 补充问题`, key: 'qc' })
+          // #35：只对「尚未人工核对」的新问题提示；已确认/已忽略、以及生成看板前的
+          // silent 重检都不再弹，且不重复提示同一批 issue_id。
+          const signature = dsId + '|' + issues.map(x => x.ai_issue_id || '').sort().join(',')
+          const unreviewed = Number(data.unreviewed_count)
+          const pending = Number.isFinite(unreviewed) ? unreviewed : (data.ai_issues_count || 0)
+          if (!silent && pending > 0 && aiToastSignatureRef.current !== signature) {
+            aiToastSignatureRef.current = signature
+            message.info({ content: `AI 补充发现 ${pending} 个待确认问题，请在下表中逐条核对`, key: 'qc' })
           }
         } else if (data.status === 'failed') {
           clearInterval(timer)
           aiIntervalRef.current = null
           setAiStatus('failed')
           setAiWaiting(false)
-          message.warning('AI补充检测未完成（超时或服务暂不可用），本次展示规则兜底结果')
+          if (!silent) message.warning('AI补充检测未完成（超时或服务暂不可用），本次展示规则兜底结果')
         }
         // running/pending：继续轮询
       } catch (e) {
         // 瞬态请求错误忽略，继续轮询
       }
-      if (attempts >= MAX_ATTEMPTS) {
+      if (attempts >= maxAttempts) {
         clearInterval(timer)
         aiIntervalRef.current = null
         setAiStatus(s => (s === 'idle' || s === 'running') ? 'failed' : s)
@@ -297,6 +332,140 @@ export default function QualityCheckPanel({
     }, 2000)
     aiIntervalRef.current = timer
   }, [mergeAiResult])
+  // Task #724：AI 补充检测证据链 / 真实明细下钻弹窗
+  // #35：同一批 AI 问题只提示一次，避免生成看板时重复弹 toast
+  const aiToastSignatureRef = useRef<string>('')
+
+  const [evidenceModal, setEvidenceModal] = useState<{
+    open: boolean
+    issue: ApiQualityIssue | null
+  }>({ open: false, issue: null })
+  const [evidenceData, setEvidenceData] = useState<any | null>(null)
+  const [evidenceLoading, setEvidenceLoading] = useState(false)
+  const [evidenceError, setEvidenceError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  // #34：AI 修复策略执行态（策略可覆盖、常量值可手填）
+  const [repairing, setRepairing] = useState(false)
+  const [repairStrategy, setRepairStrategy] = useState('')
+  const [repairTargetValue, setRepairTargetValue] = useState('')
+  const [repairError, setRepairError] = useState<string | null>(null)
+
+  const decisionTag = (d?: string) => {
+    if (d === 'confirmed') return <Tag color="green">已确认属实</Tag>
+    if (d === 'ignored') return <Tag>已标记无需处理</Tag>
+    return <Tag color="blue">待人工核对</Tag>
+  }
+
+  // 打开明细下钻：向后端要「AI 当时看到的样本 + 从 DuckDB 真实查出的行」
+  const openEvidence = async (issue: ApiQualityIssue) => {
+    setEvidenceModal({ open: true, issue })
+    setEvidenceData(null)
+    setEvidenceError(null)
+    if (!datasetId) { setEvidenceError('数据集未就绪，请稍后再试'); return }
+    if (!issue.ai_issue_id) {
+      setEvidenceError('这条 AI 问题没有证据编号，请重新执行一次质检后再查看')
+      return
+    }
+    setEvidenceLoading(true)
+    try {
+      const res = await authorizedFetch(
+        `${API_BASE}/quality/${datasetId}/ai-evidence/${encodeURIComponent(issue.ai_issue_id)}`,
+        { headers: authHeaders() }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setEvidenceError(data?.detail?.message || '明细数据读取失败')
+        return
+      }
+      setEvidenceData(data)
+    } catch {
+      setEvidenceError('明细数据读取失败（网络异常）')
+    } finally {
+      setEvidenceLoading(false)
+    }
+  }
+
+  // 人工核对结论落库 + 同步本地面板状态，刷新后仍可读
+  const confirmAiIssue = async (decision: 'confirmed' | 'ignored' | 'pending') => {
+    const issue = evidenceModal.issue
+    if (!datasetId || !issue?.ai_issue_id) return
+    setConfirming(true)
+    try {
+      const res = await authorizedFetch(`${API_BASE}/quality/${datasetId}/ai-confirm`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue_id: issue.ai_issue_id, decision }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        message.error(data?.detail?.message || '核对结果保存失败')
+        return
+      }
+      const cur = stateRef.current
+      const checks = cur.checks.map(c => ({
+        ...c,
+        issues: c.issues.map(i => i.ai_issue_id === issue.ai_issue_id
+          ? { ...i, confirmation: data.confirmation } : i),
+      }))
+      const next = { checks, fixedKeys: cur.fixedKeys }
+      updateState(next)
+      stateRef.current = next
+      setEvidenceData((prev: any) => prev ? { ...prev, confirmation: data.confirmation } : prev)
+      message.success(
+        decision === 'confirmed' ? '已确认问题属实'
+          : decision === 'ignored' ? '已标记为无需处理' : '已撤销核对结论'
+      )
+    } catch {
+      message.error('核对结果保存失败（网络异常）')
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+
+  // #34：确认属实后，按 AI 签发的策略由规则引擎定点修复命中行。
+  // AI 不直接改数据；后端白名单校验 + 写清洗层（可回滚）+ 行级留痕。
+  const applyAiRepair = async () => {
+    const issue = evidenceModal.issue
+    if (!datasetId || !issue?.ai_issue_id) return
+    setRepairing(true)
+    setRepairError(null)
+    try {
+      const res = await authorizedFetch(`${API_BASE}/quality/${datasetId}/ai-repair`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          issue_id: issue.ai_issue_id,
+          strategy: repairStrategy || undefined,
+          target_value: repairTargetValue,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setRepairError(data?.detail?.message || '修复未执行，数据保持原样')
+        return
+      }
+      const cur = stateRef.current
+      const checks = cur.checks.map(c => ({
+        ...c,
+        issues: c.issues.map(i => i.ai_issue_id === issue.ai_issue_id
+          ? { ...i, repair: data.repair, status: 'done' } as ApiQualityIssue : i),
+      }))
+      const next = { checks, fixedKeys: cur.fixedKeys }
+      updateState(next)
+      stateRef.current = next
+      setEvidenceData((prev: any) => prev ? {
+        ...prev, repair: data.repair, can_auto_repair: false,
+      } : prev)
+      loadChangeLog()
+      message.success(`已按「${data.strategy_label}」修复 ${data.affected_rows} 行，原始层未动，可在清洗修改明细里查看前后对比`)
+    } catch {
+      setRepairError('修复请求失败（网络异常），数据保持原样')
+    } finally {
+      setRepairing(false)
+    }
+  }
+
   const [fixModal, setFixModal] = useState<{
     open: boolean
     checkKey: string
@@ -418,7 +587,7 @@ export default function QualityCheckPanel({
         message.destroy('qc')
       }
       // 启动后台轮询，AI结果就绪后结束等待页并展示完整结果
-      pollAiResult(datasetId)
+      pollAiResult(datasetId, silent)
       return grouped
     } catch (error: any) {
       if (!silent) {
@@ -460,6 +629,18 @@ export default function QualityCheckPanel({
         rule: i.rule || '',
         source: (i.source === 'ai' ? 'ai' : 'rule') as 'rule' | 'ai',
         repair_options: i.repair_options || [],
+        ai_issue_id: i.ai_issue_id || '',
+        plain_conclusion: i.plain_conclusion || '',
+        basis: i.basis || '',
+        involved_columns: i.involved_columns || [],
+        check_suggestion: i.check_suggestion || '',
+        evidence_available: !!i.evidence_available,
+        confirmation: i.confirmation || { decision: 'pending' },
+        evidence_filter: i.evidence_filter || [],
+        row_numbers: i.row_numbers || [],
+        repair_plan: i.repair_plan || {},
+        repair: i.repair || {},
+        status: i.status || 'todo',
       }))
       const newState: CheckState = { checks: groupIssuesByType(apiIssues), fixedKeys: new Set() }
       updateState(newState)
@@ -917,7 +1098,7 @@ export default function QualityCheckPanel({
       {allFlatIssues.length > 0 && (
         <>
           <div style={{ marginBottom: 10, fontSize: 13, color: '#8c8c8c' }}>
-            点击任意问题行展开，可见受影响的原始数据行、清洗前的值与清洗后结果。
+            点击任意问题行展开：规则问题看受影响原始行与清洗结果；AI 补充问题看大白话结论、判断依据、涉及字段，并可点「查看明细数据」核对真实数据行。
           </div>
           <Table
             size="small"
@@ -926,8 +1107,26 @@ export default function QualityCheckPanel({
             dataSource={allFlatIssues}
             rowKey={r => `${r.checkKey}-${r.column}-${r.type}`}
             expandable={{
-              rowExpandable: (r: any) => (r.samples?.length || 0) > 0,
-              expandedRowRender: (r: any) => (
+              rowExpandable: (r: any) => (r.samples?.length || 0) > 0 || r.source === 'ai',
+              expandedRowRender: (r: any) => r.source === 'ai' ? (
+                <div style={{ padding: '6px 4px', lineHeight: 1.9 }}>
+                  <div><b>大白话结论：</b>{r.plain_conclusion || r.message}</div>
+                  <div><b>判断依据：</b>{r.basis || '请点「查看明细数据」核对真实行'}</div>
+                  <div><b>涉及字段：</b>{(r.involved_columns?.length ? r.involved_columns : [r.column]).join('、')}</div>
+                  <div><b>核对建议：</b>{r.check_suggestion || '打开明细，核对涉及字段的真实取值'}</div>
+                  <div><b>AI 修复策略：</b>{r.repair_plan?.label || '先核对明细再决定'}
+                    {r.repair_plan?.reason && <span style={{ color: '#8c8c8c' }}>（{r.repair_plan.reason}）</span>}
+                  </div>
+                  {r.repair && <div><b>已执行：</b>{r.repair.label}，改动 {r.repair.affected_rows} 行</div>}
+                  <div style={{ marginTop: 8 }}>
+                    {decisionTag(r.confirmation?.decision)}
+                    <Button size="small" type="primary" ghost style={{ marginLeft: 8 }}
+                            icon={<FileSearchOutlined />} onClick={() => { void openEvidence(r) }}>
+                      查看明细数据
+                    </Button>
+                  </div>
+                </div>
+              ) : (
                 <Table
                   size="small"
                   pagination={false}
@@ -963,7 +1162,15 @@ export default function QualityCheckPanel({
                 render: (s) => s === 'ai' ? <Tag color="blue">AI</Tag> : <Tag>规则</Tag>,
               },
               { title: '字段', dataIndex: 'column', key: 'column', width: 130 },
-              { title: '问题概述', dataIndex: 'message', key: 'message', width: 230, ellipsis: true },
+              {
+                title: '问题概述',
+                dataIndex: 'message',
+                key: 'message',
+                width: 250,
+                render: (v: string, r: any) => r.source === 'ai'
+                  ? <Tooltip title={`AI 原始描述：${v}`}><span>{r.plain_conclusion || v}</span></Tooltip>
+                  : <span>{v}</span>,
+              },
               { title: '影响行数', dataIndex: 'row_count', key: 'row_count', width: 80, render: (v: number) => <Tag color="orange">{v}</Tag> },
               {
                 title: '级别',
@@ -976,7 +1183,7 @@ export default function QualityCheckPanel({
                 key: 'fixStatus',
                 width: 90,
                 render: (_: any, r: any) =>
-                  state.fixedKeys.has(issueKey(r.checkKey, r.column))
+                  (state.fixedKeys.has(issueKey(r.checkKey, r.column)) || !!(r as any).repair)
                     ? <Tag icon={<CheckCircleOutlined />} color="success">已修复</Tag>
                     : <Tag color="orange">待修复</Tag>,
               },
@@ -985,6 +1192,28 @@ export default function QualityCheckPanel({
                 key: 'plan',
                 width: 230,
                 render: (_: any, r: any) => {
+                  // Task #724：AI 问题没有自动清洗方案，旧下拉「忽略（AI 建议，需人工确认）」
+                  // 让用户只能盲信或盲弃。这里直接给核对状态 + 可执行的下一步。
+                  if (r.source === 'ai') {
+                    const plan = r.repair_plan || {}
+                    const done = !!r.repair
+                    return (
+                      <div>
+                        {done
+                          ? <Tag color="success">已按 AI 策略修复</Tag>
+                          : decisionTag(r.confirmation?.decision)}
+                        <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 4 }}>
+                          {done
+                            ? `策略：${r.repair?.label || plan.label || '—'}，改动 ${r.repair?.affected_rows ?? 0} 行`
+                            : `AI 修复策略：${plan.label || '先核对明细再决定'}`}
+                        </div>
+                        <Button size="small" type="link" style={{ paddingLeft: 0 }}
+                                onClick={() => { void openEvidence(r) }}>
+                          {done ? '查看修复结果' : '查看策略与明细数据'}
+                        </Button>
+                      </div>
+                    )
+                  }
                   const opts: RepairOption[] = r.repair_options || []
                   const cur = strategyOf(r.checkKey, r)
                   const curOpt = opts.find(o => o.strategy === cur)
@@ -1029,8 +1258,13 @@ export default function QualityCheckPanel({
               {
                 title: '操作',
                 key: 'action',
-                width: 90,
-                render: (_: any, r: any) => (
+                width: 140,
+                render: (_: any, r: any) => r.source === 'ai' ? (
+                  <Button size="small" type="primary" ghost icon={<FileSearchOutlined />}
+                          onClick={() => { void openEvidence(r) }}>
+                    {r.repair ? '查看修复结果' : '查看明细数据'}
+                  </Button>
+                ) : (
                   <Button size="small" icon={<ToolOutlined />} onClick={() => openFix(r.checkKey, r)}>
                     修复
                   </Button>
@@ -1207,6 +1441,122 @@ export default function QualityCheckPanel({
           )}
         </Space>
       </div>
+
+      {/* Task #724：AI 补充检测证据链 / 真实明细下钻弹窗 */}
+      <Modal
+        title={`查看明细数据 — ${evidenceModal.issue?.column || ''}`}
+        open={evidenceModal.open}
+        onCancel={() => setEvidenceModal({ open: false, issue: null })}
+        width={980}
+        footer={[
+          <Button key="close" onClick={() => setEvidenceModal({ open: false, issue: null })}>关闭</Button>,
+          <Button key="pending" loading={confirming} disabled={!evidenceData || confirming}
+                  onClick={() => { void confirmAiIssue('pending') }}>撤销结论</Button>,
+          <Button key="ignored" loading={confirming} disabled={!evidenceData || confirming}
+                  onClick={() => { void confirmAiIssue('ignored') }}>标记无需处理</Button>,
+          <Button key="confirmed" loading={confirming} disabled={!evidenceData || confirming}
+                  onClick={() => { void confirmAiIssue('confirmed') }}>确认问题属实</Button>,
+          <Button key="repair" type="primary" icon={<ThunderboltOutlined />} loading={repairing}
+                  disabled={!evidenceData?.can_auto_repair
+                    || evidenceData?.confirmation?.decision !== 'confirmed' || repairing}
+                  onClick={() => { void applyAiRepair() }}>按 AI 建议修复</Button>,
+        ]}
+      >
+        {evidenceLoading && <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="正在读取真实明细数据…" /></div>}
+        {evidenceError && <Alert type="error" showIcon message="明细数据读取失败" description={evidenceError} />}
+        {evidenceData && (
+          <>
+            <Alert
+              type="info" showIcon style={{ marginBottom: 12 }}
+              message={evidenceData.plain_conclusion || 'AI 补充检测提示'}
+              description={evidenceData.basis || '请直接核对下方真实明细数据'}
+            />
+            <div style={{ marginBottom: 12, lineHeight: 2 }}>
+              <div><b>涉及字段：</b>{(evidenceData.involved_columns || []).map((c: string) => <Tag key={c}>{c}</Tag>)}</div>
+              <div><b>核对建议：</b>{evidenceData.check_suggestion || '打开明细，核对涉及字段的真实取值'}</div>
+              <div><b>当前核对状态：</b>{decisionTag(evidenceData.confirmation?.decision)}</div>
+            </div>
+            {/* #34：AI 修复策略卡片 —— 确认属实后有明确可执行的下一步，不再卡在「待修复」 */}
+            <Alert
+              type={evidenceData.repair ? 'success' : 'info'} showIcon style={{ marginBottom: 12 }}
+              message={evidenceData.repair
+                ? `已修复：${evidenceData.repair.label || evidenceData.repair_plan?.label || ''}（改动 ${evidenceData.repair.affected_rows ?? 0} 行）`
+                : `AI 修复建议：${evidenceData.repair_plan?.label || '先查看明细再决定'}`}
+              description={evidenceData.repair
+                ? '数据写在清洗层，原始层未动；可在下方「清洗修改明细」查看逐行前后对比，或点质检页「重置」回滚。'
+                : `${evidenceData.repair_plan?.reason || 'AI 未给出具体依据，请先核对下方真实数据行。'} 风险提示：${evidenceData.repair_plan?.risk || '执行前请确认这几行确属异常。'}`}
+            />
+            {!evidenceData.repair && (
+              <div style={{ marginBottom: 12, lineHeight: 2.2 }}>
+                <div>
+                  <b>改选修复策略：</b>
+                  <Select
+                    size="small" style={{ width: 320, marginLeft: 8 }}
+                    value={repairStrategy || evidenceData.repair_plan?.strategy || undefined}
+                    onChange={(v) => setRepairStrategy(v)}
+                    options={Object.entries(evidenceData.repair_strategies || {}).map(([k, v]: [string, any]) => ({
+                      value: k, label: v?.label || k,
+                    }))}
+                  />
+                </div>
+                {(repairStrategy || evidenceData.repair_plan?.strategy) === 'replace_with_constant' && (
+                  <div><b>替换成：</b>
+                    <input
+                      style={{ marginLeft: 8, padding: '4px 8px', border: '1px solid #d9d9d9', borderRadius: 4 }}
+                      value={repairTargetValue}
+                      placeholder="填写核对后的正确值"
+                      onChange={(e) => setRepairTargetValue(e.target.value)}
+                    />
+                  </div>
+                )}
+                <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+                  AI 只给建议、不直接改数；执行时只修改下方定位到的 {evidenceData.total_matched} 行，写清洗层并留回退点。
+                </div>
+                {repairError && <Alert type="error" showIcon message="修复未执行" description={repairError} />}
+              </div>
+            )}
+            <Divider style={{ margin: '10px 0' }}>真实数据明细（直接查数据表，共 {evidenceData.total_matched} 行）</Divider>
+            <Alert
+              type={evidenceData.locator === 'filter' ? 'success' : 'warning'} showIcon
+              style={{ marginBottom: 8 }} message={evidenceData.sql_note}
+            />
+            <Table
+              size="small" pagination={false} scroll={{ x: 900 }}
+              dataSource={evidenceData.rows || []}
+              rowKey={(r: any) => `d-${r._row_no}`}
+              columns={[
+                { title: '行号', dataIndex: '_row_no', key: '_row_no', width: 80, render: (v: number) => `第 ${v} 行` },
+                ...(evidenceData.columns || []).map((c: string) => ({
+                  title: c, dataIndex: c, key: c,
+                  render: (v: any) => v === null ? <Tag>空值</Tag> : String(v ?? ''),
+                })),
+              ]}
+              locale={{ emptyText: '没有匹配到数据行' }}
+            />
+            <Divider style={{ margin: '16px 0 10px' }}>AI 判断依据样本（AI 当时看到的前 8 行）</Divider>
+            <Table
+              size="small" pagination={false} scroll={{ x: 900 }}
+              dataSource={evidenceData.ai_seen_rows || []}
+              rowKey={(r: any) => `s-${r._row_no}`}
+              onRow={(r: any) => ({
+                style: (evidenceData.highlight_rows || []).includes(r._row_no)
+                  ? { background: 'rgba(250, 173, 20, 0.14)' } : undefined,
+              })}
+              columns={[
+                { title: '样本行号', dataIndex: '_row_no', key: '_row_no', width: 90, render: (v: number) => `第 ${v} 行` },
+                ...((evidenceData.sample_columns && evidenceData.sample_columns.length
+                  ? evidenceData.sample_columns
+                  : Object.keys((evidenceData.ai_seen_rows || [])[0] || {}).filter((k: string) => k !== '_row_no')
+                ).map((c: string) => ({
+                  title: c, dataIndex: c, key: c,
+                  render: (v: any) => v === null ? <Tag>空值</Tag> : String(v ?? ''),
+                }))),
+              ]}
+              locale={{ emptyText: '本次没有留存 AI 样本' }}
+            />
+          </>
+        )}
+      </Modal>
 
       {/* 修复弹窗 - 显示所有可选修复方案 */}
       <Modal
