@@ -105,3 +105,19 @@ data/*.db
 
 # 浏览器自测/QA 截图与脚本产物（根级 night_runs，勿入库）
 night_runs/
+
+# === 2026-11-23 提交加固：敏感凭证与一次性排查产物，禁止入库 ===
+# 真实开发凭证（含明文 JWT，轮换前不得进版本库）
+backend/.dev_admin_token.txt
+backend/.dev_login_cmd.txt
+# Windows 残留空文件 / 探针截图 / e2e 看板快照
+backend/NUL
+backend/_probe_chat_*.png
+backend/scripts/_e2e_backup/
+# 一次性排查/验证脚本（非交付代码）
+backend/scripts/probe_llm_now.py
+backend/scripts/probe_sensenova_json.py
+backend/scripts/run_and_verify_ai.py
+backend/scripts/run_pipeline_direct.py
+backend/scripts/verify_crud_agent.py
+backend/scripts/verify_user4fixes.py
